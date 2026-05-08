@@ -1,0 +1,12 @@
+numpy
+matplotlib
+h5py
+scipy
+pandas
+scikit-learn
+ipywidgets
+mplcursors
+pywin32
+Pillow
+PyMca5
+tifffile
