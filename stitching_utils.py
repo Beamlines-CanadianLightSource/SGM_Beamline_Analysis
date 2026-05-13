@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import ipywidgets as widgets
 from IPython.display import display
 from analyze_sgm_bsky_data import analyze_sgm_bsky_data
+from save_pymca_stack_h5 import get_user_file_action
 
 def apply_asymmetric_trim(x, y, data_indices, left=0, right=0, top=0, bottom=0):
     """
@@ -41,16 +42,18 @@ def browse_for_quadrant_files(num_files=4):
     for i in range(num_files):
         label = labels[i] if i < len(labels) else f"Map {i+1}"
         f = filedialog.askopenfilename(
-            title=f"Select {label} HDF5 File",
+            title=f"Select {label} HDF5 File (Cancel to skip this quadrant)",
             filetypes=[("HDF5 files", "*.h5"), ("All files", "*.*")]
         )
         if not f:
-            break
+            print(f"  -> Skipped {label}")
+            continue
         files.append(f)
         print(f"  -> Selected {label}: {os.path.basename(f)}")
     
     root.destroy()
     return files
+
 
 def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50)):
     """
@@ -63,6 +66,18 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50)):
     if not h5_files:
         print("No files selected.")
         return
+
+    # Check for duplicates
+    if len(h5_files) != len(set(h5_files)):
+        import tkinter as tk
+        from tkinter import messagebox
+        root = tk.Tk(); root.withdraw(); root.attributes("-topmost", True)
+        messagebox.showwarning("Duplicate Files", 
+                               "Warning: You have selected the same file for multiple quadrants.\n\n"
+                               "This may cause data overlap and visualization artifacts (like 'filling in' gaps).\n"
+                               "If you intended to skip a quadrant, please click 'Cancel' in one of the file dialogs next time.")
+        root.destroy()
+
 
     data_packs = [analyze_sgm_bsky_data(f, verbose=False) for f in h5_files]
     num_maps = len(data_packs)
@@ -260,6 +275,19 @@ def stitch_quadrant_maps(h5_files=None, output_dir=None, trims=None, verbose=Tru
     new_h5_name = f"Stitched_{ref_dp['scan_name']}.h5"
     new_h5_path = os.path.join(output_dir, new_h5_name)
     
+    # --- Overwrite Check ---
+    if os.path.exists(new_h5_path):
+        action = get_user_file_action(new_h5_name, new_h5_path)
+        if action == 'overwrite':
+            print(f"  -> Overwriting existing file: {new_h5_name}")
+        elif isinstance(action, tuple) and action[0] == 'rename':
+            new_h5_path = action[1]
+            new_h5_name = os.path.basename(new_h5_path)
+            print(f"  -> Saving as new name: {new_h5_name}")
+        else:
+            print(f"  -> Skipping stitching operation for {new_h5_name}.")
+            return None
+    
     with h5py.File(new_h5_path, 'w') as f_out:
         with h5py.File(h5_files[0], 'r') as f_in:
             if 'scan_metadata' in f_in:
@@ -302,14 +330,18 @@ def stitch_quadrant_maps(h5_files=None, output_dir=None, trims=None, verbose=Tru
             for i, dp in enumerate(data_packs):
                 mcc_data = dp.get('mcc_data', {}).get(energy)
                 if mcc_data is not None:
-                    trimmed_mcc = mcc_data[map_pixel_masks[i]]
+                    if mcc_data.ndim == 1:
+                        trimmed_mcc = mcc_data[map_pixel_masks[i]]
+                    else:
+                        trimmed_mcc = mcc_data[map_pixel_masks[i], :]
                     stitched_mcc.append(trimmed_mcc)
             
             if stitched_mcc:
                 final_mcc = np.concatenate(stitched_mcc, axis=0)
-                if i_mcc == 1:
-                    header = ",".join(ref_dp.get('mcc_channel_names', ['mcc1', 'mcc2', 'mcc3', 'mcc4']))
-                    np.savetxt(os.path.join(energy_path, "mcc1.csv"), final_mcc, delimiter=",", header=header, comments='')
+                mcc_filename = f"{mcc_name}.csv"
+                header = ",".join(ref_dp.get('mcc_channel_names', [f'ch{j}' for j in range(final_mcc.shape[1] if final_mcc.ndim > 1 else 1)]))
+                np.savetxt(os.path.join(energy_path, mcc_filename), final_mcc, delimiter=",", header=header, comments='')
+
 
     if verbose:
         print(f"\n[SUCCESS] Stitched dataset created at: {output_dir}")

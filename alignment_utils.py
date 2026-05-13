@@ -11,6 +11,47 @@ from tkinter import messagebox, simpledialog
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.widgets import SpanSelector, Button
+import matplotlib.tri as tri
+
+def get_masked_triangulation(x, y, max_edge=None):
+    """
+    Creates a Matplotlib Triangulation object and masks triangles with long edges.
+    Helps prevent 'smearing' across missing quadrants in stitched maps.
+    """
+    try:
+        if len(x) < 3:
+            return None
+            
+        triang = tri.Triangulation(x, y)
+        
+        # Calculate edge lengths
+        x_tri = x[triang.triangles]
+        y_tri = y[triang.triangles]
+        
+        e1 = np.sqrt((x_tri[:, 0] - x_tri[:, 1])**2 + (y_tri[:, 0] - y_tri[:, 1])**2)
+        e2 = np.sqrt((x_tri[:, 1] - x_tri[:, 2])**2 + (y_tri[:, 1] - y_tri[:, 2])**2)
+        e3 = np.sqrt((x_tri[:, 2] - x_tri[:, 0])**2 + (y_tri[:, 2] - y_tri[:, 0])**2)
+        
+        if max_edge is None:
+            # More robust heuristic: use 5x the median edge length
+            # This handles both high-res and low-res maps correctly.
+            all_edges = np.concatenate([e1, e2, e3])
+            max_edge = np.median(all_edges) * 5.0
+            
+            # Absolute sanity check: don't mask if max_edge is too small relative to total range
+            range_max = max(np.max(x) - np.min(x), np.max(y) - np.min(y))
+            if max_edge < range_max * 0.01:
+                max_edge = range_max * 0.5 # Effectively disable masking if it seems wrong
+        
+        # Mask triangles where any edge is too long
+        mask = (e1 > max_edge) | (e2 > max_edge) | (e3 > max_edge)
+        triang.set_mask(mask)
+        return triang
+    except Exception as e:
+        print(f"  [Warning] Masked triangulation failed: {e}")
+        return None
+
+
 
 _TK_ROOT = None
 def get_tk_root():
@@ -163,6 +204,12 @@ def interactive_roll_align(path_pack, channel_roi=(80, 120), max_shift=100, use_
     
     color_toggle = widgets.Checkbox(value=use_color, description='Use Color', indent=False)
     
+    # Contrast Slider
+    contrast_slider = widgets.FloatRangeSlider(
+        value=[0, 100], min=0, max=100, step=0.1,
+        description='Contrast %:', layout=widgets.Layout(width='80%')
+    )
+    
     auto_btn = widgets.Button(description="Auto-Align", button_style='info')
     save_btn = widgets.Button(description="Save Current Map", button_style='success')
     output = widgets.Output()
@@ -206,10 +253,30 @@ def interactive_roll_align(path_pack, channel_roi=(80, 120), max_shift=100, use_
                 # --- Left: 2D Intensity Map ---
                 map_ax = ax[0]
                 cmap_name = 'viridis' if use_color else 'gray'
+                
+                # Calculate contrast limits
+                p_low, p_high = contrast_slider.value
+                vmin = np.percentile(intensity, p_low)
+                vmax = np.percentile(intensity, p_high)
+                if vmin == vmax: vmax = vmin + 1
+                
                 try:
-                    sc = map_ax.tripcolor(coords[0], coords[1], intensity, shading='gouraud', 
-                                         edgecolors='none', rasterized=True, cmap=cmap_name)
-                    plt.colorbar(sc, ax=map_ax, label='Counts')
+                    triang = get_masked_triangulation(coords[0], coords[1])
+                    if triang is not None:
+                        sc = map_ax.tripcolor(triang, intensity, shading='gouraud', 
+                                             edgecolors='none', rasterized=True, cmap=cmap_name,
+                                             vmin=vmin, vmax=vmax)
+                    else:
+                        sc = map_ax.tripcolor(coords[0], coords[1], intensity, shading='gouraud', 
+                                             edgecolors='none', rasterized=True, cmap=cmap_name,
+                                             vmin=vmin, vmax=vmax)
+                    # Clear existing colorbars for this axis
+                    if hasattr(update_plot, 'cbar') and update_plot.cbar is not None:
+                        try:
+                            update_plot.cbar.remove()
+                        except:
+                            pass
+                    update_plot.cbar = plt.colorbar(sc, ax=map_ax, label='Counts')
                 except Exception as e:
                     map_ax.text(0.5, 0.5, f"Plot error: {e}", transform=map_ax.transAxes)
 
@@ -303,8 +370,13 @@ def interactive_roll_align(path_pack, channel_roi=(80, 120), max_shift=100, use_
             clean_fig = Figure(figsize=(6, 6))
             canvas = FigureCanvasAgg(clean_fig)
             clean_ax = clean_fig.add_subplot(111)
-            clean_ax.tripcolor(coords[0], coords[1], intensity, shading='gouraud', 
-                             edgecolors='none', rasterized=True, cmap='viridis')
+            triang = get_masked_triangulation(coords[0], coords[1])
+            if triang is not None:
+                clean_ax.tripcolor(triang, intensity, shading='gouraud', 
+                                 edgecolors='none', rasterized=True, cmap='viridis')
+            else:
+                clean_ax.tripcolor(coords[0], coords[1], intensity, shading='gouraud', 
+                                 edgecolors='none', rasterized=True, cmap='viridis')
             clean_ax.set_aspect('equal')
             clean_ax.axis('off')
             clean_fig.savefig(save_filename, bbox_inches='tight', pad_inches=0, transparent=True)
@@ -324,6 +396,7 @@ def interactive_roll_align(path_pack, channel_roi=(80, 120), max_shift=100, use_
     x_trim_slider.observe(update_plot, names='value')
     y_trim_slider.observe(update_plot, names='value')
     color_toggle.observe(update_plot, names='value')
+    contrast_slider.observe(update_plot, names='value')
     if is_stack:
         en_dropdown.observe(update_plot, names='value')
     auto_btn.on_click(run_auto)
@@ -334,7 +407,7 @@ def interactive_roll_align(path_pack, channel_roi=(80, 120), max_shift=100, use_
     trim_controls = widgets.VBox([x_trim_slider, y_trim_slider])
     align_controls = widgets.HBox([ref_en_dropdown, auto_btn, save_btn]) if is_stack else widgets.HBox([save_btn])
     
-    display(widgets.VBox([header, shift_slider, trim_controls, color_toggle, align_controls, output]))
+    display(widgets.VBox([header, shift_slider, trim_controls, color_toggle, contrast_slider, align_controls, output]))
     update_plot() # Initial plot
 
 def interactive_channel_selector(path_pack, initial_roi=(20, 40)):

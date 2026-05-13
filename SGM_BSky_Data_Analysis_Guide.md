@@ -1,10 +1,10 @@
 # SGM_BSky Data Analysis User Guide
 
-This guide provides an overview of the `SGM_BSky_Data_Analysis-N.ipynb` notebook and its associated python modules. It outlines the overall workflow, details the purpose of each script, and explains how to interact with the various GUIs that pop up during analysis.
+This guide provides an overview of the `SGM_BSky_Data_Analysis.ipynb` notebook and its associated python modules. It outlines the overall workflow, details the purpose of each script, and explains how to interact with the various GUIs that pop up during analysis.
 
 ## Overview & Purpose
 
-The `SGM_BSky_Data_Analysis-N.ipynb` notebook is an end-to-end processing pipeline for Synchrotron XRF and XANES stack data collected at the SGM beamline. It is designed to:
+The `SGM_BSky_Data_Analysis.ipynb` notebook is an end-to-end processing pipeline for Synchrotron XRF and XANES stack data collected at the SGM beamline. It is designed to:
 1. Parse and extract metadata, spatial coordinates, and spectral data from raw HDF5 files.
 2. Interactively align spatial drift and select spectral ROIs.
 3. Explore the 4D hypercube interactively, isolate regions of interest (ROI), and view real-time XANES extraction.
@@ -18,7 +18,9 @@ The `SGM_BSky_Data_Analysis-N.ipynb` notebook is an end-to-end processing pipeli
 
 ## Quick Start: Running the Notebook
 
-To use the pipeline, open `SGM_BSky_Data_Analysis-N.ipynb` in your Jupyter environment and run the cells sequentially (using `Shift + Enter`). 
+To use the pipeline, open `SGM_BSky_Data_Analysis.ipynb` in your Jupyter environment and run the cells sequentially (using `Shift + Enter`). 
+
+For datasets involving multi-quadrant stitching, refer to the example notebook: `SGM_BSky_Data_Analysis-4quad.ipynb`.
 
 As you progress through the notebook, various file dialogs and interactive GUIs will pop up. **Keep an eye on your taskbar**, as some pop-ups (especially the Matplotlib/Tkinter windows) might open behind your browser window.
 
@@ -38,11 +40,17 @@ As you progress through the notebook, various file dialogs and interactive GUIs 
   - Changes made here are saved to the `path_pack` and applied to all downstream steps.
 
 ### 2.1 `stitching_utils.py` (Multi-Quadrant Maps)
-**Purpose:** Used when a sample is too large to fit in a single scan and was collected as 4 overlapping "quadrants" (SW, SE, NE, NW). This tool joins them into a single, seamless master map.
+**Purpose:** Used when a sample is too large to fit in a single scan and was collected as 4 overlapping "quadrants" (SW, SE, NE, NW). This tool joins them into a single, seamless master map. 
+
+**Example Workflow:** For a hands-on example of this process, use the `SGM_BSky_Data_Analysis-4quad.ipynb` notebook.
 **User Interaction:**
-- **Interactive Trimming (`interactive_stitching_trim`):** A specialized widget that displays all 4 quadrants on a single plot.
+- **Interactive Trimming (`interactive_stitching_trim`):** A specialized widget that displays all selected quadrants on a single plot.
+- **Handling Missing Quadrants:** If you only have 2 or 3 quadrants, you can explicitly skip a slot by clicking **Cancel** in the file selection dialog for that quadrant. The tool will handle the gap automatically.
+- **Duplicate Prevention:** A warning will appear if you select the same file for multiple quadrants. Avoid this, as it causes spatial data overlap and visualization artifacts.
+- **Automatic Gap Masking:** The tool now automatically masks the space between quadrants. This prevents "smearing" artifacts (where data appears to stretch across missing areas) in the dashboard and alignment tools.
 - **Asymmetric Sliders:** Use the **Left, Right, Top, Bottom** sliders for each quadrant to remove "bad" edge data caused by stage acceleration or to eliminate overlaps.
 - **Contrast Control:** Includes a dedicated contrast slider to help you see fine details while aligning the boundaries.
+- **Data Preservation:** The stitched dataset now preserves all 4 MCC reference channels (`mcc1` through `mcc4`), ensuring complete metadata for normalization.
 - **Bake Stitched Map:** Once the quadrants join perfectly without visible "seams," click this button to generate a new master HDF5 file and data directory. The resulting "baked" map is fully compatible with the rest of the pipeline.
 
 ### 3. `plot_sgm_bsky_data.py` (The Main Interactive Dashboard)
@@ -72,7 +80,11 @@ As you progress through the notebook, various file dialogs and interactive GUIs 
    - **Full Window:** Double-click in the gray margin area to copy the entire dashboard layout (e.g., all 3 plots in a row).
    - *Result:* High-resolution images are ready to be pasted directly into PowerPoint or other documents.
 
-6. **Sync Map ROI:**
+6. **Save XRD/XANES Spectra (Single Map Support):**
+   - The **"Save XRD Spectra"** and **"Save XANES Spectra"** buttons are now available for **all** datasets, including single-energy maps. 
+   - This allows you to quickly export the raw detector counts or integrated intensities for a selected ROI, even if you aren't performing a full energy scan.
+
+7. **Sync Map ROI:**
    - The light green **"Sync Map ROI"** button is located directly above the energy maps on each individual detector's dashboard row. If you draw an ROI on one map and the summary spectrum doesn't automatically update, or if the visual regions get out of sync, click this button on the active map to force all other maps to align perfectly with your drawn ROI.
 
 **I0 Normalization and Smoothing:**
@@ -152,9 +164,9 @@ Since IDEs often hide or remove the classic Jupyter export menus, the command li
 1. Open the Terminal in your project (e.g., the "Terminal" tab at the bottom of PyCharm).
 2. Run the following command:
    ```bash
-   .venv\Scripts\python -m nbconvert --to html SGM_BSky_Data_Analysis-N.ipynb
+   .venv\Scripts\python -m nbconvert --to html SGM_BSky_Data_Analysis.ipynb
    ```
-3. A file named `SGM_BSky_Data_Analysis-N.html` will be generated in your project folder.
+3. A file named `SGM_BSky_Data_Analysis.html` will be generated in your project folder.
 
 **Method B: Using the Jupyter Web Interface**
 If you are running Jupyter in a web browser:

@@ -15,7 +15,7 @@ _GLOBAL_SYNC_OBJ = None
 import tkinter as tk
 from tkinter import messagebox, simpledialog, filedialog
 from analyze_sgm_bsky_data import analyze_sgm_bsky_data
-from alignment_utils import grid_interpolate_map, get_safe_save_path, get_tk_root
+from alignment_utils import grid_interpolate_map, get_safe_save_path, get_tk_root, get_masked_triangulation
 import mplcursors
 from matplotlib.widgets import RectangleSelector, Button, PolygonSelector, Slider, SpanSelector, CheckButtons
 from matplotlib.path import Path
@@ -177,6 +177,9 @@ class ExternalI0PreviewDialog(tk.Toplevel):
         self.protocol("WM_DELETE_WINDOW", self.on_cancel)
         self.attributes("-topmost", True)
         
+        self.i0_calib_enabled = tk.BooleanVar(value=False)
+        self.i0_energy_shift = tk.DoubleVar(value=0.0)
+        
         # UI Setup
         ctrl_frame = tk.Frame(self)
         ctrl_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=10)
@@ -208,6 +211,19 @@ class ExternalI0PreviewDialog(tk.Toplevel):
         self.spin_window.set(11)
         self.spin_window.grid(row=0, column=2, padx=5, pady=5)
         self.spin_window.bind("<Return>", self.update_plot)
+        
+        # New Energy Calibration UI (External I0 Only)
+        calib_frame = tk.LabelFrame(ctrl_frame, text="I0 Energy Calibration")
+        calib_frame.grid(row=3, column=0, columnspan=2, padx=5, pady=5, sticky="ew")
+        
+        self.chk_calib = tk.Checkbutton(calib_frame, text="Enable Energy Calibration", variable=self.i0_calib_enabled, command=self.update_plot)
+        self.chk_calib.grid(row=0, column=0, padx=5, pady=5)
+        
+        tk.Label(calib_frame, text="Shift (eV):").grid(row=0, column=1, padx=5, pady=5)
+        self.ent_calib = ttk.Entry(calib_frame, textvariable=self.i0_energy_shift, width=10)
+        self.ent_calib.grid(row=0, column=2, padx=5, pady=5)
+        self.ent_calib.bind("<Return>", self.update_plot)
+        self.ent_calib.bind("<FocusOut>", self.update_plot)
         
         btn_frame = tk.Frame(ctrl_frame)
         btn_frame.grid(row=0, column=2, rowspan=3, padx=20)
@@ -271,12 +287,21 @@ class ExternalI0PreviewDialog(tk.Toplevel):
             self.ax.set_title(f"Preview: {i_col} vs {e_col}")
             self.ax.grid(True)
             
+            if self.i0_calib_enabled.get():
+                try:
+                    shift = float(self.i0_energy_shift.get())
+                    self.ax.plot(x_sorted + shift, y_sorted, 'r--', alpha=0.7, label=f'Shifted ({shift:+.2f} eV)')
+                    self.ax.legend()
+                    self.ax.set_title(f"Preview: {i_col} vs {e_col} (Shift: {shift:+.2f} eV)")
+                except: pass
+            
         self.fig.tight_layout()
         self.canvas.draw()
         
     def on_apply(self):
         smoothed_str = f" (Smoothed w={self.spin_window.get()})" if self.do_smooth.get() else ""
-        self.result = (self.cb_e.get(), self.cb_i.get(), self.x_final, self.y_final, smoothed_str)
+        shift_str = f" (Energy Shift: {self.i0_energy_shift.get():+.2f} eV)" if self.i0_calib_enabled.get() else ""
+        self.result = (self.cb_e.get(), self.cb_i.get(), self.x_final, self.y_final, smoothed_str + shift_str, self.i0_calib_enabled.get(), self.i0_energy_shift.get())
         self.destroy()
         
     def on_cancel(self):
@@ -307,8 +332,9 @@ def get_dynamic_mask(cx, cy, xt, yt, roi=None, poly=None):
 # --- Core Dashboard State & Synchronization ---
 
 class Synchronizer:
-    def __init__(self, all_energies, representative_energy, map_roi=None, use_color=True, use_full_metadata=False):
+    def __init__(self, all_energies, representative_energy, map_roi=None, use_color=True, use_full_metadata=False, calibrated_energies=None):
         self.all_energies = all_energies
+        self.calibrated_energies = calibrated_energies if calibrated_energies is not None else all_energies
         self.energy_idx = self._find_nearest_idx(representative_energy)
         self.map_roi = map_roi
         self.use_color = use_color
@@ -326,6 +352,9 @@ class Synchronizer:
         self.full_metadata = use_full_metadata
         self.status_widget = None
         self.user_metadata = None
+        # I0 Energy Calibration (External Only)
+        self.i0_calib_enabled = False
+        self.i0_energy_shift = 0.0
 
     def _find_nearest_idx(self, value):
         if value is None or len(self.all_energies) == 0: return 0
@@ -336,7 +365,7 @@ class Synchronizer:
         self.is_syncing = True
         try:
             self.energy_idx = int(new_idx)
-            print(f"  [Energy Select] Switching all plots to {self.all_energies[self.energy_idx]:.2f} eV...")
+            print(f"  [Energy Select] Switching all plots to {self.calibrated_energies[self.energy_idx]:.2f} eV...")
             for d in self.dashboards:
                 try:
                     d.update_energy(self.energy_idx)
@@ -346,6 +375,34 @@ class Synchronizer:
         finally:
             self.is_syncing = False
 
+    def broadcast_i0_calib(self, enabled=None, shift=None):
+        """Updates I0 energy calibration settings and refreshes normalized plots."""
+        if enabled is not None: self.i0_calib_enabled = enabled
+        if shift is not None: self.i0_energy_shift = shift
+        
+        # Propagate to path_pack for other modules
+        sd = self.summary_dash or _GLOBAL_SUMMARY_DASH
+        if sd:
+            sd.ctx['path_pack']['i0_calib_enabled'] = self.i0_calib_enabled
+            sd.ctx['path_pack']['i0_energy_shift'] = self.i0_energy_shift
+            
+            # Recalculate ext_i0_values if it's an external I0
+            if sd.ctx.get('ext_i0_df') is not None:
+                df = sd.ctx['ext_i0_df']
+                e_col, i_col = sd.ctx['ext_i0_cols']
+                x = df[e_col].values
+                y = df[i_col].values
+                # Apply smoothing if it was enabled (simplified for now, using stored y_preview if available)
+                # Actually, better to just use the x_sorted, y_sorted we stored
+                if sd.ctx.get('ext_i0_raw_xy') is not None:
+                    x_s, y_s = sd.ctx['ext_i0_raw_xy']
+                    x_shifted = x_s + (self.i0_energy_shift if self.i0_calib_enabled else 0.0)
+                    sd.ctx['ext_i0_values'] = np.interp(sd.ctx['calibrated_energies'], x_shifted, y_s)
+        
+        print(f"  [I0 Energy Calib] Enabled: {self.i0_calib_enabled}, Shift: {self.i0_energy_shift}")
+        if sd:
+            sd.update_plots(self.current_roi, self.current_poly, self.mode)
+        
     def broadcast_theme(self):
         self.use_color = not self.use_color
         for d in self.dashboards:
@@ -833,8 +890,13 @@ class DashboardRow:
             m_rep = np.sum(self.s2d_rep[:, self.ctx['channel_roi'][0]:self.ctx['channel_roi'][1]], axis=1)
             
         tm = get_dynamic_mask(self.ctx['x_coords'][:len(m_rep)], self.ctx['y_coords'][:len(m_rep)], self.ctx['x_trim'], self.ctx['y_trim'])
-        self.sc_en = self.ax[0].tripcolor(self.ctx['x_coords'][:len(m_rep)][tm], self.ctx['y_coords'][:len(m_rep)][tm], m_rep[tm], 
-                                    shading='gouraud', edgecolors='none', rasterized=True, cmap=cmap)
+        tri_en = get_masked_triangulation(self.ctx['x_coords'][:len(m_rep)][tm], self.ctx['y_coords'][:len(m_rep)][tm])
+        if tri_en is not None:
+            self.sc_en = self.ax[0].tripcolor(tri_en, m_rep[tm], 
+                                        shading='gouraud', edgecolors='none', rasterized=True, cmap=cmap)
+        else:
+            self.sc_en = self.ax[0].tripcolor(self.ctx['x_coords'][:len(m_rep)][tm], self.ctx['y_coords'][:len(m_rep)][tm], m_rep[tm],
+                                        shading='gouraud', edgecolors='none', rasterized=True, cmap=cmap)
         plt.colorbar(self.sc_en, ax=self.ax[0]); self.ax[0].set_aspect('equal')
         
         # Explicitly set limits to the data range to avoid expansion from patches
@@ -850,8 +912,13 @@ class DashboardRow:
         self.ax[0].set_title(f"{title_name} @ {self.rep_e:.2f} eV", fontsize='small')
         
         m_avg = self.ctx['avg_maps'][self.name] / len(self.sync.all_energies)
-        self.sc_avg = self.ax[1].tripcolor(self.ctx['x_coords'][:len(m_avg)][tm], self.ctx['y_coords'][:len(m_avg)][tm], m_avg[tm],
-                                     shading='gouraud', edgecolors='none', rasterized=True, cmap=cmap)
+        tri_avg = get_masked_triangulation(self.ctx['x_coords'][:len(m_avg)][tm], self.ctx['y_coords'][:len(m_avg)][tm])
+        if tri_avg is not None:
+            self.sc_avg = self.ax[1].tripcolor(tri_avg, m_avg[tm],
+                                         shading='gouraud', edgecolors='none', rasterized=True, cmap=cmap)
+        else:
+            self.sc_avg = self.ax[1].tripcolor(self.ctx['x_coords'][:len(m_avg)][tm], self.ctx['y_coords'][:len(m_avg)][tm], m_avg[tm],
+                                         shading='gouraud', edgecolors='none', rasterized=True, cmap=cmap)
         plt.colorbar(self.sc_avg, ax=self.ax[1]); self.ax[1].set_aspect('equal')
         
         if np.any(tm):
@@ -886,6 +953,15 @@ class DashboardRow:
             self.fig.subplots_adjust(left=0.06, right=0.97, bottom=0.2, top=0.85, wspace=0.18)
             self.fig.canvas.mpl_connect('button_press_event', _on_dashboard_click)
             return
+
+        if len(self.sync.all_energies) <= 1:
+            # For single energy, we still want the XRF spectrum to see the peaks
+            # but we use a 1x3 grid or similar? The figure was created as 1x3.
+            # Let's just keep the 3rd axis visible and update it.
+            pass
+        else:
+            # Multi-energy stack logic
+            pass
 
         m_roi = get_dynamic_mask(self.ctx['x_coords'][:len(self.s2d_rep)], self.ctx['y_coords'][:len(self.s2d_rep)], self.ctx['x_trim'], self.ctx['y_trim'], 
                                 roi=self.current_roi, poly=self.current_poly if self.sync.mode=='poly' else None)
@@ -1004,9 +1080,9 @@ class SummaryDashboard:
         # 3. Update Normalized SDD Lines (Raw / MCC1 / Ext I0)
         active_i0 = None
         if self.ctx.get('ext_i0_values') is not None:
-            active_i0 = self.ctx['ext_i0_values']
+            active_i0 = self.ctx['ext_i0_values'].copy()
         elif mcc1_data is not None:
-            active_i0 = mcc1_data
+            active_i0 = mcc1_data.copy()
 
         if active_i0 is not None:
             i0_safe = np.where(active_i0 == 0, 1.0, active_i0)
@@ -1043,6 +1119,8 @@ class SummaryDashboard:
             # Update Title to show active ROI for feedback
             roi_ch = self.ctx.get('channel_roi', (0, 255))
             i0_src = self.ctx.get('i0_source', 'mcc1')
+            if self.sync.i0_calib_enabled and "Internal" not in i0_src:
+                i0_src += f" (Energy Shift: {self.sync.i0_energy_shift:+.2f} eV)"
             title_str = f"Normalized Fluorescence Spectra (Ch{roi_ch[0]}-{roi_ch[1]}): {self.ctx['scan_name']} (by {i0_src})"
             try:
                 # Handle both 1D and 2D axis arrays
@@ -1118,17 +1196,19 @@ class SummaryDashboard:
         
         # 3. I0 Normalization Handling
         if self.ctx.get('ext_i0_values') is not None:
-            i0_values = self.ctx['ext_i0_values']
+            i0_values = self.ctx['ext_i0_values'].copy()
             src = self.ctx.get('i0_source', '')
             i0_source = src if src.startswith("Internal") else f"External: {src}"
         else:
             mcc1_key = 'mcc1'
             if mcc1_key in current_mcc and np.any(current_mcc[mcc1_key]):
-                i0_values = np.array(current_mcc[mcc1_key])
+                i0_values = np.array(current_mcc[mcc1_key]).copy()
                 i0_source = "Internal: mcc1"
             else:
                 i0_values = np.ones(len(self.sync.all_energies))
                 i0_source = "None (Raw Only)"
+        
+        # Prepare Normalized Data
 
         # Prepare Normalized Data
         i0_safe = np.where(i0_values == 0, 1.0, i0_values)
@@ -1345,83 +1425,144 @@ class SummaryDashboard:
             self.sync.status_widget.value = f"EXPORT COMPLETE: All {total} maps saved to {save_dir_abs}"
         print(f"--- [EXPORT COMPLETE] All {total} detectors saved to {save_dir_abs} ---\n", flush=True)
 
+    def save_pymca_stack_call(self, event):
+        """Callback for saving ROI-summed PyMca stack (3D)."""
+        from save_pymca_stack_h5 import save_pymca_stack_h5
+        # Use current state
+        roi_ch = self.ctx.get('channel_roi', (0, 255))
+        roi_map = self.sync.current_roi
+        
+        print(f"  [EXPORT] Launching ROI-summed PyMca Stack Export (3D)...")
+        print(f"  -> Active Channel ROI: {roi_ch}")
+        
+        try:
+            # Note: save_pymca_stack_h5 will handle the file dialog
+            save_pymca_stack_h5(self.ctx['path_pack'], channel_roi=roi_ch, map_roi=roi_map)
+        except Exception as e:
+            print(f"Error during 3D Stack Export: {e}")
+            traceback.print_exc()
+
+    def save_pymca_4d_stack_call(self, event):
+        """Callback for saving full 4D PyMca stack."""
+        from save_pymca_4d_stack_h5 import save_pymca_4d_stack_h5
+        
+        print(f"  [EXPORT] Launching Full 4D PyMca Stack Export (4D Cube)...")
+        
+        try:
+            # Note: save_pymca_4d_stack_h5 will handle the file dialog
+            save_pymca_4d_stack_h5(self.ctx['path_pack'], normalize=True)
+        except Exception as e:
+            print(f"Error during 4D Stack Export: {e}")
+            traceback.print_exc()
+
     def plot(self):
         has_mcc_data = (self.ctx['mcc_channels'] and len(self.ctx['mcc_channels']) > 0)
+        is_single_energy = (len(self.sync.all_energies) <= 1)
         
-        # We want a 2x2 grid: Raw SDD, Raw MCC, Normalized SDD, Normalized MCC
-        rows, cols = 2, 2
-        fig_id = f"dash_summary_{id(self.sync)}"
-        # Each plot is ~6.375 wide by ~9.6 tall to satisfy "50% smaller width, height 1.5x width"
-        self.fig, self.ax = plt.subplots(rows, cols, figsize=(12.75, 19.2), squeeze=False, num=fig_id)
-        self.fig.subplots_adjust(hspace=0.3, wspace=0.2, bottom=0.15, top=0.92, left=0.08, right=0.95)
-        
-        ax_raw_sdd = self.ax[0, 0]
-        ax_raw_mcc = self.ax[0, 1]
-        ax_norm_sdd = self.ax[1, 0]
-        ax_norm_mcc = self.ax[1, 1]
-        
-        fmt = 'o-' if self.ctx.get('show_markers', True) else '-'
-        
-        # 1. Plot Raw Fluorescence (Top)
-        for det in self.ctx['detector_names']:
-            det_id = int(det.replace('sdd','')) if 'sdd' in det else None
-            label = SDD_NAMES.get(det_id, det) if det_id else det
-            l, = ax_raw_sdd.plot(self.ctx['calibrated_energies'], self.ctx['summary_data'][det], fmt, label=f"Raw {label}", alpha=0.7)
-            self.det_lines_raw[det] = l
-        self.avg_line_raw, = ax_raw_sdd.plot(self.ctx['calibrated_energies'], self.ctx['avg_dependence'], 'k--', lw=2, label='Raw Average')
-        ax_raw_sdd.set_title(f"Raw Fluorescence Spectra: {self.ctx['scan_name']}"); ax_raw_sdd.legend(fontsize='xx-small')
-        ax_raw_sdd.set_xlabel("Energy (eV)"); ax_raw_sdd.set_ylabel("Raw Counts")
-
-        # 2. Plot Raw MCC
-        for ch in (self.ctx['mcc_channels'] or []):
-            data = self.ctx['mcc_data'][f'mcc{ch}']
-            if not np.all(np.array(data) == 0):
-                m_fmt = 's-' if self.ctx.get('show_markers', True) else '-'
-                label = MCC_NAMES.get(ch, f'mcc{ch}')
-                l, = ax_raw_mcc.plot(self.ctx['calibrated_energies'], data, m_fmt, label=f"Raw {label}")
-                self.mcc_lines_raw[ch] = l
-        ax_raw_mcc.set_title("Raw I0 and Total Electron Yield (TEY) Spectra"); ax_raw_mcc.legend(fontsize='xx-small')
-        ax_raw_mcc.set_xlabel("Energy (eV)"); ax_raw_mcc.set_ylabel("Counts/Intensity")
-
-        # 3. Plot Normalized Fluorescence
-        if self.ctx.get('ext_i0_values') is not None:
-            i0_init = self.ctx['ext_i0_values']
+        # Determine Grid Layout
+        if is_single_energy:
+            # Only 1 row: Raw Map(s) if multiple, or just 1 map?
+            # Actually, the SummaryDashboard plots spectra. If single energy, spectra are points.
+            # User says "we do not need to show the xanes spectra plotting".
+            # So we only show maps? But this IS the summary dashboard.
+            # If we don't show spectra, this whole figure might be empty or just show 1 point.
+            # Let's hide the axes if single energy.
+            rows, cols = 1, 1
+            # But the SummaryDashboard is designed to show 2x2.
+            # Let's just make the axes invisible or return early if single energy?
+            # Actually, the user likely wants the WHOLE summary dashboard to be hidden if single energy,
+            # but usually they want to see the MAPS. The maps are in DashboardRow.
+            # So if single energy, we hide the spectra in SummaryDashboard.
+            rows, cols = 1, 1 
         else:
-            i0_init = np.array(self.ctx['mcc_data'].get('mcc1', np.ones(len(self.ctx['calibrated_energies']))))
-        
-        i0_init = np.where(i0_init == 0, 1.0, i0_init)
-        
-        norm_avg_init = []
-        for det in self.ctx['detector_names']:
-            det_id = int(det.replace('sdd','')) if 'sdd' in det else None
-            label = SDD_NAMES.get(det_id, det) if det_id else det
-            norm_data = self.ctx['summary_data'][det] / i0_init
-            l, = ax_norm_sdd.plot(self.ctx['calibrated_energies'], norm_data, fmt, label=f"Normalized {label}", alpha=0.7)
-            self.det_lines_norm[det] = l
-            norm_avg_init.append(norm_data)
-        
-        self.avg_line_norm, = ax_norm_sdd.plot(self.ctx['calibrated_energies'], np.nanmean(norm_avg_init, axis=0), 'k--', lw=2, label='Normalized Average')
-        i0_src = self.ctx.get('i0_source', 'mcc1')
-        ax_norm_sdd.set_title(f"Normalized Fluorescence Spectra (Ch{self.sync.channel_roi[0]}-{self.sync.channel_roi[1]}): {self.ctx['scan_name']} (by {i0_src})")
-        ax_norm_sdd.legend(fontsize='xx-small')
-        ax_norm_sdd.set_xlabel("Energy (eV)"); ax_norm_sdd.set_ylabel("Normalized Intensity")
+            rows, cols = 2, 2
+        fig_id = f"dash_summary_{id(self.sync)}"
+        if is_single_energy:
+            # We want the UI buttons but no plots. 
+            # We can't return early or we lose all button setup.
+            # Create a thin empty axis for the plots area or just skip plot creation.
+            rows, cols = 1, 1
+            # Increased height from 2.0 to 4.0 to give buttons more room
+            self.fig, self.ax = plt.subplots(rows, cols, figsize=(12.75, 4.0), squeeze=False, num=fig_id)
+            self.ax[0,0].axis('off')
+            btn_y = 0.20 # Higher starting Y for buttons in a smaller figure
+            btn_h = 0.15 # Taller buttons for the small figure
+            chk_y = 0.45
+        else:
+            # Each plot is ~6.375 wide by ~9.6 tall to satisfy "50% smaller width, height 1.5x width"
+            self.fig, self.ax = plt.subplots(rows, cols, figsize=(12.75, 19.2), squeeze=False, num=fig_id)
+            self.fig.subplots_adjust(hspace=0.3, wspace=0.2, bottom=0.15, top=0.92, left=0.08, right=0.95)
+            btn_y = 0.015
+            btn_h = 0.04
+            chk_y = 0.06
+            
+            ax_raw_sdd = self.ax[0, 0]
+            ax_raw_mcc = self.ax[0, 1]
+            ax_norm_sdd = self.ax[1, 0]
+            ax_norm_mcc = self.ax[1, 1]
+            
+            fmt = 'o-' if self.ctx.get('show_markers', True) else '-'
+            
+            # 1. Plot Raw Fluorescence (Top)
+            for det in self.ctx['detector_names']:
+                det_id = int(det.replace('sdd','')) if 'sdd' in det else None
+                label = SDD_NAMES.get(det_id, det) if det_id else det
+                l, = ax_raw_sdd.plot(self.ctx['calibrated_energies'], self.ctx['summary_data'][det], fmt, label=f"Raw {label}", alpha=0.7)
+                self.det_lines_raw[det] = l
+            self.avg_line_raw, = ax_raw_sdd.plot(self.ctx['calibrated_energies'], self.ctx['avg_dependence'], 'k--', lw=2, label='Raw Average')
+            ax_raw_sdd.set_title(f"Raw Fluorescence Spectra: {self.ctx['scan_name']}"); ax_raw_sdd.legend(fontsize='xx-small')
+            ax_raw_sdd.set_xlabel("Energy (eV)"); ax_raw_sdd.set_ylabel("Raw Counts")
 
-        # 4. Plot Normalized MCC
-        for ch in (self.ctx['mcc_channels'] or []):
-            data = np.array(self.ctx['mcc_data'][f'mcc{ch}'])
-            if not np.all(data == 0):
-                i0_safe = np.where(i0_init <= 0, 1.0, i0_init)
-                norm_mcc = data / i0_safe
-                m_fmt = 's-' if self.ctx.get('show_markers', True) else '-'
-                label = MCC_NAMES.get(ch, f'mcc{ch}')
-                l, = ax_norm_mcc.plot(self.ctx['calibrated_energies'], norm_mcc, m_fmt, label=f"Normalized {label}")
-                self.mcc_lines_norm[ch] = l
-        i0_src = self.ctx.get('i0_source', 'mcc1')
-        ax_norm_mcc.set_title(f"Normalized I0 and TEY Spectra (by {i0_src})"); ax_norm_mcc.legend(fontsize='xx-small')
-        ax_norm_mcc.set_xlabel("Energy (eV)"); ax_norm_mcc.set_ylabel("Normalized Intensity")
+            # 2. Plot Raw MCC
+            for ch in (self.ctx['mcc_channels'] or []):
+                data = self.ctx['mcc_data'][f'mcc{ch}']
+                if not np.all(np.array(data) == 0):
+                    m_fmt = 's-' if self.ctx.get('show_markers', True) else '-'
+                    label = MCC_NAMES.get(ch, f'mcc{ch}')
+                    l, = ax_raw_mcc.plot(self.ctx['calibrated_energies'], data, m_fmt, label=f"Raw {label}")
+                    self.mcc_lines_raw[ch] = l
+            ax_raw_mcc.set_title("Raw I0 and Total Electron Yield (TEY) Spectra"); ax_raw_mcc.legend(fontsize='xx-small')
+            ax_raw_mcc.set_xlabel("Energy (eV)"); ax_raw_mcc.set_ylabel("Counts/Intensity")
+
+            # 3. Plot Normalized Fluorescence
+            if self.ctx.get('ext_i0_values') is not None:
+                i0_init = self.ctx['ext_i0_values']
+            else:
+                i0_init = np.array(self.ctx['mcc_data'].get('mcc1', np.ones(len(self.ctx['calibrated_energies']))))
+            
+            i0_init = np.where(i0_init == 0, 1.0, i0_init)
+            
+            norm_avg_init = []
+            for det in self.ctx['detector_names']:
+                det_id = int(det.replace('sdd','')) if 'sdd' in det else None
+                label = SDD_NAMES.get(det_id, det) if det_id else det
+                norm_data = self.ctx['summary_data'][det] / i0_init
+                l, = ax_norm_sdd.plot(self.ctx['calibrated_energies'], norm_data, fmt, label=f"Normalized {label}", alpha=0.7)
+                self.det_lines_norm[det] = l
+                norm_avg_init.append(norm_data)
+            
+            self.avg_line_norm, = ax_norm_sdd.plot(self.ctx['calibrated_energies'], np.nanmean(norm_avg_init, axis=0), 'k--', lw=2, label='Normalized Average')
+            i0_src = self.ctx.get('i0_source', 'mcc1')
+            ax_norm_sdd.set_title(f"Normalized Fluorescence Spectra (Ch{self.sync.channel_roi[0]}-{self.sync.channel_roi[1]}): {self.ctx['scan_name']} (by {i0_src})")
+            ax_norm_sdd.legend(fontsize='xx-small')
+            ax_norm_sdd.set_xlabel("Energy (eV)"); ax_norm_sdd.set_ylabel("Normalized Intensity")
+
+            # 4. Plot Normalized MCC
+            for ch in (self.ctx['mcc_channels'] or []):
+                data = np.array(self.ctx['mcc_data'][f'mcc{ch}'])
+                if not np.all(data == 0):
+                    i0_safe = np.where(i0_init <= 0, 1.0, i0_init)
+                    norm_mcc = data / i0_safe
+                    m_fmt = 's-' if self.ctx.get('show_markers', True) else '-'
+                    label = MCC_NAMES.get(ch, f'mcc{ch}')
+                    l, = ax_norm_mcc.plot(self.ctx['calibrated_energies'], norm_mcc, m_fmt, label=f"Normalized {label}")
+                    self.mcc_lines_norm[ch] = l
+            i0_src = self.ctx.get('i0_source', 'mcc1')
+            ax_norm_mcc.set_title(f"Normalized I0 and TEY Spectra (by {i0_src})"); ax_norm_mcc.legend(fontsize='xx-small')
+            ax_norm_mcc.set_xlabel("Energy (eV)"); ax_norm_mcc.set_ylabel("Normalized Intensity")
         
         # Bottom row buttons - Adjusted positions to avoid overlapping x-axis labels
-        ax_chk_meta = self.fig.add_axes([0.02, 0.06, 0.40, 0.03])
+        ax_chk_meta = self.fig.add_axes([0.02, chk_y, 0.40, btn_h * 0.75])
         self.chk_meta = CheckButtons(ax_chk_meta, ['Add Sample Specific Information to File Header'], [self.sync.full_metadata])
         for text in self.chk_meta.labels:
             text.set_fontsize(7)
@@ -1429,24 +1570,39 @@ class SummaryDashboard:
             self.sync.full_metadata = not self.sync.full_metadata
         self.chk_meta.on_clicked(toggle_meta)
 
-        ax_save_xanes = self.fig.add_axes([0.02, 0.015, 0.13, 0.04])
+        ax_save_xanes = self.fig.add_axes([0.02, btn_y, 0.13, btn_h])
         self.btn_save_xanes = Button(ax_save_xanes, 'Save XANES Spectra', color='yellow', hovercolor='khaki')
         self.btn_save_xanes.on_clicked(self.save_summary_csv); self.btn_save_xanes.label.set_fontsize(7)
 
-        ax_save_xrd = self.fig.add_axes([0.16, 0.015, 0.14, 0.04])
+        ax_save_xrd = self.fig.add_axes([0.16, btn_y, 0.14, btn_h])
         self.btn_save_xrd = Button(ax_save_xrd, 'Save XRD Spectra', color='yellow', hovercolor='khaki')
         self.btn_save_xrd.on_clicked(self.save_consolidated_xrd_spectrum); self.btn_save_xrd.label.set_fontsize(7)
+        
+        ax_save_pm3d = self.fig.add_axes([0.73, btn_y, 0.11, btn_h])
+        self.btn_save_pm3d = Button(ax_save_pm3d, 'Save PyMca Stack', color='yellow', hovercolor='khaki')
+        self.btn_save_pm3d.on_clicked(self.save_pymca_stack_call); self.btn_save_pm3d.label.set_fontsize(7)
 
-        ax_toggle = self.fig.add_axes([0.31, 0.015, 0.18, 0.04])
+        ax_save_pm4d = self.fig.add_axes([0.85, btn_y, 0.12, btn_h])
+        self.btn_save_pm4d = Button(ax_save_pm4d, 'Save 4D PyMca Stack', color='yellow', hovercolor='khaki')
+        self.btn_save_pm4d.on_clicked(self.save_pymca_4d_stack_call); self.btn_save_pm4d.label.set_fontsize(7)
+
+        # If single energy, keep spectral save buttons visible as they provide detector spectra
+        if len(self.sync.all_energies) <= 1:
+            ax_save_xanes.set_visible(True); self.btn_save_xanes.set_active(True)
+            ax_save_xrd.set_visible(True); self.btn_save_xrd.set_active(True)
+            ax_save_pm3d.set_visible(True); self.btn_save_pm3d.set_active(True)
+            ax_save_pm4d.set_visible(False); self.btn_save_pm4d.set_active(False)
+
+        ax_toggle = self.fig.add_axes([0.31, btn_y, 0.18, btn_h])
         label_toggle = "Switch Polygon ROI Selection" if self.sync.mode == 'rect' else "Switch Rectangle ROI Selection"
         self.btn_toggle = Button(ax_toggle, label_toggle, color='yellow', hovercolor='khaki')
         self.btn_toggle.on_clicked(self.toggle_selection_mode); self.btn_toggle.label.set_fontsize(7)
 
-        ax_theme = self.fig.add_axes([0.50, 0.015, 0.11, 0.04])
+        ax_theme = self.fig.add_axes([0.50, btn_y, 0.11, btn_h])
         self.btn_theme = Button(ax_theme, "Switch to Gray" if self.sync.use_color else "Switch to Color", color='yellow', hovercolor='khaki')
         self.btn_theme.on_clicked(self.toggle_theme); self.btn_theme.label.set_fontsize(7)
 
-        ax_save_imgs = self.fig.add_axes([0.62, 0.015, 0.11, 0.04])
+        ax_save_imgs = self.fig.add_axes([0.62, btn_y, 0.10, btn_h])
         self.btn_save_imgs = Button(ax_save_imgs, 'Save Images', color='yellow', hovercolor='khaki')
         self.btn_save_imgs.on_clicked(self.save_all_images); self.btn_save_imgs.label.set_fontsize(7)
         
@@ -1619,7 +1775,13 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
 
         # ---- EXTERNAL I0 PROMPT ----
         root_i0 = get_tk_root(); root_i0.attributes("-topmost", True)
-        use_internal = messagebox.askyesno("I0 Selection", "Use INTERNAL mcc1 for I0 normalization?\n\n(Select 'No' to load an EXTERNAL I0 CSV)")
+        
+        # If single energy, skip the prompt and default to internal I0 (mcc1)
+        if len(all_energies) <= 1:
+            use_internal = True
+        else:
+            use_internal = messagebox.askyesno("I0 Selection", "Use INTERNAL mcc1 for I0 normalization?\n\n(Select 'No' to load an EXTERNAL I0 CSV)")
+        
         use_ext = not use_internal
         
         ext_i0_values = None
@@ -1640,11 +1802,20 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                     root_i0.wait_window(dialog)
                     
                     if dialog.result:
-                        selected_e_col, selected_i_col, x_sorted, y_sorted, smoothed_str = dialog.result
+                        selected_e_col, selected_i_col, x_sorted, y_sorted, extra_str, cal_en, cal_val = dialog.result
                         
+                        # Store raw sorted data for on-the-fly shift adjustments
+                        context_ext_i0_df = ext_df
+                        context_ext_i0_cols = (selected_e_col, selected_i_col)
+                        context_ext_i0_raw_xy = (x_sorted, y_sorted)
+
                         # Use np.interp (requires strictly increasing x, which happens after sorting)
-                        ext_i0_values = np.interp(calibrated_energies, x_sorted, y_sorted)
-                        i0_source = f"{os.path.basename(ext_path)} [{selected_i_col}]{smoothed_str}"
+                        shift = cal_val if cal_en else 0.0
+                        ext_i0_values = np.interp(calibrated_energies, x_sorted + shift, y_sorted)
+                        i0_source = f"{os.path.basename(ext_path)} [{selected_i_col}]{extra_str}"
+                        # Set initial calibration state from dialog
+                        path_pack['i0_calib_enabled'] = cal_en
+                        path_pack['i0_energy_shift'] = cal_val
                 except Exception as e:
                     messagebox.showerror("Error", f"Failed to load external I0: {e}")
         elif use_internal and mcc_channels and 1 in mcc_channels and np.any(mcc_data['mcc1']):
@@ -1656,9 +1827,12 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                 root_i0.wait_window(dialog)
                 
                 if dialog.result:
-                    selected_e_col, selected_i_col, x_sorted, y_sorted, smoothed_str = dialog.result
+                    selected_e_col, selected_i_col, x_sorted, y_sorted, extra_str, cal_en, cal_val = dialog.result
                     ext_i0_values = np.interp(calibrated_energies, x_sorted, y_sorted)
-                    i0_source = f"Internal: mcc1{smoothed_str}"
+                    i0_source = f"Internal: mcc1{extra_str}"
+                    # Note: Energy shift NOT applied to internal I0 as per user request
+                    path_pack['i0_calib_enabled'] = False
+                    path_pack['i0_energy_shift'] = 0.0
             except Exception as e:
                 print(f"Error previewing internal I0: {e}")
 
@@ -1667,8 +1841,12 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
         path_pack['i0_source'] = i0_source
 
         # 3. Class Instantiation (Fresh State)
-        sync = Synchronizer(all_energies, representative_energy, map_roi, use_color=use_color, use_full_metadata=use_full_metadata)
+        sync = Synchronizer(all_energies, representative_energy, map_roi, use_color=use_color, use_full_metadata=use_full_metadata, calibrated_energies=calibrated_energies)
         sync.channel_roi = channel_roi # Set initial range from command line
+        
+        # Load initial calibration state from path_pack if set by dialog
+        sync.i0_calib_enabled = path_pack.get('i0_calib_enabled', False)
+        sync.i0_energy_shift = path_pack.get('i0_energy_shift', 0.0)
         
         context = {
             'path_pack': path_pack, 'x_coords': x_coords, 'y_coords': y_coords,
@@ -1679,7 +1857,10 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
             'calibrated_energies': calibrated_energies, 'summary_data': summary_data,
             'avg_dependence': avg_dependence, 'mcc_channels': mcc_channels, 
             'mcc_data': mcc_data, 'mcc_maps': mcc_maps, 'show_markers': show_markers,
-            'ext_i0_values': ext_i0_values, 'i0_source': i0_source
+            'ext_i0_values': ext_i0_values, 'i0_source': i0_source,
+            'ext_i0_df': context_ext_i0_df if use_ext else None,
+            'ext_i0_cols': context_ext_i0_cols if use_ext else None,
+            'ext_i0_raw_xy': context_ext_i0_raw_xy if use_ext else None
         }
 
         for det in detector_names:
@@ -1721,12 +1902,12 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
         )
         
         # Use a Button-styled label to add some color feedback
-        energy_label = widgets.Button(description=f"{all_energies[sync.energy_idx]:.2f} eV", 
+        energy_label = widgets.Button(description=f"{sync.calibrated_energies[sync.energy_idx]:.2f} eV", 
                                     button_style='warning', layout=widgets.Layout(width='120px'))
         
         def on_energy_change(change):
             new_idx = change['new']
-            energy_label.description = f"{all_energies[new_idx]:.2f} eV"
+            energy_label.description = f"{sync.calibrated_energies[new_idx]:.2f} eV"
             sync.broadcast_energy(new_idx)
             
         energy_slider.observe(on_energy_change, names='value')
@@ -1753,8 +1934,26 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
 
         energy_controls = widgets.VBox([
             widgets.HBox([energy_slider, energy_label]),
-            widgets.HBox([contrast_slider, log_toggle, log_spec_toggle])
+            widgets.HBox([contrast_slider, log_toggle, log_spec_toggle]),
+            widgets.HBox([
+                widgets.Label("External I0 Energy Calibration:", layout=widgets.Layout(width='200px')),
+                widgets.Checkbox(value=sync.i0_calib_enabled, description='Enable Shift', indent=False),
+                widgets.FloatText(value=sync.i0_energy_shift, description='Shift (eV):', style={'description_width': 'initial'}, layout=widgets.Layout(width='150px'))
+            ])
         ], layout=widgets.Layout(margin='10px 0px 10px 0px'))
+
+        # Set up I0 Calibration Observers
+        calib_chk = energy_controls.children[2].children[1]
+        calib_val = energy_controls.children[2].children[2]
+        
+        def on_calib_update(enabled=None, shift=None):
+            sync.broadcast_i0_calib(enabled=enabled, shift=shift)
+            # Update the energy label to reflect potential new calibrated energy (if we ever shift the map axis too)
+            # For now, this specifically ensures the label stays in sync if the calibrated_energies array is updated
+            energy_label.description = f"{sync.calibrated_energies[sync.energy_idx]:.2f} eV"
+
+        calib_chk.observe(lambda c: on_calib_update(enabled=c['new']), names='value')
+        calib_val.observe(lambda c: on_calib_update(shift=c['new']), names='value')
 
         try:
             get_ipython()

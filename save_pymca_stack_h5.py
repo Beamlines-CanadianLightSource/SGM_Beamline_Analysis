@@ -241,7 +241,12 @@ def save_pymca_stack_h5(path_pack, channel_roi, output_path=None, map_roi=None, 
             x_ds.attrs['long_name'] = 'X'
             x_ds.attrs['axis'] = 2
             
-            en_ds = measurement.create_dataset('energy', data=all_energies.astype(np.float32))
+            # Final Energy Axis
+            final_energies = all_energies.astype(np.float32)
+            if path_pack.get('i0_calib_enabled') and "Internal" not in i0_source and "mcc" not in i0_source.lower():
+                final_energies += path_pack.get('i0_energy_shift', 0.0)
+            
+            en_ds = measurement.create_dataset('energy', data=final_energies)
             en_ds.attrs['units'] = 'eV'
             en_ds.attrs['long_name'] = 'Energy (eV)'
             en_ds.attrs['axis'] = 3 
@@ -298,7 +303,16 @@ def save_pymca_stack_h5(path_pack, channel_roi, output_path=None, map_roi=None, 
                     i0_source = "None"
             
             # Ensure I0 has no zeros
-            i0_values = np.where(i0_values == 0, 1.0, i0_values)
+            i0_values = np.where(i0_values <= 0, 1.0, i0_values)
+            
+            # Apply manual energy calibration if enabled (External I0 Only)
+            if path_pack.get('i0_calib_enabled') and "Internal" not in i0_source and "mcc" not in i0_source.lower():
+                shift = path_pack.get('i0_energy_shift', 0.0)
+                if shift != 0:
+                    i0_source += f" (Energy Shifted by {shift:+.2f} eV)"
+                    print(f"    -> Applied manual energy shift: {shift:+.2f} eV")
+            
+            i0_ds = measurement.create_dataset('i0', data=i0_values.astype(np.float32))
 
             # Store ROI and I0 metadata
             measurement.attrs['channel_roi'] = channel_roi

@@ -120,6 +120,17 @@ def save_pymca_4d_stack_h5(path_pack, output_path=None, normalize=True):
         
         # Avoid division by zero
         i0_values = np.where(i0_values == 0, 1.0, i0_values)
+        
+        # Apply manual energy calibration if enabled (External I0 Only)
+        if path_pack.get('i0_calib_enabled') and "Internal" not in i0_source and "mcc" not in i0_source.lower():
+            shift = path_pack.get('i0_energy_shift', 0.0)
+            if shift != 0:
+                # We apply the shift to the 'all_energies' used for interpolation and for the axis
+                # Since the stack was already interpolated, we just need to ensure the energy AXIS matches
+                # But wait, in 4D stack, the interpolation happens during loading.
+                # Actually, the simplest way is to shift the energy axis saved in HDF5.
+                i0_source += f" (Energy Shifted by {shift:+.2f} eV)"
+            
         print(f"Normalizing by {i0_source}...")
 
     # --- Process and Save to HDF5 ---
@@ -136,7 +147,12 @@ def save_pymca_4d_stack_h5(path_pack, output_path=None, normalize=True):
             x_axis = np.linspace(min_x, max_x, nx).astype(np.float32)
             y_axis = np.linspace(max_y, min_y, ny).astype(np.float32)
             chan_axis = np.arange(n_channels).astype(np.float32)
-            en_axis = all_energies.astype(np.float32)
+            # Final Energy Axis
+            final_energies = all_energies.astype(np.float32)
+            if path_pack.get('i0_calib_enabled') and "Internal" not in i0_source and "mcc" not in i0_source.lower():
+                final_energies += path_pack.get('i0_energy_shift', 0.0)
+            
+            f.create_dataset('energy', data=final_energies)
 
             # --- 1. XRF 3D Measurement (Y, X, Channels) ---
             xrf_meas = entry.create_group('xrf_measurement')
