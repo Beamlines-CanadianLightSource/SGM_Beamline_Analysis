@@ -31,13 +31,33 @@ As you progress through the notebook, various file dialogs and interactive GUIs 
 
 ## Core Modules & GUI Instructions
 
-### 1. `analyze_sgm_bsky_data.py`
-**Purpose:** This is the foundation of the pipeline. It reads the raw `.h5` stack file, extracts the `hexapod_waves` coordinates, infers the exact grid size ($N_y \times N_x$), and matches each energy step to its corresponding `mcc` and `sdd` data files.
-**User Interaction:** 
-- A simple file dialog will pop up asking you to select the initial `.h5` file.
-- It returns a comprehensive `path_pack` dictionary that powers the rest of the analysis.
-
   - Changes made here are saved to the `path_pack` and applied to all downstream steps.
+
+### 2. `calibrate_sdd_xrf.py` (Energy Calibration)
+**Purpose:** Precisely maps the SDD detector "channels" (0-255) to physical "energy" (eV). This is essential for identifying elements in your XRF spectra and ensuring your XANES plots have an accurate X-axis.
+
+**When to Run:** 
+- **Stable Setup:** Energy calibration is typically very stable. You only need to run this tool once every **six months**, provided there have been no major changes to the beamline electronics or detector settings.
+- **Precision Work:** For high-precision studies, you may choose to recalibrate for every new set of spectra.
+
+**How to Launch:** 
+In a new cell in your Jupyter Notebook, run:
+```python
+from calibrate_sdd_xrf import run_calibration
+run_calibration()
+```
+
+**Using the Interactive Calibration GUI:**
+1. **Load a Standard:** Start by loading a scan of a known material (e.g., AlPO4 for Al and P, or MgO for Mg and O).
+2. **Adjust Sensitivity Sliders:**
+   - **Threshold:** This is a height filter. A value of 0.1 means the tool will only label peaks that are at least 10% as tall as the strongest peak in the spectrum. Lower this to find weak signals (like Boron or Carbon).
+   - **Distance:** This sets the minimum horizontal space (in channels) between peaks. Use this to prevent the tool from misidentifying noise or "bumps" on the side of a large peak as separate elements.
+3. **Select Number of Points:** Choose **2, 3, or 4 points** for your fit. Using more points (e.g., C, O, and Al together) creates a more robust calibration line across the entire energy range.
+4. **Assign Peaks:** 
+   - The tool labels every detected peak with an **ID** (e.g., ID:0, ID:1) on the plot.
+   - For each detector, use the dropdowns to match an **ID** to your target energy (e.g., "Assign ID:1 to Al-K").
+   - If a peak isn't detected automatically, select **"Manual"** and type the channel number directly.
+5. **Save:** Click **Calculate & Save**. The tool performs a linear regression and updates your global calibration file.
 
 ### 2.1 `stitching_utils.py` (Multi-Quadrant Maps)
 **Purpose:** Used when a sample is too large to fit in a single scan and was collected as 4 overlapping "quadrants" (SW, SE, NE, NW). This tool joins them into a single, seamless master map. 
@@ -80,15 +100,26 @@ As you progress through the notebook, various file dialogs and interactive GUIs 
    - **Full Window:** Double-click in the gray margin area to copy the entire dashboard layout (e.g., all 3 plots in a row).
    - *Result:* High-resolution images are ready to be pasted directly into PowerPoint or other documents.
 
-6. **Save XRD/XANES Spectra (Single Map Support):**
-   - The **"Save XRD Spectra"** and **"Save XANES Spectra"** buttons are now available for **all** datasets, including single-energy maps. 
-   - This allows you to quickly export the raw detector counts or integrated intensities for a selected ROI, even if you aren't performing a full energy scan.
+6. **Exporting Processed Data:**
+   - The Summary Dashboard at the bottom contains several yellow action buttons for saving your results:
+   - **Save XANES Spectra for PCA/CA:** (Formerly "Save PyMca Stack"). This exports a compact **3D HDF5 stack** (`_PCA-CA.h5`) where the spectrum is reduced to a single intensity value (from your ROI) per pixel. This is the format required for **PCA and Clustering** analysis.
+   - **Save XRF Spectra for Elemental Analysis using PyMca:** (Formerly "Save 4D PyMca Stack"). This exports a massive **4D HDF5 hypercube** (`_Elemental_PyMca.h5`) containing the full raw spectrum for every pixel. Use this for **elemental peak fitting** in PyMca.
+   - **Save XRD/XANES Spectra:** Exports your currently extracted 1D spectra (Intensity vs Energy) to a CSV file.
+   - **Save XRD Spectra:** Exports the 1D fluorescence spectrum (Intensity vs Channels) for the selected spatial area to a CSV file.
 
 7. **Sync Map ROI:**
    - The light green **"Sync Map ROI"** button is located directly above the energy maps on each individual detector's dashboard row. If you draw an ROI on one map and the summary spectrum doesn't automatically update, or if the visual regions get out of sync, click this button on the active map to force all other maps to align perfectly with your drawn ROI.
 
+8. **Enable SDD Energy Calib:**
+   - Located in the dashboard settings area, checking the **"Enable SDD Energy Calib"** box applies your saved calibration parameters (`gain` and `offset`) to the data.
+   - **ROI Syncing:** When enabled, ROI selection is performed in **Energy (eV)** instead of raw channels. This ensures that a selection of the "Aluminum Peak" perfectly synchronizes across all detectors, even if they have slightly different hardware shifts.
+   - **X-Axis:** The spectra plots will switch their X-axis from "Channels" to "Energy (eV)".
+
 **I0 Normalization and Smoothing:**
-- At the beginning of plotting, you will be prompted to select whether to use the **Internal I0 (`mcc1`)** or load an **External I0 CSV** for normalization.
+- At the beginning of plotting, you will be prompted to select the normalization source:
+  - **Internal I0 (`mcc1`):** Uses the current from the **Au mesh** collected during your scan.
+  - **External I0 CSV:** Uses a previously collected standard. 
+    - *Example:* For Carbon (**C K-edge**) analysis, it is standard practice to use a spectrum from **BN** (Boron Nitride) as your external I0.
 - Regardless of your choice, an **I0 Preview Dialog** will open. For external files, you will first use dropdowns to select the Energy (X) and Intensity (Y) columns.
 - **Smoothing:** You can enable Savitzky-Golay smoothing to remove noise from your chosen I0 standard (internal or external) before applying it to your data. Adjust the "Window Size" and see the preview update live compared to the raw I0 spectrum.
 
@@ -179,11 +210,18 @@ Once you have the HTML file, open it in any modern web browser (Edge, Chrome, Fi
 
 *Note: Exporting to HTML first and then printing to PDF is highly recommended over direct PDF export, as it prevents wide code blocks and interactive plots from being awkwardly cut off across printed pages.*
 
-### PyMca ROI Imaging
-When you open the generated `_PyMca_4D.h5` file in PyMca:
-1. Right-click the `sdd_xrf_stack_3d` dataset and select **"Load as 1D Stack"** (or use the ROI Imaging tool).
-2. Because of the Nexus metadata, PyMca should automatically configure the dimensions correctly (Dim 0 = Y, Dim 1 = X, Dim 2 = Channels).
-3. You can click anywhere on the generated spatial map to instantly view the corresponding 256-channel XRF spectrum.
+### PyMca Analysis (XANES vs XRF)
+When you export data from the dashboard for use in PyMca, pay attention to the file suffix:
+
+1. **_PCA-CA.h5 (XANES Stack):**
+   - **Format:** 3D (Energy, Y, X).
+   - **Use case:** Speciation, PCA, and Clustering.
+   - **PyMca Step:** Right-click the dataset and select **"Load as 1D Stack"**. Go to **Plugins > Multivariate Analysis > PCA**.
+
+2. **_Elemental_PyMca.h5 (XRF Hypercube):**
+   - **Format:** 4D (Energy, Y, X, Channels).
+   - **Use case:** Elemental peak fitting and quantification.
+   - **PyMca Step:** Open the file in PyMca and navigate to the `full_4d_measurement` or `xrf_measurement`. This preserves all 256 channels so you can fit overlapping elements.
 
 ### Exporting to PowerPoint/Excel
 The application supports direct clipboard exports for all interactive dashboards and clustering results. 

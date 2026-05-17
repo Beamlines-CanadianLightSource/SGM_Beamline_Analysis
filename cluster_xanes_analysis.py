@@ -120,6 +120,9 @@ def save_csv_with_header(csv_path, df, scan_info, full_meta=None):
         f"# Strip: {scan_info.get('strip', 'N/A')}",
         f"# Polarization: {scan_info.get('polarization', 'N/A')}",
         f"# Exit Slit Gap: {scan_info.get('exit_slit_gap', 'N/A')}",
+        f"# XPS Z: {scan_info.get('xps_z', 'N/A')}",
+        f"# Time Per Map: {scan_info.get('time_per_map', 'N/A')}",
+        f"# Number of Points: {scan_info.get('number_of_points', 'N/A')}",
         "#"
     ]
 
@@ -209,18 +212,34 @@ def cluster_xanes_analysis(h5_path, dataset_name='average', n_clusters=4, show_p
             cluster_map = cluster_map_flat.reshape(ny, nx)
 
             # 3. Extract Averaged and Summed XANES
+            meas = f['entry/measurement']
+            ipfy_mode = bool(meas.attrs.get('ipfy_mode', False))
+            if ipfy_mode:
+                print("    [IPFY] IPFY Mode detected in HDF5 metadata. Saving both Original and PFY (inverted) spectra.")
+            else:
+                print("    [IPFY] Standard PFY Mode (no inversion).")
+
             stack_flat = stack.reshape(-1, stack.shape[-1])
-            cluster_spectra = []
+            cluster_spectra_orig = []
+            cluster_spectra_pfy = []
             cluster_sums = []
             for i in range(n_clusters):
                 cluster_pixels = stack_flat[cluster_map_flat == i]
                 if len(cluster_pixels) > 0:
-                    cluster_spectra.append(np.mean(cluster_pixels, axis=0))
+                    mean_orig = np.mean(cluster_pixels, axis=0)
+                    cluster_spectra_orig.append(mean_orig)
+                    pfy_spec = -mean_orig if ipfy_mode else mean_orig
+                    if ipfy_mode:
+                        pfy_spec = pfy_spec + (np.abs(np.min(pfy_spec)) + 500)
+                    cluster_spectra_pfy.append(pfy_spec)
                     cluster_sums.append(np.sum(cluster_pixels, axis=0))
                 else:
-                    cluster_spectra.append(np.zeros(stack.shape[-1], dtype=np.float32))
+                    cluster_spectra_orig.append(np.zeros(stack.shape[-1], dtype=np.float32))
+                    cluster_spectra_pfy.append(np.zeros(stack.shape[-1], dtype=np.float32))
                     cluster_sums.append(np.zeros(stack.shape[-1], dtype=np.float32))
-            cluster_spectra = np.array(cluster_spectra)
+            # Prepare for saving
+            cluster_spectra_orig = np.array(cluster_spectra_orig)
+            cluster_spectra_pfy = np.array(cluster_spectra_pfy)
             cluster_sums = np.array(cluster_sums)
 
             # 4. Save CSV
@@ -230,7 +249,11 @@ def cluster_xanes_analysis(h5_path, dataset_name='average', n_clusters=4, show_p
             
             cols = {'Energy_eV': energy}
             for i in range(n_clusters):
-                cols[f'Cluster_{i+1}_Mean'] = cluster_spectra[i, :]
+                if ipfy_mode:
+                    cols[f'Cluster_{i+1}_Mean_Original'] = cluster_spectra_orig[i]
+                    cols[f'Cluster_{i+1}_Mean_PFY'] = cluster_spectra_pfy[i]
+                else:
+                    cols[f'Cluster_{i+1}_Mean'] = cluster_spectra_orig[i, :]
                 cols[f'Cluster_{i+1}_Sum'] = cluster_sums[i, :]
 
             df = pd.DataFrame(cols)
@@ -244,18 +267,21 @@ def cluster_xanes_analysis(h5_path, dataset_name='average', n_clusters=4, show_p
             cluster_group = f.create_group(cluster_group_path)
             cluster_group.attrs['n_clusters'] = n_clusters
             cluster_group.create_dataset('cluster_map', data=cluster_map, compression="gzip")
-            cluster_group.create_dataset('cluster_spectra', data=cluster_spectra)
+            cluster_group.create_dataset('cluster_spectra', data=cluster_spectra_orig)
+            if ipfy_mode:
+                cluster_group.create_dataset('cluster_spectra_pfy', data=cluster_spectra_pfy)
             cluster_group.create_dataset('cluster_sums', data=cluster_sums)
             
             print(f"    -> {dataset_name} cluster results saved.")
 
         if show_plot:
-            plot_results(x_axis, y_axis, energy, cluster_map, cluster_spectra, dataset_name, output_dir, scan_name)
+            # For plotting and interactive use, we use the PFY (peaks up) version
+            plot_results(x_axis, y_axis, energy, cluster_map, cluster_spectra_pfy, dataset_name, output_dir, scan_name)
         
         results = {
             'dataset': dataset_name,
             'cluster_map': cluster_map,
-            'cluster_spectra': cluster_spectra,
+            'cluster_spectra': cluster_spectra_pfy,
             'cluster_sums': cluster_sums,
             'energy': energy,
             'x': x_axis,

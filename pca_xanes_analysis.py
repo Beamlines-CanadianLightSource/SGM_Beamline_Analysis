@@ -40,6 +40,16 @@ def pca_xanes_analysis(h5_path, dataset_name='average', n_components=5, show_plo
             ny, nx, n_energies = stack.shape
             print(f"    -> {dataset_name} stack shape: {stack.shape}")
             
+            ipfy_mode = bool(meas.attrs.get('ipfy_mode', False))
+            if ipfy_mode:
+                print("    [IPFY] IPFY Mode detected in HDF5 metadata. Inverting and shifting signal for PCA calculation.")
+                stack = -stack
+                # Apply pixel-wise shift to make positive with 500 unit baseline
+                pixel_mins = np.min(stack, axis=2, keepdims=True)
+                stack = stack + (np.abs(pixel_mins) + 500)
+            else:
+                print("    [IPFY] Standard PFY Mode (no inversion).")
+            
             # 1. Prepare data for PCA
             data_flat = stack.reshape(-1, n_energies)
             
@@ -60,6 +70,13 @@ def pca_xanes_analysis(h5_path, dataset_name='average', n_components=5, show_plo
             pca = PCA(n_components=n_components)
             pca_scores = pca.fit_transform(data_scaled) 
             pca_loadings = pca.components_ 
+            
+            # No longer enforcing positive peaks for components as requested
+            # for i in range(n_components):
+            #     max_abs_idx = np.argmax(np.abs(pca_loadings[i]))
+            #     if pca_loadings[i][max_abs_idx] < 0:
+            #         pca_loadings[i] = -pca_loadings[i]
+            #         pca_scores[:, i] = -pca_scores[:, i]
             
             explained_var = pca.explained_variance_ratio_
 
@@ -89,6 +106,7 @@ def pca_xanes_analysis(h5_path, dataset_name='average', n_components=5, show_plo
             pca_group = f.create_group(pca_group_path)
             pca_group.attrs['n_components'] = n_components
             pca_group.attrs['dataset_source'] = dataset_name
+            pca_group.attrs['ipfy_mode'] = ipfy_mode
             pca_group.create_dataset('eigenimages', data=eigenimages, compression="gzip")
             pca_group.create_dataset('eigenvectors', data=pca_loadings)
             pca_group.create_dataset('explained_variance', data=explained_var)

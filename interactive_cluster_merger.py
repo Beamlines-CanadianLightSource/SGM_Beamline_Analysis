@@ -58,19 +58,24 @@ def interactive_cluster_merger(h5_path, dataset_name='average'):
                 state['energy'] = f["entry/measurement/energy"][()]
                 state['x_axis'] = f["entry/measurement/x"][()]
                 state['y_axis'] = f["entry/measurement/y"][()]
+                state['ipfy_mode'] = f["entry/measurement"].attrs.get('ipfy_mode', False)
+                if state['ipfy_mode']:
+                    with output: print("    [IPFY] IPFY Mode detected. Viewing inverted (PFY) spectrum.")
                 
                 ny, nx, n_en = state['stack'].shape
                 state['stack_flat'] = state['stack'].reshape(ny * nx, -1)
                 
                 # Metadata
                 state['meta_header'] = [f"# Facility: CLS", f"# Beamline: SGM"]
-                meta_map = {'beamline': 'Beamline', 'date': 'Date', 'project': 'Project', 'exit_slit_gap': 'Exit Slit Gap'}
-                for source in [f['entry'], f['entry/measurement']]:
-                    for k, label in meta_map.items():
-                        if k in source.attrs:
-                            val = source.attrs[k]
-                            if isinstance(val, (bytes, np.bytes_)): val = val.decode('utf-8')
-                            state['meta_header'].append(f"# {label}: {val}")
+                meta_map = {'beamline': 'Beamline', 'date': 'Date', 'project': 'Project', 'exit_slit_gap': 'Exit Slit Gap', 'xps_z': 'XPS Z', 'time_per_map': 'Time Per Map'}
+                for source in [f.get('entry'), f.get('entry/measurement'), f.get('stack_metadata'), f.get('scan_metadata'), f.get('initial_motor_positions/all_beamline_motors_snapshot')]:
+                    if source is not None:
+                        for k, label in meta_map.items():
+                            if k in source.attrs:
+                                val = source.attrs[k]
+                                if isinstance(val, (bytes, np.bytes_)): val = val.decode('utf-8')
+                                if not any(h.startswith(f"# {label}:") for h in state['meta_header']):
+                                    state['meta_header'].append(f"# {label}: {val}")
                 return True
         except Exception as e:
             with output:
@@ -95,6 +100,12 @@ def interactive_cluster_merger(h5_path, dataset_name='average'):
             mask_flat = np.isin(state['cluster_map'].flatten(), selected_c)
             selected_pixels = state['stack_flat'][mask_flat]
             merged_spec = np.mean(selected_pixels, axis=0) if len(selected_pixels) > 0 else np.zeros_like(state['energy'])
+            
+            # If IPFY mode is on, invert and shift for display
+            if state.get('ipfy_mode', False):
+                merged_spec = -merged_spec
+                offset = np.abs(np.min(merged_spec)) + 500
+                merged_spec += offset
         else:
             merged_spec = np.zeros_like(state['energy'])
             
@@ -157,7 +168,20 @@ def interactive_cluster_merger(h5_path, dataset_name='average'):
             return
 
         mask_flat = np.isin(state['cluster_map'].flatten(), selected_c)
-        merged_spec = np.mean(state['stack_flat'][mask_flat], axis=0)
+        merged_spec_orig = np.mean(state['stack_flat'][mask_flat], axis=0)
+        
+        # Determine saving columns based on IPFY mode
+        ipfy = state.get('ipfy_mode', False)
+        data_to_save = {'Energy_eV': state['energy']}
+        
+        if ipfy:
+            data_to_save[f'Merged_Clusters_{cluster_str}_Original'] = merged_spec_orig
+            # Apply inversion and shift for PFY
+            pfy_spec = -merged_spec_orig
+            offset = np.abs(np.min(pfy_spec)) + 500
+            data_to_save[f'Merged_Clusters_{cluster_str}_PFY'] = pfy_spec + offset
+        else:
+            data_to_save[f'Merged_Clusters_{cluster_str}'] = merged_spec_orig
         
         root = tk.Tk(); root.withdraw(); root.attributes('-topmost', True)
         scan_name = os.path.splitext(os.path.basename(h5_path))[0]
@@ -168,7 +192,7 @@ def interactive_cluster_merger(h5_path, dataset_name='average'):
         
         if save_path:
             try:
-                df = pd.DataFrame({'Energy_eV': state['energy'], f'Merged_Clusters_{cluster_str}': merged_spec})
+                df = pd.DataFrame(data_to_save)
                 header = list(state['meta_header'])
                 header.insert(0, f"# Scan Name: {scan_name}")
                 header.insert(1, f"# Dataset Source: {state['current_dataset']}")

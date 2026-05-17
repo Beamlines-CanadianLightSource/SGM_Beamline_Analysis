@@ -139,6 +139,8 @@ def analyze_sgm_bsky_data(file_path=None, verbose=True):
         "beamline": "N/A",
         "polarization": "N/A",
         "exit_slit_gap": "N/A",
+        "xps_z": "N/A",
+        "time_per_map": "N/A",
         "mcc_files": {},
         "mcc_data": {},
         "mcc_channel_names": [],
@@ -196,14 +198,17 @@ def analyze_sgm_bsky_data(file_path=None, verbose=True):
         if metadata_group is not None:
             metadata_attrs = metadata_group.attrs
             data_pack['project'] = metadata_attrs.get('project', 'N/A')
-            data_pack['grating'] = metadata_attrs.get('grating', 'N/A')
+            data_pack['grating'] = metadata_attrs.get('grating', metadata_attrs.get('grating_selection', 'N/A'))
             data_pack['harmonic'] = metadata_attrs.get('harmonic', 'N/A')
-            data_pack['strip'] = metadata_attrs.get('strip', 'N/A')
+            data_pack['strip'] = metadata_attrs.get('strip', metadata_attrs.get('mirror_stripe', metadata_attrs.get('mirror_strip', 'N/A')))
             data_pack['command'] = metadata_attrs.get('command', 'N/A')
             data_pack['coordinates'] = metadata_attrs.get('coordinates', 'N/A')
             data_pack['beamline'] = metadata_attrs.get('beamline', 'N/A')
             data_pack['polarization'] = metadata_attrs.get('polarization', 'N/A')
             data_pack['exit_slit_gap'] = metadata_attrs.get('exit_slit_gap', 'N/A')
+            data_pack['xps_z'] = metadata_attrs.get('vaz', metadata_attrs.get('xps_z', 'N/A'))
+            data_pack['time_per_map'] = metadata_attrs.get('time_per_map', 'N/A')
+            data_pack['number_of_points'] = metadata_attrs.get('number_of_points', metadata_attrs.get('num_points', 'N/A'))
             
             # Robust scan_name extraction (common in map metadata)
             if 'scan_name' in metadata_attrs:
@@ -225,6 +230,23 @@ def analyze_sgm_bsky_data(file_path=None, verbose=True):
             motors_snapshot_attrs = f['initial_motor_positions/all_beamline_motors_snapshot'].attrs
             energy = motors_snapshot_attrs.get('energy', -1.0)
             data_pack['energies'] = np.array([np.round(float(energy), 2)])
+            
+        if 'initial_motor_positions/all_beamline_motors_snapshot' in f:
+            motors_snapshot_attrs = f['initial_motor_positions/all_beamline_motors_snapshot'].attrs
+            if data_pack.get('xps_z', 'N/A') == 'N/A':
+                data_pack['xps_z'] = motors_snapshot_attrs.get('vaz', motors_snapshot_attrs.get('xps_z', 'N/A'))
+            if data_pack.get('exit_slit_gap', 'N/A') == 'N/A':
+                data_pack['exit_slit_gap'] = motors_snapshot_attrs.get('exit_slit_gap', 'N/A')
+            if data_pack.get('strip', 'N/A') == 'N/A':
+                data_pack['strip'] = motors_snapshot_attrs.get('mirror_stripe', motors_snapshot_attrs.get('mirror_strip', 'N/A'))
+                
+        if 'map_data' in f:
+            map_data_attrs = f['map_data'].attrs
+            if data_pack.get('strip', 'N/A') == 'N/A':
+                data_pack['strip'] = map_data_attrs.get('mirror_stripe', map_data_attrs.get('mirror_strip', 'N/A'))
+            if data_pack.get('exit_slit_gap', 'N/A') == 'N/A':
+                data_pack['exit_slit_gap'] = map_data_attrs.get('exit_slit_gap', 'N/A')
+                
         elif metadata_group is not None and 'energy' in metadata_group.attrs:
             # Another fallback for energy in metadata attributes
             data_pack['energies'] = np.array([np.round(float(metadata_group.attrs['energy']), 2)])
@@ -372,6 +394,9 @@ def analyze_sgm_bsky_data(file_path=None, verbose=True):
         print(f"Command:               {data_pack['command']}")
         print(f"Coordinates:           {data_pack['coordinates']}")
         print(f"Exit Slit Gap:         {data_pack['exit_slit_gap']}")
+        print(f"XPS Z:                 {data_pack['xps_z']}")
+        print(f"Time Per Map:          {data_pack['time_per_map']}")
+        print(f"Number of Points:      {data_pack.get('number_of_points', 'N/A')}")
         print(f"\nMCC Files Found:       {len(data_pack['mcc_files'])}")
         print("\nSDD Files Found:")
         for detector, sdd_dict in data_pack['sdd_files'].items():

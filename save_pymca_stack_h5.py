@@ -58,7 +58,7 @@ def load_external_i0(i0_path, target_energies):
         print(f"Error loading external I0 from {i0_path}: {e}", file=sys.stderr)
         return None
 
-def save_pymca_stack_h5(path_pack, channel_roi, output_path=None, map_roi=None, external_i0_path=None):
+def save_pymca_stack_h5(path_pack, output_path=None, channel_roi=None, map_roi=None, external_i0_path=None):
     """
     Converts the analyzed stack data into a PyMca-compatible HDF5 file.
     
@@ -81,7 +81,7 @@ def save_pymca_stack_h5(path_pack, channel_roi, output_path=None, map_roi=None, 
         # Get source folder from path_pack (h5_file_path is stored there in analyze_sgm_bsky_data)
         h5_src = path_pack.get('h5_file_path', '')
         initial_dir = os.path.dirname(h5_src) if h5_src else os.getcwd()
-        initial_name = os.path.splitext(os.path.basename(h5_src))[0] + "_PyMca.h5" if h5_src else "pymca_stack.h5"
+        initial_name = os.path.splitext(os.path.basename(h5_src))[0] + "_PCA-CA.h5" if h5_src else "pca_ca_stack.h5"
         
         final_save_path = filedialog.asksaveasfilename(
             title="Save PyMca-compatible HDF5 Stack",
@@ -145,6 +145,12 @@ def save_pymca_stack_h5(path_pack, channel_roi, output_path=None, map_roi=None, 
         x1_req, x2_req = x_min_full, x_max_full
         y1_req, y2_req = y_min_full, y_max_full
         print(f"    -> No map_roi provided; using full scan range.")
+
+    if channel_roi is None:
+        channel_roi = path_pack.get('channel_roi', (0, 255))
+        print(f"    -> Inherited channel_roi from context: {channel_roi}")
+    else:
+        print(f"    -> Using provided channel_roi: {channel_roi}")
 
     # Trim the effective area based on x_trim/y_trim from alignment
     eb_x1, eb_x2 = x_min_full + x_trim, x_max_full - x_trim
@@ -316,6 +322,10 @@ def save_pymca_stack_h5(path_pack, channel_roi, output_path=None, map_roi=None, 
 
             # Store ROI and I0 metadata
             measurement.attrs['channel_roi'] = channel_roi
+            ipfy_val = path_pack.get('ipfy_mode', False)
+            measurement.attrs['ipfy_mode'] = ipfy_val
+            if ipfy_val:
+                print(f"    -> [IPFY] IPFY Mode FLAG saved to HDF5 metadata: True")
             measurement.attrs['i0_source'] = i0_source
 
             # --- Metadata Group ---
@@ -330,7 +340,8 @@ def save_pymca_stack_h5(path_pack, channel_roi, output_path=None, map_roi=None, 
                 pass
 
             meta_keys = ['scan_name', 'project', 'date', 'grating', 'harmonic', 'strip', 
-                         'polarization', 'exit_slit_gap', 'command', 'coordinates']
+                         'polarization', 'exit_slit_gap', 'command', 'coordinates', 'xps_z', 
+                         'time_per_map', 'number_of_points']
             for key in meta_keys:
                 if key in path_pack:
                     val = path_pack[key]
@@ -468,7 +479,7 @@ if __name__ == '__main__':
             print(f"Using full scan range as map_roi: {current_map_roi}")
 
         save_pymca_stack_h5(path_pack, 
-                            args.output_h5_path, 
+                            output_path=args.output_h5_path, 
                             channel_roi=(args.channel_roi_start, args.channel_roi_end),
                             map_roi=current_map_roi) # Pass map_roi, even if not directly used for 4D cube
     else:

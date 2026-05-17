@@ -6,11 +6,14 @@ import tkinter as tk
 from tkinter import messagebox, filedialog
 from analyze_sgm_bsky_data import analyze_sgm_bsky_data
 
-def save_pymca_4d_stack_h5(path_pack, output_path=None, normalize=True):
+def save_pymca_4d_stack_h5(path_pack, output_path=None, normalize=True, channel_roi=None):
     """
     Converts an entire analyzed stack into a single 4D PyMca-compatible HDF5 file.
     
     Structure: (n_energies, ny, nx, n_channels)
+    
+    The 3D preview dataset (sdd_xanes_stack_3d) defaults to the full XRF range (0-255)
+    to allow for total intensity visualization or broad elemental analysis.
     
     Allows PyMca to:
     1. Scroll through energy points.
@@ -31,7 +34,7 @@ def save_pymca_4d_stack_h5(path_pack, output_path=None, normalize=True):
         
         h5_src = path_pack.get('h5_file_path', '')
         initial_dir = os.path.dirname(h5_src) if h5_src else os.getcwd()
-        initial_name = os.path.splitext(os.path.basename(h5_src))[0] + "_PyMca_4D.h5" if h5_src else "stack_4d_pymca.h5"
+        initial_name = os.path.splitext(os.path.basename(h5_src))[0] + "_Elemental_PyMca.h5" if h5_src else "elemental_pymca.h5"
         
         final_save_path = filedialog.asksaveasfilename(
             title="Save 4D PyMca HDF5 Stack",
@@ -57,7 +60,13 @@ def save_pymca_4d_stack_h5(path_pack, output_path=None, normalize=True):
     num_energies = len(all_energies)
     n_channels = 256
     
-    # Alignment and Trim
+    # ROI and Alignment
+    if channel_roi is None:
+        channel_roi = path_pack.get('channel_roi', (0, 255))
+        print(f"    -> Inherited channel_roi from context: {channel_roi}")
+    else:
+        print(f"    -> Using provided channel_roi: {channel_roi}")
+    
     roll_shift = path_pack.get('roll_shift', 0)
     x_trim = path_pack.get('x_trim', 0.0)
     y_trim = path_pack.get('y_trim', 0.0)
@@ -170,6 +179,7 @@ def save_pymca_4d_stack_h5(path_pack, output_path=None, normalize=True):
             # --- 2. XANES 3D Measurement (Y, X, Energy) ---
             xanes_meas = entry.create_group('xanes_measurement')
             xanes_meas.attrs['NX_class'] = 'NXdata'
+            xanes_meas.attrs['ipfy_mode'] = path_pack.get('ipfy_mode', False)
             xanes_meas.attrs['axes'] = ['y', 'x', 'energy']
             xanes_meas.attrs['signal'] = 'sdd_xanes_stack_3d'
             xanes_meas.attrs['y_indices'] = np.array([0], dtype=np.int32)
@@ -192,7 +202,8 @@ def save_pymca_4d_stack_h5(path_pack, output_path=None, normalize=True):
                 pass
 
             meta_keys = ['scan_name', 'project', 'date', 'grating', 'harmonic', 'strip', 
-                         'polarization', 'exit_slit_gap', 'command', 'coordinates']
+                         'polarization', 'exit_slit_gap', 'command', 'coordinates', 'xps_z', 
+                         'time_per_map', 'number_of_points']
             for key in meta_keys:
                 if key in path_pack:
                     val = path_pack[key]
@@ -300,14 +311,19 @@ def save_pymca_4d_stack_h5(path_pack, output_path=None, normalize=True):
                 if has_multiple:
                     sum_dataset_4d[:, :, en_idx, :] = energy_sum_4d
                     xrf_sum_accum += energy_sum_4d
-                    # Calculate ROI sum for 3D stack
-                    sum_dataset_3d[:, :, en_idx] = np.sum(energy_sum_4d[:, :, roi_ch[0]:roi_ch[1]], axis=2)
+                    # Use full range (0-255) for the 3D preview in 4D files by default
+                    # Use provided channel_roi for the 3D preview dataset
+                    ch_start, ch_end = channel_roi
+                    sum_dataset_3d[:, :, en_idx] = np.sum(energy_sum_4d[:, :, ch_start:ch_end+1], axis=2)
                 else:
                     # Single detector fallback
                     det0 = detector_names[0]
                     single_4d = det_datasets_4d[det0][:, :, en_idx, :]
                     xrf_sum_accum += single_4d
-                    sum_dataset_3d[:, :, en_idx] = np.sum(single_4d[:, :, roi_ch[0]:roi_ch[1]], axis=2)
+                    # Use full range (0-255) for the 3D preview in 4D files by default
+                    # Use provided channel_roi for the 3D preview dataset
+                    ch_start, ch_end = channel_roi
+                    sum_dataset_3d[:, :, en_idx] = np.sum(single_4d[:, :, ch_start:ch_end+1], axis=2)
 
                 if (en_idx + 1) % 20 == 0 or en_idx == num_energies - 1:
                     print(f"    -> Progress: {en_idx + 1}/{num_energies} energies.")

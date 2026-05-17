@@ -16,6 +16,7 @@ import tkinter as tk
 from tkinter import messagebox, simpledialog, filedialog
 from analyze_sgm_bsky_data import analyze_sgm_bsky_data
 from alignment_utils import grid_interpolate_map, get_safe_save_path, get_tk_root, get_masked_triangulation
+import sdd_calibration_utils as sdd_calib
 import mplcursors
 from matplotlib.widgets import RectangleSelector, Button, PolygonSelector, Slider, SpanSelector, CheckButtons
 from matplotlib.path import Path
@@ -352,9 +353,13 @@ class Synchronizer:
         self.full_metadata = use_full_metadata
         self.status_widget = None
         self.user_metadata = None
-        # I0 Energy Calibration (External Only)
         self.i0_calib_enabled = False
         self.i0_energy_shift = 0.0
+        self.ipfy_mode = False
+        # SDD Energy Calibration
+        self.sdd_calib_data = sdd_calib.load_calibration()
+        self.use_sdd_calib = False
+        self.energy_roi = (1470.0, 1500.0) # Default Energy ROI (Al region)
 
     def _find_nearest_idx(self, value):
         if value is None or len(self.all_energies) == 0: return 0
@@ -469,23 +474,27 @@ class Synchronizer:
             if self.status_widget:
                 self.status_widget.value = f"Spectral ROI: Ch{x1}-{x2}. (Energy Map updated. Click REFRESH for Average Map & Summary)"
             
+            print(f"[DASHBOARD] Broadcasting new ROI: {new_roi}")
+            
             # 2. Update the master context
             sd = self.summary_dash or _GLOBAL_SUMMARY_DASH
             if sd: sd.ctx['channel_roi'] = new_roi
             for d in self.dashboards: d.ctx['channel_roi'] = new_roi
+            # Sync back to path_pack so exports see the updated ROI
+            for d in self.dashboards:
+                if 'path_pack' in d.ctx:
+                    d.ctx['path_pack']['channel_roi'] = new_roi
 
             # 3. Synchronize ALL selectors and update map images for the current energy
             for d in self.dashboards:
-                # Update the SpanSelector extents (this handles the visual red box)
+                # Update the SpanSelector extents
                 if d != source and hasattr(d, 'selector_span') and d.selector_span:
-                    # Avoid recursive calls by checking if extents actually changed
                     curr_ext = d.selector_span.extents
                     if abs(curr_ext[0] - x1) > 0.1 or abs(curr_ext[1] - x2) > 0.1:
                         try: d.selector_span.extents = (x1, x2)
                         except: pass
                 
-                # Re-draw the maps using the new integrated intensities for the CURRENT energy
-                # This is fast because it only reads 1 file per detector
+                # Re-draw the maps using the new integrated intensities
                 try:
                     d.update_energy(self.energy_idx)
                 except Exception as e:
@@ -495,6 +504,39 @@ class Synchronizer:
         except Exception as e:
             print(f"  [Channel Sync Error] {e}")
             import traceback; traceback.print_exc()
+        finally:
+            for d in self.dashboards: d.fig.canvas.draw_idle()
+            self.is_syncing = False
+
+    def broadcast_energy_roi(self, source, new_roi):
+        """Synchronizes ROIs based on physical Energy (eV)."""
+        if self.is_syncing: return
+        self.is_syncing = True
+        try:
+            e1, e2 = new_roi
+            self.energy_roi = new_roi
+            
+            if self.status_widget:
+                self.status_widget.value = f"Energy ROI: {e1:.1f}-{e2:.1f} eV. (Maps updated. Click REFRESH for Summary)"
+            
+            print(f"[DASHBOARD] Broadcasting Energy ROI: {new_roi}")
+            
+            sd = self.summary_dash or _GLOBAL_SUMMARY_DASH
+            if sd: sd.ctx['energy_roi'] = new_roi
+
+            for d in self.dashboards:
+                if d != source and hasattr(d, 'selector_span') and d.selector_span:
+                    try: d.selector_span.extents = (e1, e2)
+                    except: pass
+                
+                # Update map images (each detector will calculate its own channel bounds)
+                try:
+                    d.update_energy(self.energy_idx)
+                except Exception as e:
+                    print(f"    ! Error refreshing map for {d.name}: {e}")
+
+        except Exception as e:
+            print(f"  [Energy ROI Sync Error] {e}")
         finally:
             for d in self.dashboards: d.fig.canvas.draw_idle()
             self.is_syncing = False
@@ -560,6 +602,14 @@ class Synchronizer:
             
             for det in det_names:
                 master_ctx['avg_maps'][det] = None
+                
+                # Determine channel bounds for this detector
+                if self.use_sdd_calib:
+                    e_min, e_max = self.energy_roi
+                    ch1, ch2 = sdd_calib.get_calibrated_bounds(e_min, e_max, det, self.sdd_calib_data)
+                else:
+                    ch1, ch2 = self.channel_roi
+                
                 for e_idx, energy in enumerate(all_energies):
                     p = path_pack['sdd_files'][det].get(energy)
                     if p and os.path.exists(p):
@@ -569,7 +619,7 @@ class Synchronizer:
                             num_s = min(len(d1d) // 256, num_pixels)
                             s2d = d1d[:num_s * 256].reshape((num_s, 256))
                             if roll_shift != 0: s2d = np.roll(s2d, shift=roll_shift, axis=0)
-                            inten = np.sum(s2d[:, x1:x2], axis=1)
+                            inten = np.sum(s2d[:, ch1:ch2], axis=1)
                             master_ctx['stack_maps'][det][e_idx, :num_s] = inten
                             if master_ctx['avg_maps'][det] is None: master_ctx['avg_maps'][det] = inten.copy()
                             else: master_ctx['avg_maps'][det] += inten
@@ -680,7 +730,12 @@ class DashboardRow:
         if self.is_mcc:
             m_rep = self.s2d_rep # In MCC mode, s2d_rep is already the map for this energy
         else:
-            m_rep = np.sum(self.s2d_rep[:, self.ctx['channel_roi'][0]:self.ctx['channel_roi'][1]], axis=1)
+            if self.sync.use_sdd_calib:
+                e1, e2 = self.sync.energy_roi
+                ch1, ch2 = sdd_calib.get_calibrated_bounds(e1, e2, self.name, self.sync.sdd_calib_data)
+            else:
+                ch1, ch2 = self.ctx['channel_roi']
+            m_rep = np.sum(self.s2d_rep[:, ch1:ch2+1], axis=1)
         tm = get_dynamic_mask(self.ctx['x_coords'][:len(m_rep)], self.ctx['y_coords'][:len(m_rep)], self.ctx['x_trim'], self.ctx['y_trim'])
         if self.sc_en:
             try:
@@ -759,18 +814,22 @@ class DashboardRow:
 
     def on_span_select(self, xmin, xmax):
         if xmin is None or xmax is None: return
-        print(f"  [DEBUG] on_span_select triggered on {self.name}! Range: {xmin:.1f}-{xmax:.1f}", flush=True)
         if xmin > xmax: xmin, xmax = xmax, xmin
         
-        x1 = int(np.clip(np.floor(xmin), 0, 255))
-        x2 = int(np.clip(np.ceil(xmax), 0, 256))
-        if x1 == x2:
-            if x1 < 256: x2 = x1 + 1
-            else: x1 = x1 - 1
-            
-        x1, x2 = sorted([x1, x2])
-        new_roi = (x1, x2)
-        self.sync.broadcast_channel_roi(self, new_roi)
+        if self.sync.use_sdd_calib:
+            # ROI is in Energy (eV)
+            new_roi = (xmin, xmax)
+            self.sync.broadcast_energy_roi(self, new_roi)
+        else:
+            # ROI is in Channels
+            x1 = int(np.clip(np.floor(xmin), 0, 255))
+            x2 = int(np.clip(np.ceil(xmax), 0, 256))
+            if x1 == x2:
+                if x1 < 256: x2 = x1 + 1
+                else: x1 = x1 - 1
+            x1, x2 = sorted([x1, x2])
+            new_roi = (x1, x2)
+            self.sync.broadcast_channel_roi(self, new_roi)
 
     def sync_to_mode(self):
         if self.sync.mode == 'rect':
@@ -797,12 +856,23 @@ class DashboardRow:
             if self.line_spec: self.line_spec.set_ydata(np.zeros(256))
             return
 
+        if self.sync.use_sdd_calib and self.name in self.sync.sdd_calib_data:
+            gain = self.sync.sdd_calib_data[self.name].get('gain', 1.0)
+            offset = self.sync.sdd_calib_data[self.name].get('offset', 0.0)
+            x_axis = sdd_calib.channel_to_energy(np.arange(256), gain, offset)
+            self.ax[2].set_xlabel("Energy (eV)")
+        else:
+            x_axis = np.arange(256)
+            self.ax[2].set_xlabel("Channel")
+
         if np.any(m):
             data = np.sum(self.s2d_rep[m], axis=0)
             data = np.nan_to_num(data)
-            if self.line_spec: self.line_spec.set_ydata(data)
+            if self.line_spec: 
+                self.line_spec.set_data(x_axis, data)
         else:
-            if self.line_spec: self.line_spec.set_ydata(np.zeros(256))
+            if self.line_spec: 
+                self.line_spec.set_data(x_axis, np.zeros(256))
         
         # Completely manual scaling to prevent X-axis expansion
         self.ax[2].relim()
@@ -817,7 +887,11 @@ class DashboardRow:
             self.ax[2].set_yscale('linear')
             self.ax[2].set_ylim(0, ymax * 1.1 if ymax > 0 else 1.0)
             
-        self.ax[2].set_xlim(-0.5, 255.5)
+        if self.sync.use_sdd_calib and self.name in self.sync.sdd_calib_data:
+            e_min, e_max = np.min(x_axis), np.max(x_axis)
+            self.ax[2].set_xlim(e_min, e_max)
+        else:
+            self.ax[2].set_xlim(-0.5, 255.5)
         self.fig.canvas.draw_idle()
 
     def export_images(self):
@@ -965,16 +1039,35 @@ class DashboardRow:
 
         m_roi = get_dynamic_mask(self.ctx['x_coords'][:len(self.s2d_rep)], self.ctx['y_coords'][:len(self.s2d_rep)], self.ctx['x_trim'], self.ctx['y_trim'], 
                                 roi=self.current_roi, poly=self.current_poly if self.sync.mode=='poly' else None)
-        s_sum = np.sum(self.s2d_rep[m_roi], axis=0) if np.any(m_roi) else np.sum(self.s2d_rep, axis=0)
-        self.line_spec, = self.ax[2].plot(np.arange(256), s_sum, color='blue', lw=1)
+        if self.sync.use_sdd_calib and self.name in self.sync.sdd_calib_data:
+            gain = self.sync.sdd_calib_data[self.name].get('gain', 1.0)
+            offset = self.sync.sdd_calib_data[self.name].get('offset', 0.0)
+            x_axis = sdd_calib.channel_to_energy(np.arange(256), gain, offset)
+            self.ax[2].set_xlabel("Energy (eV)")
+        else:
+            x_axis = np.arange(256)
+            self.ax[2].set_xlabel("Channel")
+
+        # Calculate initial spectrum for the ROI
+        if np.any(m_roi):
+            s_sum = np.sum(self.s2d_rep[m_roi], axis=0)
+        else:
+            s_sum = np.zeros(256)
+
+        self.line_spec, = self.ax[2].plot(x_axis, s_sum, color='blue', lw=1)
         
-        self.ax[2].set_title("Spectrum (ROI Sum)\nDrag to set Channel ROI", fontsize='x-small')
+        self.ax[2].set_title("Spectrum (ROI Sum)\nDrag to set ROI", fontsize='x-small')
         
         self.selector_span = SpanSelector(self.ax[2], self.on_span_select, 'horizontal', useblit=False,
                                          props=dict(alpha=0.3, facecolor='red'), interactive=True, drag_from_anywhere=True)
-        self.selector_span.extents = (self.ctx['channel_roi'][0], self.ctx['channel_roi'][1])
-        # Add slight padding to x-axis limits so handles at 0 and 255 are easy to grab
-        self.ax[2].set_xlim(-10, 266)
+        
+        if self.sync.use_sdd_calib:
+            self.selector_span.extents = self.sync.energy_roi
+            self.ax[2].set_xlim(np.min(x_axis), np.max(x_axis))
+        else:
+            self.selector_span.extents = (self.ctx['channel_roi'][0], self.ctx['channel_roi'][1])
+            self.ax[2].set_xlim(-10, 266)
+        
         self.ax[2].set_xmargin(0)
         self.ax[2].set_autoscalex_on(False)
         self.ax[2].set_ylim(bottom=0)
@@ -1092,6 +1185,11 @@ class SummaryDashboard:
                     if line is None: continue
                     raw_data = raw_summaries.get(det, np.zeros_like(i0_safe))
                     norm_data = raw_data / i0_safe
+                    if getattr(self.sync, 'ipfy_mode', False):
+                        # Invert and shift to make positive with a 500 unit baseline
+                        norm_data = -norm_data
+                        offset = np.abs(np.min(norm_data)) + 500
+                        norm_data += offset
                     norm_data = np.nan_to_num(norm_data)
                     line.set_ydata(norm_data)
                     norm_summaries.append(norm_data)
@@ -1111,6 +1209,10 @@ class SummaryDashboard:
                 for ch, line in self.mcc_lines_norm.items():
                     if line:
                         norm_mcc = mcc_summaries_raw[ch] / i0_safe
+                        if getattr(self.sync, 'ipfy_mode', False) and ch == 4: # TEY
+                             norm_mcc = -norm_mcc
+                             offset = np.abs(np.min(norm_mcc)) + 500
+                             norm_mcc += offset
                         norm_mcc = np.nan_to_num(norm_mcc)
                         line.set_ydata(norm_mcc)
             except Exception as e:
@@ -1149,8 +1251,12 @@ class SummaryDashboard:
             if has_data:
                 pad = abs(ymax) * 0.05
                 # For Fluorescence plots, strictly prevent negative bottom scaling
+                # For Fluorescence plots, strictly prevent negative bottom scaling UNLESS in IPFY mode
                 if "Fluorescence" in (ax.get_title() or ""):
-                    ax.set_ylim(0, ymax + pad if ymax > 0 else 1.0)
+                    if getattr(self.sync, 'ipfy_mode', False):
+                         ax.set_ylim(ymin - pad if ymin < 0 else -1.0, ymax + pad if ymax > ymin else 0.0)
+                    else:
+                         ax.set_ylim(0, ymax + pad if ymax > 0 else 1.0)
                 else:
                     ax.set_ylim(ymin, ymax + pad if ymax > 0 else 1.0)
             else:
@@ -1265,9 +1371,13 @@ class SummaryDashboard:
                 f"# Strip: {self.ctx['path_pack'].get('strip', 'N/A')}",
                 f"# Polarization: {self.ctx['path_pack'].get('polarization', 'N/A')}",
                 f"# Exit Slit Gap: {self.ctx['path_pack'].get('exit_slit_gap', 'N/A')}",
+                f"# XPS Z: {self.ctx['path_pack'].get('xps_z', 'N/A')}",
+                f"# Time Per Map: {self.ctx['path_pack'].get('time_per_map', 'N/A')}",
+                f"# Number of Points: {self.ctx['path_pack'].get('number_of_points', 'N/A')}",
                 f"# ROI Selection: {mode_str}",
                 f"# Channels: {roi_ch_str}",
                 f"# Normalization: {i0_source}",
+                f"# SDD Calibration: {'ACTIVE' if self.sync.use_sdd_calib else 'DISABLED'}",
                 "#"
             ]
             
@@ -1359,7 +1469,9 @@ class SummaryDashboard:
                 f"# Grid: {self.ctx['path_pack'].get('nx', 'N/A')} x {self.ctx['path_pack'].get('ny', 'N/A')} (Total: {len(self.ctx['x_coords'])})",
                 f"# Grating: {self.ctx['path_pack'].get('grating', 'N/A')}", f"# Harmonic: {self.ctx['path_pack'].get('harmonic', 'N/A')}",
                 f"# Strip: {self.ctx['path_pack'].get('strip', 'N/A')}", f"# Polarization: {self.ctx['path_pack'].get('polarization', 'N/A')}",
-                f"# Exit Slit Gap: {self.ctx['path_pack'].get('exit_slit_gap', 'N/A')}",
+                f"# Exit Slit Gap: {self.ctx['path_pack'].get('exit_slit_gap', 'N/A')}", f"# XPS Z: {self.ctx['path_pack'].get('xps_z', 'N/A')}",
+                f"# Time Per Map: {self.ctx['path_pack'].get('time_per_map', 'N/A')}",
+                f"# Number of Points: {self.ctx['path_pack'].get('number_of_points', 'N/A')}",
                 f"# ROI Selection: {mode_str}", f"# SDD ROI Channels: {roi_ch_str}",
                 f"# Image Energy: {self.sync.all_energies[self.sync.energy_idx]:.2f} eV",
                 f"# Selection Coordinates: {roi if mode=='rect' else poly}", "#"
@@ -1432,12 +1544,24 @@ class SummaryDashboard:
         roi_ch = self.ctx.get('channel_roi', (0, 255))
         roi_map = self.sync.current_roi
         
-        print(f"  [EXPORT] Launching ROI-summed PyMca Stack Export (3D)...")
+        ipfy = getattr(self.sync, 'ipfy_mode', False)
+        print(f"  [EXPORT] Launching ROI-summed PyMca Stack Export (3D)... (IPFY Mode: {ipfy})")
         print(f"  -> Active Channel ROI: {roi_ch}")
         
         try:
             # Note: save_pymca_stack_h5 will handle the file dialog
-            save_pymca_stack_h5(self.ctx['path_pack'], channel_roi=roi_ch, map_roi=roi_map)
+            self.ctx['path_pack']['ipfy_mode'] = ipfy
+            save_path = save_pymca_stack_h5(self.ctx['path_pack'], channel_roi=roi_ch, map_roi=roi_map)
+            
+            # Automatically update the Jupyter global namespace
+            if save_path:
+                try:
+                    from IPython import get_ipython
+                    ip = get_ipython()
+                    if ip:
+                        ip.user_ns['saved_pymca_stack'] = save_path
+                        print(f"  [AUTO] Variable 'saved_pymca_stack' updated in notebook.")
+                except: pass
         except Exception as e:
             print(f"Error during 3D Stack Export: {e}")
             traceback.print_exc()
@@ -1445,12 +1569,28 @@ class SummaryDashboard:
     def save_pymca_4d_stack_call(self, event):
         """Callback for saving full 4D PyMca stack."""
         from save_pymca_4d_stack_h5 import save_pymca_4d_stack_h5
+        # Use current state
+        roi_ch = self.ctx.get('channel_roi', (0, 255))
         
-        print(f"  [EXPORT] Launching Full 4D PyMca Stack Export (4D Cube)...")
+        ipfy = getattr(self.sync, 'ipfy_mode', False)
+        print(f"  [EXPORT] Launching Full 4D PyMca Stack Export (4D Cube)... (IPFY Mode: {ipfy})")
+        print(f"  -> Active Channel ROI (for 3D preview): {roi_ch}")
         
         try:
             # Note: save_pymca_4d_stack_h5 will handle the file dialog
-            save_pymca_4d_stack_h5(self.ctx['path_pack'], normalize=True)
+            self.ctx['path_pack']['ipfy_mode'] = ipfy
+            save_path = save_pymca_4d_stack_h5(self.ctx['path_pack'], normalize=True, channel_roi=roi_ch)
+            
+            # Automatically update the Jupyter global namespace
+            if save_path:
+                try:
+                    from IPython import get_ipython
+                    ip = get_ipython()
+                    if ip:
+                        ip.user_ns['saved_pymca_4d_stack'] = save_path
+                        ip.user_ns['saved_pymca_stack'] = save_path # Often used interchangeably for the next step
+                        print(f"  [AUTO] Variables 'saved_pymca_4d_stack' and 'saved_pymca_stack' updated in notebook.")
+                except: pass
         except Exception as e:
             print(f"Error during 4D Stack Export: {e}")
             traceback.print_exc()
@@ -1562,49 +1702,43 @@ class SummaryDashboard:
             ax_norm_mcc.set_xlabel("Energy (eV)"); ax_norm_mcc.set_ylabel("Normalized Intensity")
         
         # Bottom row buttons - Adjusted positions to avoid overlapping x-axis labels
-        ax_chk_meta = self.fig.add_axes([0.02, chk_y, 0.40, btn_h * 0.75])
-        self.chk_meta = CheckButtons(ax_chk_meta, ['Add Sample Specific Information to File Header'], [self.sync.full_metadata])
+        ax_chk = self.fig.add_axes([0.02, chk_y, 0.40, 0.03])
+        self.chk_meta = CheckButtons(ax_chk, ["Add Sample Specific Information to File Header"], [self.sync.full_metadata])
         for text in self.chk_meta.labels:
             text.set_fontsize(7)
         def toggle_meta(label):
             self.sync.full_metadata = not self.sync.full_metadata
         self.chk_meta.on_clicked(toggle_meta)
 
-        ax_save_xanes = self.fig.add_axes([0.02, btn_y, 0.13, btn_h])
-        self.btn_save_xanes = Button(ax_save_xanes, 'Save XANES Spectra', color='yellow', hovercolor='khaki')
+        ax_save_xanes = self.fig.add_axes([0.02, btn_y, 0.06, btn_h])
+        self.btn_save_xanes = Button(ax_save_xanes, 'Save XANES\nSpectra', color='yellow', hovercolor='khaki')
         self.btn_save_xanes.on_clicked(self.save_summary_csv); self.btn_save_xanes.label.set_fontsize(7)
 
-        ax_save_xrd = self.fig.add_axes([0.16, btn_y, 0.14, btn_h])
-        self.btn_save_xrd = Button(ax_save_xrd, 'Save XRD Spectra', color='yellow', hovercolor='khaki')
+        ax_save_xrd = self.fig.add_axes([0.10, btn_y, 0.07, btn_h])
+        self.btn_save_xrd = Button(ax_save_xrd, 'Save XRD\nSpectra', color='yellow', hovercolor='khaki')
         self.btn_save_xrd.on_clicked(self.save_consolidated_xrd_spectrum); self.btn_save_xrd.label.set_fontsize(7)
         
-        ax_save_pm3d = self.fig.add_axes([0.73, btn_y, 0.11, btn_h])
-        self.btn_save_pm3d = Button(ax_save_pm3d, 'Save PyMca Stack', color='yellow', hovercolor='khaki')
-        self.btn_save_pm3d.on_clicked(self.save_pymca_stack_call); self.btn_save_pm3d.label.set_fontsize(7)
-
-        ax_save_pm4d = self.fig.add_axes([0.85, btn_y, 0.12, btn_h])
-        self.btn_save_pm4d = Button(ax_save_pm4d, 'Save 4D PyMca Stack', color='yellow', hovercolor='khaki')
-        self.btn_save_pm4d.on_clicked(self.save_pymca_4d_stack_call); self.btn_save_pm4d.label.set_fontsize(7)
-
-        # If single energy, keep spectral save buttons visible as they provide detector spectra
-        if len(self.sync.all_energies) <= 1:
-            ax_save_xanes.set_visible(True); self.btn_save_xanes.set_active(True)
-            ax_save_xrd.set_visible(True); self.btn_save_xrd.set_active(True)
-            ax_save_pm3d.set_visible(True); self.btn_save_pm3d.set_active(True)
-            ax_save_pm4d.set_visible(False); self.btn_save_pm4d.set_active(False)
-
-        ax_toggle = self.fig.add_axes([0.31, btn_y, 0.18, btn_h])
-        label_toggle = "Switch Polygon ROI Selection" if self.sync.mode == 'rect' else "Switch Rectangle ROI Selection"
+        ax_toggle = self.fig.add_axes([0.18, btn_y, 0.09, btn_h])
+        label_toggle = "Switch to\nPolygon" if self.sync.mode == 'rect' else "Switch to\nRectangle"
         self.btn_toggle = Button(ax_toggle, label_toggle, color='yellow', hovercolor='khaki')
         self.btn_toggle.on_clicked(self.toggle_selection_mode); self.btn_toggle.label.set_fontsize(7)
 
-        ax_theme = self.fig.add_axes([0.50, btn_y, 0.11, btn_h])
-        self.btn_theme = Button(ax_theme, "Switch to Gray" if self.sync.use_color else "Switch to Color", color='yellow', hovercolor='khaki')
+        ax_theme = self.fig.add_axes([0.28, btn_y, 0.08, btn_h])
+        label_theme = "Switch to\nGray" if self.sync.use_color else "Switch to\nColor"
+        self.btn_theme = Button(ax_theme, label_theme, color='yellow', hovercolor='khaki')
         self.btn_theme.on_clicked(self.toggle_theme); self.btn_theme.label.set_fontsize(7)
 
-        ax_save_imgs = self.fig.add_axes([0.62, btn_y, 0.10, btn_h])
-        self.btn_save_imgs = Button(ax_save_imgs, 'Save Images', color='yellow', hovercolor='khaki')
+        ax_save_imgs = self.fig.add_axes([0.37, btn_y, 0.08, btn_h])
+        self.btn_save_imgs = Button(ax_save_imgs, 'Save All\nImages', color='yellow', hovercolor='khaki')
         self.btn_save_imgs.on_clicked(self.save_all_images); self.btn_save_imgs.label.set_fontsize(7)
+
+        ax_save_pm3d = self.fig.add_axes([0.46, btn_y, 0.14, btn_h])
+        self.btn_save_pm3d = Button(ax_save_pm3d, 'Save XANES Spectra\nfor PCA/CA', color='yellow', hovercolor='khaki')
+        self.btn_save_pm3d.on_clicked(self.save_pymca_stack_call); self.btn_save_pm3d.label.set_fontsize(7)
+
+        ax_save_pm4d = self.fig.add_axes([0.61, btn_y, 0.24, btn_h])
+        self.btn_save_pm4d = Button(ax_save_pm4d, 'Save XRF Spectra for Elemental\nAnalysis using PyMca', color='yellow', hovercolor='khaki')
+        self.btn_save_pm4d.on_clicked(self.save_pymca_4d_stack_call); self.btn_save_pm4d.label.set_fontsize(7)
         
         # top row elements removed as energy selector is now a decoupled widget
         
@@ -1657,28 +1791,28 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                 representative_energy = 0.0
                 print("  [Warning] No energies found in path_pack.")
 
-        x_coords, y_coords = path_pack.get('x', np.array([])), path_pack.get('y', np.array([]))
+        x_coords_raw, y_coords_raw = path_pack.get('x', np.array([])), path_pack.get('y', np.array([]))
         detector_names = sorted(path_pack['sdd_files'].keys())
         calibrated_energies = all_energies + energy_shift
         
-        # 2.5 Determine actual data point count to avoid including padded zeros in coordinates
-        actual_num_s = x_coords.size
+        # 2.5 Determine actual data point count and ensure coordinate lengths match
         # Check first available detector/energy to find the real number of scanned points
+        actual_num_s = min(x_coords_raw.size, y_coords_raw.size)
         try:
             first_det = detector_names[0]
             first_en = all_energies[0]
             first_path = path_pack['sdd_files'][first_det].get(first_en)
             if first_path and os.path.exists(first_path):
                 # 256 channels * 4 bytes per channel (uint32)
-                actual_num_s = min(os.path.getsize(first_path) // 1024, x_coords.size)
+                actual_num_s = min(os.path.getsize(first_path) // 1024, actual_num_s)
         except Exception:
             pass
 
-        x_coords_active = x_coords[:actual_num_s]
-        y_coords_active = y_coords[:actual_num_s]
+        x_coords = x_coords_raw[:actual_num_s]
+        y_coords = y_coords_raw[:actual_num_s]
         
-        eb_x1, eb_x2 = np.min(x_coords_active) + x_trim, np.max(x_coords_active) - x_trim
-        eb_y1, eb_y2 = np.min(y_coords_active) + y_trim, np.max(y_coords_active) - y_trim
+        eb_x1, eb_x2 = np.min(x_coords) + x_trim, np.max(x_coords) - x_trim
+        eb_y1, eb_y2 = np.min(y_coords) + y_trim, np.max(y_coords) - y_trim
 
         if map_roi is None:
             # Default to 1x1 mm square at the center of the trimmed area
@@ -1719,16 +1853,17 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                     num_s = min(len(d1d) // 256, x_coords.size)
                     s2d = d1d[:num_s * 256].reshape((num_s, 256))
                     if roll_shift != 0: s2d = np.roll(s2d, shift=roll_shift, axis=0)
-                    inten = np.sum(s2d[:, channel_roi[0]:channel_roi[1]], axis=1)
+                    inten = np.sum(s2d[:, channel_roi[0]:channel_roi[1]+1], axis=1)
                     if avg_maps[det_name] is None: avg_maps[det_name] = inten.copy()
                     else: avg_maps[det_name] += inten
                     m = get_dynamic_mask(x_coords[:num_s], y_coords[:num_s], x_trim, y_trim, roi=map_roi)
-                    summary_data[det_name].append(np.sum(s2d[m, channel_roi[0]:channel_roi[1]]))
+                    summary_data[det_name].append(np.sum(s2d[m, channel_roi[0]:channel_roi[1]+1]))
                     stack_maps[det_name][e_idx, :num_s] = inten
                 except: summary_data[det_name].append(np.nan)
             
             if mcc_channels:
                 mf = path_pack['mcc_files'].get(energy)
+                current_mcc_vals = {ch: 0.0 for ch in mcc_channels}
                 if mf and os.path.exists(mf):
                     try:
                         # Robustly read CSV/TSV without skipping the header if it contains column names
@@ -1737,7 +1872,8 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                         # Clean column names (handle headers starting with # and remove whitespace)
                         df.columns = [c.replace('#', '').strip() for c in df.columns]
                         
-                        m_mcc = get_dynamic_mask(x_coords[:len(df)], y_coords[:len(df)], x_trim, y_trim, roi=map_roi)
+                        num_pts = min(len(df), x_coords.size, y_coords.size)
+                        m_mcc = get_dynamic_mask(x_coords[:num_pts], y_coords[:num_pts], x_trim, y_trim, roi=map_roi)
                         
                         for ch in mcc_channels:
                             # Try multiple variants for MCC column names
@@ -1749,29 +1885,31 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                             
                             if col is not None:
                                 col_data = df[col].values
-                                num_pts = min(len(col_data), x_coords.size)
-                                mcc_maps[f'mcc{ch}'][e_idx, :num_pts] = col_data[:num_pts]
+                                pts = min(len(col_data), x_coords.size)
+                                mcc_maps[f'mcc{ch}'][e_idx, :pts] = col_data[:pts]
                                 
                                 # Update average map for mapping
                                 if f'mcc{ch}' in avg_maps:
-                                    if avg_maps[f'mcc{ch}'] is None: avg_maps[f'mcc{ch}'] = col_data[:num_pts].copy()
-                                    else: avg_maps[f'mcc{ch}'] += col_data[:num_pts]
+                                    if avg_maps[f'mcc{ch}'] is None: avg_maps[f'mcc{ch}'] = col_data[:pts].copy()
+                                    else: avg_maps[f'mcc{ch}'] += col_data[:pts]
 
-                                val = df[col][m_mcc].mean() if np.any(m_mcc) else 0.0
-                                if f'mcc{ch}' in mcc_data:
-                                    mcc_data[f'mcc{ch}'].append(0.0 if np.isnan(val) else val)
+                                val = df[col].values[:num_pts][m_mcc].mean() if np.any(m_mcc) else 0.0
+                                current_mcc_vals[ch] = 0.0 if np.isnan(val) else val
                             else:
-                                mcc_data[f'mcc{ch}'].append(0.0)
                                 if energy == all_energies[0]: # Only warn once
                                     print(f"  [Warning] MCC channel {ch} not found in {os.path.basename(mf)}. Available: {list(df.columns)}")
                     except Exception as e:
                         print(f"  [Error] Failed to load MCC file {mf}: {e}")
-                        for ch in mcc_channels: mcc_data[f'mcc{ch}'].append(0.0)
-                else:
-                    for ch in mcc_channels: mcc_data[f'mcc{ch}'].append(0.0)
+                
+                # Commit values once per energy step to prevent double-appends or mismatches
+                for ch in mcc_channels:
+                    mcc_data[f'mcc{ch}'].append(current_mcc_vals[ch])
 
             
-        avg_dependence = np.nanmean([summary_data[det] for det in detector_names], axis=0)
+        if detector_names and any(summary_data[det] for det in detector_names):
+            avg_dependence = np.nanmean([summary_data[det] for det in detector_names], axis=0)
+        else:
+            avg_dependence = np.zeros(len(all_energies))
 
         # ---- EXTERNAL I0 PROMPT ----
         root_i0 = get_tk_root(); root_i0.attributes("-topmost", True)
@@ -1821,7 +1959,10 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
         elif use_internal and mcc_channels and 1 in mcc_channels and np.any(mcc_data['mcc1']):
             try:
                 # Internal I0 smoothing capability
-                int_df = pd.DataFrame({'Energy': calibrated_energies, 'mcc1': mcc_data['mcc1']})
+                # Ensure matching lengths for DataFrame creation
+                mcc1_vals = mcc_data['mcc1']
+                min_len = min(len(calibrated_energies), len(mcc1_vals))
+                int_df = pd.DataFrame({'Energy': calibrated_energies[:min_len], 'mcc1': mcc1_vals[:min_len]})
                 dialog = ExternalI0PreviewDialog(root_i0, int_df, 'Energy', 'mcc1')
                 dialog.title("Internal I0 Preview")
                 root_i0.wait_window(dialog)
@@ -1888,7 +2029,14 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
         btn_refresh = widgets.Button(description="REFRESH PLOTS", button_style='success', tooltip='Force a full re-calculation of all spectra')
         btn_refresh.on_click(sync.force_global_refresh)
         
-        controls = widgets.HBox([sync.status_widget, btn_refresh])
+        ipfy_chk = widgets.Checkbox(value=False, description='IPFY Mode (Invert for PCA)', indent=False)
+        def on_ipfy_change(change): 
+            sync.ipfy_mode = change['new']
+            if sync.summary_dash:
+                sync.summary_dash.update_plots(sync.current_roi, sync.current_poly, sync.mode)
+        ipfy_chk.observe(on_ipfy_change, names='value')
+
+        controls = widgets.HBox([sync.status_widget, btn_refresh, ipfy_chk])
 
         # 9. Decoupled Energy Slider (moved to just before images)
         energy_slider = widgets.IntSlider(
@@ -1936,24 +2084,32 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
             widgets.HBox([energy_slider, energy_label]),
             widgets.HBox([contrast_slider, log_toggle, log_spec_toggle]),
             widgets.HBox([
-                widgets.Label("External I0 Energy Calibration:", layout=widgets.Layout(width='200px')),
-                widgets.Checkbox(value=sync.i0_calib_enabled, description='Enable Shift', indent=False),
-                widgets.FloatText(value=sync.i0_energy_shift, description='Shift (eV):', style={'description_width': 'initial'}, layout=widgets.Layout(width='150px'))
-            ])
-        ], layout=widgets.Layout(margin='10px 0px 10px 0px'))
-
-        # Set up I0 Calibration Observers
-        calib_chk = energy_controls.children[2].children[1]
-        calib_val = energy_controls.children[2].children[2]
+                widgets.Label("Calibration Toggles:", layout=widgets.Layout(width='200px')),
+                widgets.Checkbox(value=sync.i0_calib_enabled, description='Enable I0 Shift', indent=False),
+                widgets.FloatText(value=sync.i0_energy_shift, description='I0 Shift (eV):', layout=widgets.Layout(width='180px')),
+                widgets.Label("|", layout=widgets.Layout(width='20px')),
+                widgets.Checkbox(value=sync.use_sdd_calib, description='Enable SDD Energy Calib', indent=False, tooltip='Sync ROIs by Energy instead of Channels'),
+            ]),
+        ])
         
-        def on_calib_update(enabled=None, shift=None):
-            sync.broadcast_i0_calib(enabled=enabled, shift=shift)
-            # Update the energy label to reflect potential new calibrated energy (if we ever shift the map axis too)
-            # For now, this specifically ensures the label stays in sync if the calibrated_energies array is updated
-            energy_label.description = f"{sync.calibrated_energies[sync.energy_idx]:.2f} eV"
-
-        calib_chk.observe(lambda c: on_calib_update(enabled=c['new']), names='value')
-        calib_val.observe(lambda c: on_calib_update(shift=c['new']), names='value')
+        # Set up I0 & SDD Calibration Observers
+        i0_shift_chk = energy_controls.children[2].children[1]
+        i0_shift_val = energy_controls.children[2].children[2]
+        sdd_cal_chk = energy_controls.children[2].children[4]
+        
+        i0_shift_chk.observe(lambda c: sync.broadcast_i0_calib(enabled=c['new']), names='value')
+        i0_shift_val.observe(lambda c: sync.broadcast_i0_calib(shift=c['new']), names='value')
+        
+        def on_sdd_cal_change(change):
+            sync.use_sdd_calib = change['new']
+            print(f"  [SDD Calibration] {'ENABLED' if sync.use_sdd_calib else 'DISABLED'}")
+            # Refresh all plots to show Energy vs Channel axis
+            for d in sync.dashboards:
+                d.update_spectrum()
+            if sync.status_widget:
+                sync.status_widget.value = f"SDD Calibration {'Enabled (ROI in eV)' if sync.use_sdd_calib else 'Disabled (ROI in Channels)'}."
+        
+        sdd_cal_chk.observe(on_sdd_cal_change, names='value')
 
         try:
             get_ipython()
