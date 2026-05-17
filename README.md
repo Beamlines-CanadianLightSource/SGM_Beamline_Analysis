@@ -28,14 +28,14 @@ pip install -r requirements.txt
 
 ### Running the Notebooks
 
-1. **`SGM_BSky_Data_Analysis-N.ipynb`**: The primary workflow for processing a single data stack.
+1. **`SGM_BSky_Data_Analysis.ipynb`**: The primary workflow for processing a single data stack.
 2. **`SGM_BSky_Data_Analysis-4quad.ipynb`**: Specialized workflow for stitching together 4 quadrant maps into a single master map.
 
 Detailed instructions for each component can be found in the [User Guide](SGM_BSky_Data_Analysis_Guide.md).
 
 ## Project Structure
 
-- `SGM_BSky_Data_Analysis-N.ipynb`: Main analysis notebook.
+- `SGM_BSky_Data_Analysis.ipynb`: Main analysis notebook.
 - `SGM_BSky_Data_Analysis-4quad.ipynb`: Quadrant stitching notebook.
 - `SGM_BSky_Data_Analysis_Guide.md`: Comprehensive user documentation.
 - `analyze_sgm_bsky_data.py`: Core data parsing logic.
