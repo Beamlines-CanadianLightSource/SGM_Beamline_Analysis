@@ -65,13 +65,18 @@ run_calibration()
 **Example Workflow:** For a hands-on example of this process, use the `SGM_BSky_Data_Analysis-4quad.ipynb` notebook.
 **User Interaction:**
 - **Interactive Trimming (`interactive_stitching_trim`):** A specialized widget that displays all selected quadrants on a single plot.
+  
+> [!WARNING]
+> **Mandatory Trimming for Hexapod Overshoots**  
+> When the SGM beamline scans a map, the hexapod stage physically overshoots the target area on the left and right edges to accelerate and decelerate. The data recorded during these turnarounds contains stretched coordinates and noise. **You must use the Left and Right sliders to trim off these edges (usually ~0.5mm to 2.0mm) before stitching.** If you do not trim the maps, the overshoot regions will physically overlap with adjacent maps, creating massive noise, artifacts, and distorting the aspect ratio of the final stitched image.
+
 - **Handling Missing Quadrants:** If you only have 2 or 3 quadrants, you can explicitly skip a slot by clicking **Cancel** in the file selection dialog for that quadrant. The tool will handle the gap automatically.
 - **Duplicate Prevention:** A warning will appear if you select the same file for multiple quadrants. Avoid this, as it causes spatial data overlap and visualization artifacts.
 - **Automatic Gap Masking:** The tool now automatically masks the space between quadrants. This prevents "smearing" artifacts (where data appears to stretch across missing areas) in the dashboard and alignment tools.
-- **Asymmetric Sliders:** Use the **Left, Right, Top, Bottom** sliders for each quadrant to remove "bad" edge data caused by stage acceleration or to eliminate overlaps.
+- **Asymmetric Sliders:** Use the **Left, Right, Top, Bottom** sliders for each quadrant (now labeled Map 1, Map 2, etc.) to remove bad edge data caused by stage acceleration or to eliminate overlaps.
 - **Contrast Control:** Includes a dedicated contrast slider to help you see fine details while aligning the boundaries.
 - **Data Preservation:** The stitched dataset now preserves all 4 MCC reference channels (`mcc1` through `mcc4`), ensuring complete metadata for normalization.
-- **Bake Stitched Map:** Once the quadrants join perfectly without visible "seams," click this button to generate a new master HDF5 file and data directory. The resulting "baked" map is fully compatible with the rest of the pipeline.
+- **Bake Stitched Map:** Once the maps join perfectly without visible "seams" or overshoots, click this button to generate a new master HDF5 file and data directory. The resulting "baked" map is fully compatible with the rest of the pipeline.
 
 ### 3. `plot_sgm_bsky_data.py` (The Main Interactive Dashboard)
 **Purpose:** This is the most critical component of the notebook. It acts as the "Command Center" where you visually explore the 4D hypercube, correlate spatial maps with XANES spectra, and manage normalization.

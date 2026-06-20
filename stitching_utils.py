@@ -22,27 +22,46 @@ def apply_asymmetric_trim(x, y, data_indices, left=0, right=0, top=0, bottom=0):
            
     return x[mask], y[mask], data_indices[mask]
 
-def browse_for_quadrant_files(num_files=4):
+def browse_for_quadrant_files(num_files=None):
     """
     Opens file dialogs to select HDF5 files one by one.
     This allows files to be in different folders.
     """
     import tkinter as tk
     from tkinter import filedialog
+    from tkinter import simpledialog
     
     root = tk.Tk()
-    root.withdraw()
+    # Keep the window in the taskbar but make it invisible so the dialog can't get permanently lost
+    root.attributes("-alpha", 0.0)
     root.attributes("-topmost", True)
+    root.lift()
+    root.focus_force()
+    
+    if num_files is None:
+        num_files = simpledialog.askinteger(
+            "Number of Images",
+            "How many images do you want to stitch together?",
+            parent=root,
+            minvalue=1,
+            maxvalue=20,
+            initialvalue=4
+        )
+        if num_files is None:
+            root.destroy()
+            return []
+            
+    root.withdraw() # Hide completely for the file dialogs
     
     files = []
-    labels = ["SW (South-West)", "SE (South-East)", "NE (North-East)", "NW (North-West)"]
+    labels = []
     
-    print(f"Please select {num_files} HDF5 quadrant files...")
+    print(f"Please select {num_files} HDF5 files...")
     
     for i in range(num_files):
         label = labels[i] if i < len(labels) else f"Map {i+1}"
         f = filedialog.askopenfilename(
-            title=f"Select {label} HDF5 File (Cancel to skip this quadrant)",
+            title=f"Select {label} HDF5 File (Cancel to skip this file)",
             filetypes=[("HDF5 files", "*.h5"), ("All files", "*.*")]
         )
         if not f:
@@ -57,7 +76,7 @@ def browse_for_quadrant_files(num_files=4):
 
 def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50)):
     """
-    Interactive widget to adjust trims for 4 quadrant maps before stitching.
+    Interactive widget to adjust trims for multiple maps before stitching.
     Includes contrast control for global visualization.
     """
     if h5_files is None:
@@ -106,7 +125,7 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50)):
 
     # --- UI Components ---
     sliders = []
-    labels = ["SW", "SE", "NE", "NW"]
+    labels = []
     
     for i in range(num_maps):
         label = labels[i] if i < len(labels) else f"Map {i+1}"
@@ -147,7 +166,7 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50)):
             vmax = np.percentile(flat_intensities, p_high)
             if vmin == vmax: vmax = vmin + 1
 
-            colors = ['r', 'g', 'b', 'c']
+            colors = ['#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4', '#46f0f0', '#f032e6', '#bcf60c', '#fabebe']
             for i in range(num_maps):
                 dp = data_packs[i]
                 s = sliders[i]
@@ -162,7 +181,7 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50)):
                     # Draw border
                     ax.plot([np.min(tx), np.max(tx), np.max(tx), np.min(tx), np.min(tx)], 
                             [np.min(ty), np.min(ty), np.max(ty), np.max(ty), np.min(ty)], 
-                            color=colors[i % 4], lw=1, ls='--')
+                            color=colors[i % len(colors)], lw=1, ls='--')
 
             ax.set_aspect('equal')
             ax.set_title(f"Stitching Preview (Contrast: {p_low}% - {p_high}%)")
@@ -191,17 +210,22 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50)):
 
     stitch_btn.on_click(on_stitch_clicked)
 
-    # Layout
-    controls = []
-    for i in range(0, num_maps, 2):
-        row = []
-        for j in range(2):
-            if i + j < num_maps:
-                col = widgets.VBox([sliders[i+j]['L'], sliders[i+j]['R'], sliders[i+j]['T'], sliders[i+j]['B']])
-                row.append(col)
-        controls.append(widgets.HBox(row))
+    # Layout using Accordion
+    accordion = widgets.Accordion(children=[])
+    accordion_children = []
+    accordion_titles = []
+    
+    for i in range(num_maps):
+        label = labels[i] if i < len(labels) else f"Map {i+1}"
+        col = widgets.VBox([sliders[i]['L'], sliders[i]['R'], sliders[i]['T'], sliders[i]['B']])
+        accordion_children.append(col)
+        accordion_titles.append(f"{label} Trims")
         
-    display(widgets.VBox(controls + [widgets.Label("Global Contrast Control:"), contrast_slider, stitch_btn, output]))
+    accordion.children = accordion_children
+    for i, title in enumerate(accordion_titles):
+        accordion.set_title(i, title)
+        
+    display(widgets.VBox([accordion, widgets.Label("Global Contrast Control:"), contrast_slider, stitch_btn, output]))
     update_plot()
 
 def stitch_quadrant_maps(h5_files=None, output_dir=None, trims=None, verbose=True):
