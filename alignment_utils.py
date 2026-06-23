@@ -101,6 +101,14 @@ def _safe_showwarning(title, message, **kwargs):
         return "ok"
 
 def _safe_askyesno(title, message, **kwargs):
+    if _in_jupyter():
+        print(f"\n[PROMPT] {message}")
+        try:
+            val = input("Enter 'y' for Yes, 'n' for No: ").strip().lower()
+            return val.startswith('y')
+        except Exception as e:
+            print(f"Non-interactive environment. Defaulting to Yes. (Error: {e})")
+            return True
     try:
         parent = kwargs.get('parent')
         if parent:
@@ -112,13 +120,13 @@ def _safe_askyesno(title, message, **kwargs):
             except: pass
         return res
     except Exception as e:
-        if _in_jupyter():
-            print(f"\n[PROMPT] {message}")
-            val = input("Enter 'y' for Yes, 'n' for No: ").strip().lower()
-            return val.startswith('y')
-        raise e
+        print(f"Tkinter dialog error: {e}. Defaulting to Yes.")
+        return True
 
 def _safe_askokcancel(title, message, **kwargs):
+    if _in_jupyter():
+        print(f"\n[Auto-Confirm] {message} -> Proceeding.")
+        return True
     try:
         parent = kwargs.get('parent')
         if parent:
@@ -130,11 +138,7 @@ def _safe_askokcancel(title, message, **kwargs):
             except: pass
         return res
     except Exception as e:
-        if _in_jupyter():
-            print(f"\n[PROMPT] {message}")
-            val = input("Enter 'y' to Proceed, 'n' to Cancel: ").strip().lower()
-            return val.startswith('y')
-        raise e
+        return True
 
 # Apply monkeypatching globally to Tkinter modules
 import tkinter.messagebox as tk_messagebox
