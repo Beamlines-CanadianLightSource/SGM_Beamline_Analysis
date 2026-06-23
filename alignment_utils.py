@@ -9,6 +9,145 @@ from scipy.interpolate import griddata
 import tkinter as tk
 from tkinter import messagebox, simpledialog
 from matplotlib.figure import Figure
+
+# --- Jupyter/macOS Tkinter Stability Patch ---
+_orig_showinfo = messagebox.showinfo
+_orig_showerror = messagebox.showerror
+_orig_showwarning = messagebox.showwarning
+_orig_askyesno = messagebox.askyesno
+_orig_askokcancel = messagebox.askokcancel
+
+def _in_jupyter():
+    try:
+        from IPython import get_ipython
+        return get_ipython() is not None
+    except:
+        return False
+
+def _safe_showinfo(title, message, **kwargs):
+    if _in_jupyter():
+        print(f"\n[{title}] {message}\n")
+        try:
+            import sys
+            for mod_name in ['plot_sgm_bsky_data', 'plot_sdd_stack']:
+                if mod_name in sys.modules:
+                    mod = sys.modules[mod_name]
+                    sync = getattr(mod, '_GLOBAL_SYNC_OBJ', None)
+                    if sync and sync.status_widget:
+                        sync.status_widget.value = f"[{title}] {message.replace(chr(10), ' ')}"
+                        break
+        except:
+            pass
+        return "ok"
+    try:
+        parent = kwargs.get('parent')
+        if parent:
+            try: parent.attributes("-topmost", True)
+            except: pass
+        res = _orig_showinfo(title, message, **kwargs)
+        if parent:
+            try: parent.update()
+            except: pass
+        return res
+    except Exception as e:
+        print(f"[{title}] {message} (Tkinter dialog error: {e})")
+        return "ok"
+
+def _safe_showerror(title, message, **kwargs):
+    if _in_jupyter():
+        print(f"\n[ERROR] [{title}] {message}\n")
+        try:
+            import sys
+            for mod_name in ['plot_sgm_bsky_data', 'plot_sdd_stack']:
+                if mod_name in sys.modules:
+                    mod = sys.modules[mod_name]
+                    sync = getattr(mod, '_GLOBAL_SYNC_OBJ', None)
+                    if sync and sync.status_widget:
+                        sync.status_widget.value = f"[ERROR] {message.replace(chr(10), ' ')}"
+                        break
+        except:
+            pass
+        return "ok"
+    try:
+        parent = kwargs.get('parent')
+        if parent:
+            try: parent.attributes("-topmost", True)
+            except: pass
+        res = _orig_showerror(title, message, **kwargs)
+        if parent:
+            try: parent.update()
+            except: pass
+        return res
+    except Exception as e:
+        print(f"[ERROR] [{title}] {message} (Tkinter dialog error: {e})")
+        return "ok"
+
+def _safe_showwarning(title, message, **kwargs):
+    if _in_jupyter():
+        print(f"\n[WARNING] [{title}] {message}\n")
+        return "ok"
+    try:
+        parent = kwargs.get('parent')
+        if parent:
+            try: parent.attributes("-topmost", True)
+            except: pass
+        res = _orig_showwarning(title, message, **kwargs)
+        if parent:
+            try: parent.update()
+            except: pass
+        return res
+    except Exception as e:
+        print(f"[WARNING] [{title}] {message} (Tkinter dialog error: {e})")
+        return "ok"
+
+def _safe_askyesno(title, message, **kwargs):
+    try:
+        parent = kwargs.get('parent')
+        if parent:
+            try: parent.attributes("-topmost", True)
+            except: pass
+        res = _orig_askyesno(title, message, **kwargs)
+        if parent:
+            try: parent.update()
+            except: pass
+        return res
+    except Exception as e:
+        if _in_jupyter():
+            print(f"\n[PROMPT] {message}")
+            val = input("Enter 'y' for Yes, 'n' for No: ").strip().lower()
+            return val.startswith('y')
+        raise e
+
+def _safe_askokcancel(title, message, **kwargs):
+    try:
+        parent = kwargs.get('parent')
+        if parent:
+            try: parent.attributes("-topmost", True)
+            except: pass
+        res = _orig_askokcancel(title, message, **kwargs)
+        if parent:
+            try: parent.update()
+            except: pass
+        return res
+    except Exception as e:
+        if _in_jupyter():
+            print(f"\n[PROMPT] {message}")
+            val = input("Enter 'y' to Proceed, 'n' to Cancel: ").strip().lower()
+            return val.startswith('y')
+        raise e
+
+# Apply monkeypatching globally to Tkinter modules
+import tkinter.messagebox as tk_messagebox
+tk_messagebox.showinfo = _safe_showinfo
+tk_messagebox.showerror = _safe_showerror
+tk_messagebox.showwarning = _safe_showwarning
+tk_messagebox.askyesno = _safe_askyesno
+tk_messagebox.askokcancel = _safe_askokcancel
+messagebox.showinfo = _safe_showinfo
+messagebox.showerror = _safe_showerror
+messagebox.showwarning = _safe_showwarning
+messagebox.askyesno = _safe_askyesno
+messagebox.askokcancel = _safe_askokcancel
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.widgets import SpanSelector, Button
 import matplotlib.tri as tri
@@ -70,9 +209,22 @@ def get_safe_save_path(save_dir, default_name):
     if not os.path.exists(save_path):
         return save_path
     
+    # If in Jupyter, auto-increment filename to prevent blocking/freezing the kernel
+    if _in_jupyter():
+        base, ext = os.path.splitext(default_name)
+        counter = 1
+        while True:
+            new_name = f"{base}_{counter}{ext}"
+            new_path = os.path.join(save_dir, new_name)
+            if not os.path.exists(new_path):
+                print(f"  [Auto-Increment] '{default_name}' already exists. Auto-saved to: {new_name}")
+                return new_path
+            counter += 1
+
     base, ext = os.path.splitext(default_name)
     root = get_tk_root()
-    root.attributes("-topmost", True)
+    try: root.attributes("-topmost", True)
+    except: pass
     while True:
         suffix = simpledialog.askstring("File Exists", 
                                         f"'{default_name}' already exists in the folder.\n\n"

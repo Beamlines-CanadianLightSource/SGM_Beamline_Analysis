@@ -303,10 +303,14 @@ class ExternalI0PreviewDialog(tk.Toplevel):
         smoothed_str = f" (Smoothed w={self.spin_window.get()})" if self.do_smooth.get() else ""
         shift_str = f" (Energy Shift: {self.i0_energy_shift.get():+.2f} eV)" if self.i0_calib_enabled.get() else ""
         self.result = (self.cb_e.get(), self.cb_i.get(), self.x_final, self.y_final, smoothed_str + shift_str, self.i0_calib_enabled.get(), self.i0_energy_shift.get())
+        self.withdraw()
+        self.update_idletasks()
         self.destroy()
         
     def on_cancel(self):
         self.result = None
+        self.withdraw()
+        self.update_idletasks()
         self.destroy()
 
 def save_csv_idl(path, rows):
@@ -1938,6 +1942,7 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                     
                     dialog = ExternalI0PreviewDialog(root_i0, ext_df, e_col, i_col)
                     root_i0.wait_window(dialog)
+                    root_i0.update()
                     
                     if dialog.result:
                         selected_e_col, selected_i_col, x_sorted, y_sorted, extra_str, cal_en, cal_val = dialog.result
@@ -1966,6 +1971,7 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                 dialog = ExternalI0PreviewDialog(root_i0, int_df, 'Energy', 'mcc1')
                 dialog.title("Internal I0 Preview")
                 root_i0.wait_window(dialog)
+                root_i0.update()
                 
                 if dialog.result:
                     selected_e_col, selected_i_col, x_sorted, y_sorted, extra_str, cal_en, cal_val = dialog.result

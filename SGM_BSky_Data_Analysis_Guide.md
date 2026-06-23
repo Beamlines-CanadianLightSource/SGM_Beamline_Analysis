@@ -68,7 +68,7 @@ run_calibration()
   
 > [!WARNING]
 > **Mandatory Trimming for Hexapod Overshoots**  
-> When the SGM beamline scans a map, the hexapod stage physically overshoots the target area on the left and right edges to accelerate and decelerate. The data recorded during these turnarounds contains stretched coordinates and noise. **You must use the Left and Right sliders to trim off these edges (usually ~0.5mm to 2.0mm) before stitching.** If you do not trim the maps, the overshoot regions will physically overlap with adjacent maps, creating massive noise, artifacts, and distorting the aspect ratio of the final stitched image.
+> When the SGM beamline scans a map, the hexapod stage physically overshoots the target area on the left and right edges to accelerate and decelerate. The data recorded during these turnarounds contains stretched coordinates and noise. **You must use the Left and Right sliders to trim off these edges (usually about 0.1mm on both sides needs to be trimmed) before stitching.** If you do not trim the maps, the overshoot regions will physically overlap with adjacent maps, creating massive noise, artifacts, and distorting the aspect ratio of the final stitched image.
 
 - **Handling Missing Quadrants:** If you only have 2 or 3 quadrants, you can explicitly skip a slot by clicking **Cancel** in the file selection dialog for that quadrant. The tool will handle the gap automatically.
 - **Duplicate Prevention:** A warning will appear if you select the same file for multiple quadrants. Avoid this, as it causes spatial data overlap and visualization artifacts.
