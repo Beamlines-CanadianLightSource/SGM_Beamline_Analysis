@@ -303,14 +303,22 @@ class ExternalI0PreviewDialog(tk.Toplevel):
         smoothed_str = f" (Smoothed w={self.spin_window.get()})" if self.do_smooth.get() else ""
         shift_str = f" (Energy Shift: {self.i0_energy_shift.get():+.2f} eV)" if self.i0_calib_enabled.get() else ""
         self.result = (self.cb_e.get(), self.cb_i.get(), self.x_final, self.y_final, smoothed_str + shift_str, self.i0_calib_enabled.get(), self.i0_energy_shift.get())
+        try: self.grab_release()
+        except: pass
         self.withdraw()
         self.update_idletasks()
+        try: self.quit()  # Safely exit mainloop
+        except: pass
         self.destroy()
         
     def on_cancel(self):
         self.result = None
+        try: self.grab_release()
+        except: pass
         self.withdraw()
         self.update_idletasks()
+        try: self.quit()  # Safely exit mainloop
+        except: pass
         self.destroy()
 
 def save_csv_idl(path, rows):
@@ -1941,8 +1949,7 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                     i_col = next((c for c in ext_df.columns if any(k in c.lower() for k in ['i0', 'intensity', 'norm', 'tey'])), ext_df.columns[1])
                     
                     dialog = ExternalI0PreviewDialog(root_i0, ext_df, e_col, i_col)
-                    root_i0.wait_window(dialog)
-                    root_i0.update()
+                    dialog.mainloop()
                     
                     if dialog.result:
                         selected_e_col, selected_i_col, x_sorted, y_sorted, extra_str, cal_en, cal_val = dialog.result
@@ -1970,8 +1977,7 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                 int_df = pd.DataFrame({'Energy': calibrated_energies[:min_len], 'mcc1': mcc1_vals[:min_len]})
                 dialog = ExternalI0PreviewDialog(root_i0, int_df, 'Energy', 'mcc1')
                 dialog.title("Internal I0 Preview")
-                root_i0.wait_window(dialog)
-                root_i0.update()
+                dialog.mainloop()
                 
                 if dialog.result:
                     selected_e_col, selected_i_col, x_sorted, y_sorted, extra_str, cal_en, cal_val = dialog.result

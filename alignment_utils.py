@@ -24,99 +24,145 @@ def _in_jupyter():
     except:
         return False
 
-def _bring_to_front(root):
-    if root:
-        try:
-            root.deiconify()
-            root.lift()
-            root.attributes("-topmost", True)
-            root.focus_force()
-            import sys
-            if sys.platform == 'darwin':
-                import os
-                # AppleScript to bring Python to front on macOS
-                os.system('osascript -e \'tell app "System Events" to set frontmost of process "Python" to true\' 2>/dev/null')
-                os.system('osascript -e \'tell app "System Events" to set frontmost of process "python3" to true\' 2>/dev/null')
-                os.system('osascript -e \'tell app "System Events" to set frontmost of process "python" to true\' 2>/dev/null')
-        except:
-            pass
+class CustomTkDialog(tk.Toplevel):
+    def __init__(self, parent, title, message, dialog_type="info"):
+        super().__init__(parent)
+        self.title(title)
+        self.result = None
+        
+        self.protocol("WM_DELETE_WINDOW", self.on_cancel)
+        self.attributes("-topmost", True)
+        self.grab_set() # Modal dialog behavior
+        
+        # Padding frame
+        frame = tk.Frame(self, padx=15, pady=15)
+        frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Message label
+        lbl = tk.Label(frame, text=message, justify=tk.LEFT, wraplength=400)
+        lbl.pack(side=tk.TOP, pady=(0, 15))
+        
+        # Button frame
+        btn_frame = tk.Frame(frame)
+        btn_frame.pack(side=tk.BOTTOM, fill=tk.X)
+        
+        if dialog_type == "info":
+            btn = tk.Button(btn_frame, text="OK", command=self.on_ok, width=10, bg='lightgray')
+            btn.pack(side=tk.BOTTOM, pady=5)
+        elif dialog_type == "yesno":
+            btn_yes = tk.Button(btn_frame, text="Yes", command=self.on_yes, width=10, bg='lightgreen')
+            btn_yes.pack(side=tk.LEFT, padx=5)
+            btn_no = tk.Button(btn_frame, text="No", command=self.on_no, width=10, bg='lightcoral')
+            btn_no.pack(side=tk.RIGHT, padx=5)
+        elif dialog_type == "okcancel":
+            btn_ok = tk.Button(btn_frame, text="OK", command=self.on_ok, width=10, bg='lightgreen')
+            btn_ok.pack(side=tk.LEFT, padx=5)
+            btn_cancel = tk.Button(btn_frame, text="Cancel", command=self.on_cancel, width=10, bg='lightcoral')
+            btn_cancel.pack(side=tk.RIGHT, padx=5)
+        elif dialog_type == "askstring":
+            self.entry = tk.Entry(frame, width=40)
+            self.entry.pack(side=tk.TOP, pady=(0, 15))
+            self.entry.focus_set()
+            self.entry.bind("<Return>", lambda e: self.on_string_ok())
+            
+            btn_ok = tk.Button(btn_frame, text="OK", command=self.on_string_ok, width=10, bg='lightgreen')
+            btn_ok.pack(side=tk.LEFT, padx=5)
+            btn_cancel = tk.Button(btn_frame, text="Cancel", command=self.on_cancel, width=10, bg='lightcoral')
+            btn_cancel.pack(side=tk.RIGHT, padx=5)
+            
+        # Center the window
+        self.update_idletasks()
+        width = max(350, self.winfo_width())
+        height = max(150, self.winfo_height())
+        x = (self.winfo_screenwidth() // 2) - (width // 2)
+        y = (self.winfo_screenheight() // 2) - (height // 2)
+        self.geometry(f'{width}x{height}+{x}+{y}')
+        
+    def on_ok(self):
+        self.result = True
+        self.close()
+        
+    def on_yes(self):
+        self.result = True
+        self.close()
+        
+    def on_no(self):
+        self.result = False
+        self.close()
+        
+    def on_string_ok(self):
+        self.result = self.entry.get()
+        self.close()
+        
+    def on_cancel(self):
+        self.result = None
+        self.close()
+        
+    def close(self):
+        try: self.grab_release()
+        except: pass
+        self.withdraw()
+        self.update_idletasks()
+        try: self.quit()  # Safely exit local mainloop
+        except: pass
+        self.destroy()
 
-def _send_to_back(root):
-    if root:
-        try:
-            root.attributes("-topmost", False)
-            root.withdraw()
-        except:
-            pass
+def show_custom_dialog(title, message, dialog_type="info"):
+    root = get_tk_root()
+    # Lift root briefly to prevent focus loss on macOS/Windows
+    try:
+        root.deiconify()
+        root.lift()
+        root.attributes("-topmost", True)
+        root.focus_force()
+        import sys
+        if sys.platform == 'darwin':
+            import os
+            # AppleScript to bring Python to front on macOS
+            os.system('osascript -e \'tell app "System Events" to set frontmost of process "Python" to true\' 2>/dev/null')
+            os.system('osascript -e \'tell app "System Events" to set frontmost of process "python3" to true\' 2>/dev/null')
+            os.system('osascript -e \'tell app "System Events" to set frontmost of process "python" to true\' 2>/dev/null')
+    except:
+        pass
+    
+    dialog = CustomTkDialog(root, title, message, dialog_type=dialog_type)
+    dialog.mainloop()  # Run local event loop to prevent Jupyter freezes
+    
+    # Re-hide root window after dialog closes
+    try:
+        root.attributes("-topmost", False)
+        root.withdraw()
+    except:
+        pass
+        
+    return dialog.result
 
 def _safe_showinfo(title, message, **kwargs):
-    root = get_tk_root()
-    _bring_to_front(root)
-    try:
-        print(f"\n[{title}] {message}\n")
-        res = _orig_showinfo(title, message, parent=root, **kwargs)
-        return res
-    except Exception as e:
-        print(f"[{title}] {message} (Tkinter dialog error: {e})")
-        return "ok"
-    finally:
-        _send_to_back(root)
+    print(f"\n[{title}] {message}\n")
+    show_custom_dialog(title, message, dialog_type="info")
+    return "ok"
 
 def _safe_showerror(title, message, **kwargs):
-    root = get_tk_root()
-    _bring_to_front(root)
-    try:
-        print(f"\n[ERROR] [{title}] {message}\n")
-        res = _orig_showerror(title, message, parent=root, **kwargs)
-        return res
-    except Exception as e:
-        print(f"[ERROR] [{title}] {message} (Tkinter dialog error: {e})")
-        return "ok"
-    finally:
-        _send_to_back(root)
+    print(f"\n[ERROR] [{title}] {message}\n")
+    show_custom_dialog(title, message, dialog_type="info")
+    return "ok"
 
 def _safe_showwarning(title, message, **kwargs):
-    root = get_tk_root()
-    _bring_to_front(root)
-    try:
-        print(f"\n[WARNING] [{title}] {message}\n")
-        res = _orig_showwarning(title, message, parent=root, **kwargs)
-        return res
-    except Exception as e:
-        print(f"[WARNING] [{title}] {message} (Tkinter dialog error: {e})")
-        return "ok"
-    finally:
-        _send_to_back(root)
+    print(f"\n[WARNING] [{title}] {message}\n")
+    show_custom_dialog(title, message, dialog_type="info")
+    return "ok"
 
 def _safe_askyesno(title, message, **kwargs):
-    root = get_tk_root()
-    _bring_to_front(root)
-    try:
-        res = _orig_askyesno(title, message, parent=root, **kwargs)
-        return res
-    except Exception as e:
-        if _in_jupyter():
-            print(f"\n[PROMPT] {message}")
-            val = input("Enter 'y' for Yes, 'n' for No: ").strip().lower()
-            return val.startswith('y')
-        return True
-    finally:
-        _send_to_back(root)
+    res = show_custom_dialog(title, message, dialog_type="yesno")
+    if res is None:
+        return False
+    return res
 
 def _safe_askokcancel(title, message, **kwargs):
-    root = get_tk_root()
-    _bring_to_front(root)
-    try:
-        res = _orig_askokcancel(title, message, parent=root, **kwargs)
-        return res
-    except Exception as e:
-        if _in_jupyter():
-            print(f"\n[PROMPT] {message}")
-            val = input("Enter 'y' to Proceed, 'n' to Cancel: ").strip().lower()
-            return val.startswith('y')
-        return True
-    finally:
-        _send_to_back(root)
+    res = show_custom_dialog(title, message, dialog_type="okcancel")
+    if res is None:
+        return False
+    return res
 
 # Apply monkeypatching globally to Tkinter modules
 import tkinter.messagebox as tk_messagebox
@@ -191,45 +237,40 @@ def get_safe_save_path(save_dir, default_name):
     if not os.path.exists(save_path):
         return save_path
     
-    # If in Jupyter, auto-increment filename to prevent blocking/freezing the kernel
-    if _in_jupyter():
-        base, ext = os.path.splitext(default_name)
+    base, ext = os.path.splitext(default_name)
+    try:
+        while True:
+            suffix = show_custom_dialog("File Exists", 
+                                        f"'{default_name}' already exists in the folder.\n\n"
+                                        "Please enter a suffix to append (e.g., '_v2', '_new'), or leave blank to overwrite:",
+                                        dialog_type="askstring")
+            
+            # User clicked Cancel
+            if suffix is None:
+                return None
+                
+            # User left blank -> Overwrite
+            if suffix.strip() == "":
+                return save_path
+                
+            # Try new name
+            new_name = f"{base}{suffix}{ext}"
+            new_path = os.path.join(save_dir, new_name)
+            if not os.path.exists(new_path):
+                return new_path
+            
+            # If new name also exists, loop continues
+            default_name = new_name
+            base, ext = os.path.splitext(default_name)
+    except Exception as e:
+        print(f"  [Custom Dialog Error] {e}. Falling back to auto-increment.")
         counter = 1
         while True:
             new_name = f"{base}_{counter}{ext}"
             new_path = os.path.join(save_dir, new_name)
             if not os.path.exists(new_path):
-                print(f"  [Auto-Increment] '{default_name}' already exists. Auto-saved to: {new_name}")
                 return new_path
             counter += 1
-
-    base, ext = os.path.splitext(default_name)
-    root = get_tk_root()
-    try: root.attributes("-topmost", True)
-    except: pass
-    while True:
-        suffix = simpledialog.askstring("File Exists", 
-                                        f"'{default_name}' already exists in the folder.\n\n"
-                                        "Please enter a suffix to append (e.g., '_v2', '_new'), or leave blank to overwrite:",
-                                        parent=root)
-        
-        # User clicked Cancel
-        if suffix is None:
-            return None
-            
-        # User left blank -> Overwrite
-        if suffix.strip() == "":
-            return save_path
-            
-        # Try new name
-        new_name = f"{base}{suffix}{ext}"
-        new_path = os.path.join(save_dir, new_name)
-        if not os.path.exists(new_path):
-            return new_path
-        
-        # If new name also exists, loop continues
-        default_name = new_name
-        base, ext = os.path.splitext(default_name)
 
 def apply_spatial_trim(x, y, data, x_trim=0.0, y_trim=0.0):
     """
