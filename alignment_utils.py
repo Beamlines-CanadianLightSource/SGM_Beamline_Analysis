@@ -24,121 +24,99 @@ def _in_jupyter():
     except:
         return False
 
-def _safe_showinfo(title, message, **kwargs):
-    if _in_jupyter():
-        print(f"\n[{title}] {message}\n")
+def _bring_to_front(root):
+    if root:
         try:
+            root.deiconify()
+            root.lift()
+            root.attributes("-topmost", True)
+            root.focus_force()
             import sys
-            for mod_name in ['plot_sgm_bsky_data', 'plot_sdd_stack']:
-                if mod_name in sys.modules:
-                    mod = sys.modules[mod_name]
-                    sync = getattr(mod, '_GLOBAL_SYNC_OBJ', None)
-                    if sync and sync.status_widget:
-                        sync.status_widget.value = f"[{title}] {message.replace(chr(10), ' ')}"
-                        break
+            if sys.platform == 'darwin':
+                import os
+                # AppleScript to bring Python to front on macOS
+                os.system('osascript -e \'tell app "System Events" to set frontmost of process "Python" to true\' 2>/dev/null')
+                os.system('osascript -e \'tell app "System Events" to set frontmost of process "python3" to true\' 2>/dev/null')
+                os.system('osascript -e \'tell app "System Events" to set frontmost of process "python" to true\' 2>/dev/null')
         except:
             pass
-        return "ok"
+
+def _send_to_back(root):
+    if root:
+        try:
+            root.attributes("-topmost", False)
+            root.withdraw()
+        except:
+            pass
+
+def _safe_showinfo(title, message, **kwargs):
+    root = get_tk_root()
+    _bring_to_front(root)
     try:
-        parent = kwargs.get('parent')
-        if parent:
-            try: parent.attributes("-topmost", True)
-            except: pass
-        res = _orig_showinfo(title, message, **kwargs)
-        if parent:
-            try: parent.update()
-            except: pass
+        print(f"\n[{title}] {message}\n")
+        res = _orig_showinfo(title, message, parent=root, **kwargs)
         return res
     except Exception as e:
         print(f"[{title}] {message} (Tkinter dialog error: {e})")
         return "ok"
+    finally:
+        _send_to_back(root)
 
 def _safe_showerror(title, message, **kwargs):
-    if _in_jupyter():
-        print(f"\n[ERROR] [{title}] {message}\n")
-        try:
-            import sys
-            for mod_name in ['plot_sgm_bsky_data', 'plot_sdd_stack']:
-                if mod_name in sys.modules:
-                    mod = sys.modules[mod_name]
-                    sync = getattr(mod, '_GLOBAL_SYNC_OBJ', None)
-                    if sync and sync.status_widget:
-                        sync.status_widget.value = f"[ERROR] {message.replace(chr(10), ' ')}"
-                        break
-        except:
-            pass
-        return "ok"
+    root = get_tk_root()
+    _bring_to_front(root)
     try:
-        parent = kwargs.get('parent')
-        if parent:
-            try: parent.attributes("-topmost", True)
-            except: pass
-        res = _orig_showerror(title, message, **kwargs)
-        if parent:
-            try: parent.update()
-            except: pass
+        print(f"\n[ERROR] [{title}] {message}\n")
+        res = _orig_showerror(title, message, parent=root, **kwargs)
         return res
     except Exception as e:
         print(f"[ERROR] [{title}] {message} (Tkinter dialog error: {e})")
         return "ok"
+    finally:
+        _send_to_back(root)
 
 def _safe_showwarning(title, message, **kwargs):
-    if _in_jupyter():
-        print(f"\n[WARNING] [{title}] {message}\n")
-        return "ok"
+    root = get_tk_root()
+    _bring_to_front(root)
     try:
-        parent = kwargs.get('parent')
-        if parent:
-            try: parent.attributes("-topmost", True)
-            except: pass
-        res = _orig_showwarning(title, message, **kwargs)
-        if parent:
-            try: parent.update()
-            except: pass
+        print(f"\n[WARNING] [{title}] {message}\n")
+        res = _orig_showwarning(title, message, parent=root, **kwargs)
         return res
     except Exception as e:
         print(f"[WARNING] [{title}] {message} (Tkinter dialog error: {e})")
         return "ok"
+    finally:
+        _send_to_back(root)
 
 def _safe_askyesno(title, message, **kwargs):
-    if _in_jupyter():
-        print(f"\n[PROMPT] {message}")
-        try:
+    root = get_tk_root()
+    _bring_to_front(root)
+    try:
+        res = _orig_askyesno(title, message, parent=root, **kwargs)
+        return res
+    except Exception as e:
+        if _in_jupyter():
+            print(f"\n[PROMPT] {message}")
             val = input("Enter 'y' for Yes, 'n' for No: ").strip().lower()
             return val.startswith('y')
-        except Exception as e:
-            print(f"Non-interactive environment. Defaulting to Yes. (Error: {e})")
-            return True
-    try:
-        parent = kwargs.get('parent')
-        if parent:
-            try: parent.attributes("-topmost", True)
-            except: pass
-        res = _orig_askyesno(title, message, **kwargs)
-        if parent:
-            try: parent.update()
-            except: pass
-        return res
-    except Exception as e:
-        print(f"Tkinter dialog error: {e}. Defaulting to Yes.")
         return True
+    finally:
+        _send_to_back(root)
 
 def _safe_askokcancel(title, message, **kwargs):
-    if _in_jupyter():
-        print(f"\n[Auto-Confirm] {message} -> Proceeding.")
-        return True
+    root = get_tk_root()
+    _bring_to_front(root)
     try:
-        parent = kwargs.get('parent')
-        if parent:
-            try: parent.attributes("-topmost", True)
-            except: pass
-        res = _orig_askokcancel(title, message, **kwargs)
-        if parent:
-            try: parent.update()
-            except: pass
+        res = _orig_askokcancel(title, message, parent=root, **kwargs)
         return res
     except Exception as e:
+        if _in_jupyter():
+            print(f"\n[PROMPT] {message}")
+            val = input("Enter 'y' to Proceed, 'n' to Cancel: ").strip().lower()
+            return val.startswith('y')
         return True
+    finally:
+        _send_to_back(root)
 
 # Apply monkeypatching globally to Tkinter modules
 import tkinter.messagebox as tk_messagebox
