@@ -7,7 +7,7 @@ from IPython.display import display
 import traceback
 from scipy.interpolate import griddata
 import tkinter as tk
-from tkinter import messagebox, simpledialog
+from tkinter import messagebox, simpledialog, filedialog
 from matplotlib.figure import Figure
 
 # --- Jupyter/macOS Tkinter Stability Patch ---
@@ -109,12 +109,9 @@ class CustomTkDialog(tk.Toplevel):
 
 def show_custom_dialog(title, message, dialog_type="info"):
     root = get_tk_root()
-    # Lift root briefly to prevent focus loss on macOS/Windows
+    # DO NOT deiconify the root, as it causes a blank tk window to appear.
+    # The CustomTkDialog is a Toplevel and handles its own topmost attribute.
     try:
-        root.deiconify()
-        root.lift()
-        root.attributes("-topmost", True)
-        root.focus_force()
         import sys
         if sys.platform == 'darwin':
             import os
@@ -128,13 +125,6 @@ def show_custom_dialog(title, message, dialog_type="info"):
     dialog = CustomTkDialog(root, title, message, dialog_type=dialog_type)
     dialog.mainloop()  # Run local event loop to prevent Jupyter freezes
     
-    # Re-hide root window after dialog closes
-    try:
-        root.attributes("-topmost", False)
-        root.withdraw()
-    except:
-        pass
-        
     return dialog.result
 
 def _safe_showinfo(title, message, **kwargs):
@@ -227,6 +217,290 @@ def get_tk_root():
         _TK_ROOT = tk.Tk()
         _TK_ROOT.withdraw()
     return _TK_ROOT
+
+def console_log(msg):
+    import sys
+    print(msg, flush=True)
+    try:
+        sys.__stdout__.write("[CONSOLE] " + str(msg) + "\n")
+        sys.__stdout__.flush()
+    except Exception:
+        pass
+
+def safe_filedialog_call_fallback(func, *args, **kwargs):
+    console_log(f"safe_filedialog_call_fallback: using fallback (in-process) filedialog for {func.__name__}")
+    root = get_tk_root()
+    root.withdraw()
+    
+    # Create the temporary parent window
+    temp_win = tk.Toplevel(root)
+    temp_win.withdraw()
+    temp_win.attributes("-alpha", 0.0)
+    temp_win.attributes("-topmost", True)
+    
+    # Force layout update and handle mapping before showing the dialog
+    temp_win.deiconify()
+    temp_win.update()
+    temp_win.focus_force()
+    
+    # Run AppleScript focus if on macOS, or equivalent OS helper if necessary
+    try:
+        import sys
+        if sys.platform == 'darwin':
+            import os
+            os.system('osascript -e \'tell app "System Events" to set frontmost of process "Python" to true\' 2>/dev/null')
+    except:
+        pass
+    
+    kwargs['parent'] = temp_win
+    if func.__name__ == 'asksaveasfilename':
+        kwargs['confirmoverwrite'] = True
+    
+    # Call the dialog function
+    console_log(f"safe_filedialog_call_fallback: calling {func.__name__} in-process")
+    result = func(*args, **kwargs)
+    console_log(f"safe_filedialog_call_fallback: returned {result}")
+    
+    # Clean up
+    temp_win.destroy()
+    root.update()
+    
+    return result
+
+def safe_filedialog_call(func, *args, **kwargs):
+    """
+    Safely invokes a Tkinter filedialog function (e.g. asksaveasfilename, askopenfilename, askdirectory)
+    in a Jupyter notebook environment by launching a subprocess to avoid cross-thread hangs.
+    """
+    import subprocess
+    import json
+    import sys
+    import os
+    
+    # Extract common arguments
+    title = kwargs.get('title', '')
+    initialdir = kwargs.get('initialdir', '')
+    initialfile = kwargs.get('initialfile', '')
+    defaultextension = kwargs.get('defaultextension', '')
+    filetypes = kwargs.get('filetypes', [])
+    
+    # Format script based on the function type
+    func_name = func.__name__
+    
+    console_log(f"safe_filedialog_call: launching subprocess for {func_name}")
+    console_log(f"  title: {title}")
+    console_log(f"  initialdir: {initialdir}")
+    console_log(f"  initialfile: {initialfile}")
+    
+    script = f"""
+import tkinter as tk
+from tkinter import filedialog
+import json
+import sys
+
+try:
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    root.deiconify()
+    root.update()
+    root.focus_force()
+    
+    if "{func_name}" == "asksaveasfilename":
+        path = filedialog.asksaveasfilename(
+            title={repr(title)},
+            initialdir={repr(initialdir)},
+            initialfile={repr(initialfile)},
+            defaultextension={repr(defaultextension)},
+            filetypes={repr(filetypes)},
+            confirmoverwrite=True
+        )
+    elif "{func_name}" == "askopenfilename":
+        path = filedialog.askopenfilename(
+            title={repr(title)},
+            initialdir={repr(initialdir)},
+            filetypes={repr(filetypes)}
+        )
+    elif "{func_name}" == "askdirectory":
+        path = filedialog.askdirectory(
+            title={repr(title)},
+            initialdir={repr(initialdir)}
+        )
+    else:
+        path = ""
+        
+    print(json.dumps({{"path": path}}))
+except Exception as e:
+    print(json.dumps({{"error": str(e)}}))
+finally:
+    try: root.destroy()
+    except: pass
+"""
+    try:
+        # Run python in a subprocess using the current virtual environment's executable
+        console_log(f"  Executing subprocess with python: {sys.executable}")
+        res = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True)
+        out = res.stdout.strip()
+        console_log(f"  Subprocess finished. Raw stdout: {repr(out)}")
+        if res.stderr:
+            console_log(f"  Subprocess stderr: {repr(res.stderr)}")
+        data = json.loads(out)
+        if "error" in data:
+            console_log(f"Subprocess filedialog error: {data['error']}")
+            return None
+        console_log(f"  Subprocess returned path: {data.get('path')}")
+        return data.get("path")
+    except Exception as e:
+        console_log(f"Failed to launch subprocess filedialog: {e}. Falling back to in-process dialog.")
+        import traceback
+        try:
+            sys.__stderr__.write(traceback.format_exc() + "\n")
+            sys.__stderr__.flush()
+        except:
+            pass
+        return safe_filedialog_call_fallback(func, *args, **kwargs)
+
+def safe_metadata_dialog_call(initial_data=None):
+    """
+    Safely invokes the MetadataDialog in a separate python subprocess
+    to prevent Jupyter thread locks and GUI freezes on Windows.
+    """
+    import subprocess
+    import json
+    import sys
+    import tkinter as tk
+    
+    if initial_data is None:
+        initial_data = {}
+        
+    script = f"""
+import tkinter as tk
+from tkinter import simpledialog
+import json
+import sys
+
+class MetadataDialog(simpledialog.Dialog):
+    def __init__(self, parent, title, initial_data=None):
+        self.initial_data = initial_data or {{}}
+        super().__init__(parent, title)
+
+    def body(self, master):
+        fields = [
+            ("Sample Name", "Name"),
+            ("Sample Formula", "Formula"),
+            ("Authors", "Authors"),
+            ("Affiliation", "Affiliation"),
+            ("Element", "Element"),
+            ("Edge", "Edge"),
+            ("Preparation Method", "Prep"),
+            ("Calibrated To", "Calib"),
+            ("Temperature", "Temp"),
+            ("Scan Mode", "Mode"),
+            ("Chamber Conditions", "Chamber"),
+            ("Comments", "Comments")
+        ]
+        self.entries = {{}}
+        for i, (label_text, key) in enumerate(fields):
+            tk.Label(master, text=f"{{label_text}}:").grid(row=i, column=0, sticky='w', padx=5, pady=2)
+            entry = tk.Entry(master, width=40)
+            entry.grid(row=i, column=1, padx=5, pady=2)
+            if self.initial_data.get(key):
+                entry.insert(0, self.initial_data[key])
+            self.entries[key] = entry
+        return self.entries["Name"]
+
+    def apply(self):
+        self.result = {{key: (entry.get() or "N/A") for key, entry in self.entries.items()}}
+
+try:
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    root.deiconify()
+    root.update()
+    root.focus_force()
+    
+    initial_data = {repr(initial_data)}
+    d = MetadataDialog(root, "Research Metadata Input", initial_data=initial_data)
+    if hasattr(d, 'result') and d.result:
+        print(json.dumps({{"result": d.result}}))
+    else:
+        print(json.dumps({{"result": None}}))
+except Exception as e:
+    print(json.dumps({{"error": str(e)}}))
+finally:
+    try: root.destroy()
+    except: pass
+"""
+    try:
+        console_log("safe_metadata_dialog_call: launching subprocess...")
+        res = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True)
+        out = res.stdout.strip()
+        console_log(f"safe_metadata_dialog_call: subprocess finished. stdout: {repr(out)}")
+        if res.stderr:
+            console_log(f"safe_metadata_dialog_call: subprocess stderr: {repr(res.stderr)}")
+        data = json.loads(out)
+        if "error" in data:
+            console_log(f"safe_metadata_dialog_call subprocess error: {data['error']}")
+            return None
+        return data.get("result")
+    except Exception as e:
+        console_log(f"Failed to launch subprocess metadata dialog: {e}. Falling back to in-process.")
+        import traceback
+        try:
+            sys.__stderr__.write(traceback.format_exc() + "\n")
+            sys.__stderr__.flush()
+        except:
+            pass
+        
+        # Fallback to in-process dialog
+        root = get_tk_root()
+        root.withdraw()
+        temp_win = tk.Toplevel(root)
+        temp_win.withdraw()
+        temp_win.attributes("-alpha", 0.0)
+        temp_win.attributes("-topmost", True)
+        temp_win.deiconify()
+        temp_win.update()
+        temp_win.focus_force()
+        from tkinter import simpledialog
+        class LocalMetadataDialog(simpledialog.Dialog):
+            def __init__(self, parent, title, initial_data=None):
+                self.initial_data = initial_data or {}
+                super().__init__(parent, title)
+
+            def body(self, master):
+                fields = [
+                    ("Sample Name", "Name"),
+                    ("Sample Formula", "Formula"),
+                    ("Authors", "Authors"),
+                    ("Affiliation", "Affiliation"),
+                    ("Element", "Element"),
+                    ("Edge", "Edge"),
+                    ("Preparation Method", "Prep"),
+                    ("Calibrated To", "Calib"),
+                    ("Temperature", "Temp"),
+                    ("Scan Mode", "Mode"),
+                    ("Chamber Conditions", "Chamber"),
+                    ("Comments", "Comments")
+                ]
+                self.entries = {}
+                for i, (label_text, key) in enumerate(fields):
+                    tk.Label(master, text=f"{label_text}:").grid(row=i, column=0, sticky='w', padx=5, pady=2)
+                    entry = tk.Entry(master, width=40)
+                    entry.grid(row=i, column=1, padx=5, pady=2)
+                    if self.initial_data.get(key):
+                        entry.insert(0, self.initial_data[key])
+                    self.entries[key] = entry
+                return self.entries["Name"]
+
+            def apply(self):
+                self.result = {key: (entry.get() or "N/A") for key, entry in self.entries.items()}
+
+        d = LocalMetadataDialog(temp_win, "Research Metadata Input", initial_data=initial_data)
+        res = d.result if hasattr(d, 'result') else None
+        temp_win.destroy()
+        return res
 
 def get_safe_save_path(save_dir, default_name):
     """
@@ -415,7 +689,7 @@ def interactive_roll_align(path_pack, channel_roi=(80, 120), max_shift=100, use_
             
             if intensity is not None:
                 # Reuse or create figure
-                if not plt.fignum_exists(fig_id):
+                if not (hasattr(update_plot, 'fig') and plt.fignum_exists(fig_id)):
                     output.clear_output(wait=True)
                     fig, ax = plt.subplots(1, 2, figsize=(9, 4), num=fig_id)
                     update_plot.fig = fig

@@ -8,6 +8,7 @@ import ipywidgets as widgets
 from IPython.display import display
 import tkinter as tk
 from tkinter import messagebox, filedialog
+from alignment_utils import safe_filedialog_call
 
 def interactive_cluster_merger(h5_path, dataset_name='average'):
     """
@@ -170,6 +171,9 @@ def interactive_cluster_merger(h5_path, dataset_name='average'):
         mask_flat = np.isin(state['cluster_map'].flatten(), selected_c)
         merged_spec_orig = np.mean(state['stack_flat'][mask_flat], axis=0)
         
+        cluster_str = "_".join([str(c+1) for c in selected_c])
+        scan_name = os.path.splitext(os.path.basename(h5_path))[0]
+        
         # Determine saving columns based on IPFY mode
         ipfy = state.get('ipfy_mode', False)
         data_to_save = {'Energy_eV': state['energy']}
@@ -183,12 +187,14 @@ def interactive_cluster_merger(h5_path, dataset_name='average'):
         else:
             data_to_save[f'Merged_Clusters_{cluster_str}'] = merged_spec_orig
         
-        root = tk.Tk(); root.withdraw(); root.attributes('-topmost', True)
-        scan_name = os.path.splitext(os.path.basename(h5_path))[0]
-        cluster_str = "_".join([str(c+1) for c in selected_c])
         default_name = f"{scan_name}_{state['current_dataset']}_merged_clusters_{cluster_str}.csv"
-        save_path = filedialog.asksaveasfilename(title="Save Merged Spectrum", initialdir=os.path.dirname(h5_path), initialfile=default_name, defaultextension=".csv", parent=root)
-        root.destroy()
+        save_path = safe_filedialog_call(
+            filedialog.asksaveasfilename,
+            title="Save Merged Spectrum",
+            initialdir=os.path.dirname(h5_path),
+            initialfile=default_name,
+            defaultextension=".csv"
+        )
         
         if save_path:
             try:

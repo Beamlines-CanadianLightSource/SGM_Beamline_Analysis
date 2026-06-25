@@ -140,6 +140,7 @@ class MCC1SummatorApp(tk.Tk):
         
     def load_files(self):
         file_paths = filedialog.askopenfilenames(
+            parent=self,
             title="Select HDF5 Stack Files",
             filetypes=[("HDF5 files", "*.h5"), ("All files", "*.*")]
         )
@@ -242,6 +243,7 @@ class MCC1SummatorApp(tk.Tk):
         initial_dir = os.path.dirname(first_active['file']) if first_active else os.getcwd()
         
         save_path = filedialog.asksaveasfilename(
+            parent=self,
             title="Save Averaged MCC1 to CSV",
             initialdir=initial_dir,
             defaultextension=".csv",

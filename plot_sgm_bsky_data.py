@@ -15,7 +15,7 @@ _GLOBAL_SYNC_OBJ = None
 import tkinter as tk
 from tkinter import messagebox, simpledialog, filedialog
 from analyze_sgm_bsky_data import analyze_sgm_bsky_data
-from alignment_utils import grid_interpolate_map, get_safe_save_path, get_tk_root, get_masked_triangulation
+from alignment_utils import grid_interpolate_map, get_safe_save_path, get_tk_root, get_masked_triangulation, safe_filedialog_call, console_log, safe_metadata_dialog_call
 import sdd_calibration_utils as sdd_calib
 import mplcursors
 from matplotlib.widgets import RectangleSelector, Button, PolygonSelector, Slider, SpanSelector, CheckButtons
@@ -917,7 +917,15 @@ class DashboardRow:
         p_low, p_high = self.sync.contrast_percentiles
 
         # Export Energy Map
-        path_en = get_safe_save_path(self.ctx['save_dir'], f"{self.ctx['scan_name']}_{self.name}_{self.rep_e:.2f}eV.png")
+        default_name_en = f"{self.ctx['scan_name']}_{self.name}_{self.rep_e:.2f}eV.png"
+        path_en = safe_filedialog_call(
+            filedialog.asksaveasfilename,
+            title="Save Energy Map",
+            initialdir=self.ctx['save_dir'],
+            initialfile=default_name_en,
+            defaultextension=".png",
+            filetypes=[("PNG files", "*.png"), ("All files", "*.*")]
+        )
         if path_en:
             data_en = m_rep[tm]
             vmin = np.nanpercentile(data_en, p_low) if len(data_en) > 0 else 0
@@ -940,7 +948,15 @@ class DashboardRow:
             print(f"    -> [SAVE] Energy Map: {path_en}", flush=True)
 
         # Export Average Map
-        path_avg = get_safe_save_path(self.ctx['save_dir'], f"{self.ctx['scan_name']}_{self.name}_StackAverage.png")
+        default_name_avg = f"{self.ctx['scan_name']}_{self.name}_StackAverage.png"
+        path_avg = safe_filedialog_call(
+            filedialog.asksaveasfilename,
+            title="Save Average Map",
+            initialdir=self.ctx['save_dir'],
+            initialfile=default_name_avg,
+            defaultextension=".png",
+            filetypes=[("PNG files", "*.png"), ("All files", "*.*")]
+        )
         if path_avg:
             num_en = len(self.sync.all_energies)
             m_avg = self.ctx['avg_maps'][self.name] / num_en
@@ -1278,292 +1294,358 @@ class SummaryDashboard:
 
     def get_metadata(self):
         if self.sync.full_metadata and self.sync.user_metadata is None:
-            root = get_tk_root()
-            root.attributes("-topmost", True)
-            d = MetadataDialog(root, "Research Metadata Input", initial_data={"Name": self.ctx['scan_name']})
-            if d.result:
-                self.sync.user_metadata = d.result
+            res = safe_metadata_dialog_call(initial_data={"Name": self.ctx['scan_name']})
+            if res:
+                self.sync.user_metadata = res
         return self.sync.user_metadata or {}
 
     def save_summary_csv(self, event):
-        roi, poly, mode = self.current_roi, self.current_poly, self.mode
-        current_summary = {det: [] for det in self.ctx['detector_names']}
-        current_mcc = {f'mcc{ch}': [] for ch in (self.ctx['mcc_channels'] or [])}
-        mask = get_dynamic_mask(self.ctx['x_coords'], self.ctx['y_coords'], self.ctx['x_trim'], self.ctx['y_trim'], roi=roi, poly=poly if mode=='poly' else None)
+        console_log("\n[BUTTON CLICK] 'Save XANES Spectra' clicked!")
+        try:
+            roi, poly, mode = self.current_roi, self.current_poly, self.mode
+            current_summary = {det: [] for det in self.ctx['detector_names']}
+            current_mcc = {f'mcc{ch}': [] for ch in (self.ctx['mcc_channels'] or [])}
+            mask = get_dynamic_mask(self.ctx['x_coords'], self.ctx['y_coords'], self.ctx['x_trim'], self.ctx['y_trim'], roi=roi, poly=poly if mode=='poly' else None)
 
-        roi_ch = self.ctx.get('channel_roi', (0, 255))
-        print(f"  Exporting {mode} ROI summary...")
-        print(f"  -> Active Channel ROI: {roi_ch[0]} - {roi_ch[1]}")
-        # 1. SDD Summaries
-        for det in self.ctx['detector_names']:
-            # Re-sum from the LIVE stack_maps (updated during ROI drag)
-            current_summary[det] = np.sum(self.ctx['stack_maps'][det][:, mask], axis=1)
-        
-        # 2. MCC Summaries
-        if self.ctx['mcc_channels']:
-            for ch in self.ctx['mcc_channels']:
-                mcc_key = f'mcc{ch}'
-                if mcc_key in self.ctx['mcc_maps']:
-                    mcc_array = self.ctx['mcc_maps'][mcc_key]
-                    means = []
-                    for e_idx in range(mcc_array.shape[0]):
-                        means.append(np.mean(mcc_array[e_idx, mask]) if np.any(mask) else 0.0)
-                    current_mcc[mcc_key] = means
-                else:
-                    current_mcc[mcc_key] = [0.0] * len(self.sync.all_energies)
-        
-        # 3. I0 Normalization Handling
-        if self.ctx.get('ext_i0_values') is not None:
-            i0_values = self.ctx['ext_i0_values'].copy()
-            src = self.ctx.get('i0_source', '')
-            i0_source = src if src.startswith("Internal") else f"External: {src}"
-        else:
-            mcc1_key = 'mcc1'
-            if mcc1_key in current_mcc and np.any(current_mcc[mcc1_key]):
-                i0_values = np.array(current_mcc[mcc1_key]).copy()
-                i0_source = "Internal: mcc1"
-            else:
-                i0_values = np.ones(len(self.sync.all_energies))
-                i0_source = "None (Raw Only)"
-        
-        # Prepare Normalized Data
-
-        # Prepare Normalized Data
-        i0_safe = np.where(i0_values == 0, 1.0, i0_values)
-        normalized_summary = {det: current_summary[det] / i0_safe for det in self.ctx['detector_names']}
-        norm_avg = np.nanmean([normalized_summary[det] for det in self.ctx['detector_names']], axis=0)
-        
-        # Prepare Normalized MCC Data
-        normalized_mcc = {}
-        for mcc_key, data in current_mcc.items():
-            normalized_mcc[mcc_key] = np.array(data) / i0_safe
-
-        raw_avg = np.nanmean([current_summary[det] for det in self.ctx['detector_names']], axis=0)
-
-        roi_ch = self.ctx.get('channel_roi', (0, 255))
-        roi_ch_str = f"Ch{roi_ch[0]}-{roi_ch[1]}"
-        mode_str = "Poly" if mode=='poly' else "Rect"
-        default_name = f"{self.ctx['scan_name']}_{mode_str}_{roi_ch_str}_summary.csv"
-        save_path = get_safe_save_path(self.ctx['save_dir'], default_name)
-        if save_path:
-            meta = self.get_metadata()
-            rows = []
-            if self.sync.full_metadata:
-                rows += [
-                    f"# Name: {meta.get('Name', 'N/A')}",
-                    f"# Formula: {meta.get('Formula', 'N/A')}",
-                    f"# Authors: {meta.get('Authors', 'N/A')}",
-                    f"# Affiliation: {meta.get('Affiliation', 'N/A')}",
-                    f"# Facility: CLS",
-                    f"# Beamline: SGM",
-                    f"# Mono: Spherical Grating Monochromator",
-                    f"# Website: https://sgm.lightsource.ca",
-                    f"# Element: {meta.get('Element', 'N/A')}",
-                    f"# Edge: {meta.get('Edge', 'N/A')}",
-                    f"# Preparation Method: {meta.get('Prep', 'N/A')}",
-                    f"# Calibrated To: {meta.get('Calib', 'N/A')}",
-                    f"# Temperature: {meta.get('Temp', 'N/A')}",
-                    f"# Scan Mode: {meta.get('Mode', 'N/A')}",
-                    f"# Chamber Conditions: {meta.get('Chamber', 'N/A')}",
-                    f"# Comments: {meta.get('Comments', 'N/A')}",
-                    "#"
-                ]
-            
             roi_ch = self.ctx.get('channel_roi', (0, 255))
-            roi_ch_str = f"Ch{roi_ch[0]}-{roi_ch[1]}"
-            rows += [
-                f"# Scan Name: {self.ctx['scan_name']}",
-                f"# Project: {self.ctx['project_name']}",
-                f"# Date: {self.ctx['path_pack'].get('date', 'N/A')}",
-                f"# Number of Images: {len(self.sync.all_energies)}",
-                f"# Energy Regions: {self.ctx['path_pack'].get('Energy Regions', 'N/A')}",
-                f"# Grid: {self.ctx['path_pack'].get('nx', 'N/A')} x {self.ctx['path_pack'].get('ny', 'N/A')} (Total: {len(self.ctx['x_coords'])})",
-                f"# Grating: {self.ctx['path_pack'].get('grating', 'N/A')}",
-                f"# Harmonic: {self.ctx['path_pack'].get('harmonic', 'N/A')}",
-                f"# Strip: {self.ctx['path_pack'].get('strip', 'N/A')}",
-                f"# Polarization: {self.ctx['path_pack'].get('polarization', 'N/A')}",
-                f"# Exit Slit Gap: {self.ctx['path_pack'].get('exit_slit_gap', 'N/A')}",
-                f"# XPS Z: {self.ctx['path_pack'].get('xps_z', 'N/A')}",
-                f"# Time Per Map: {self.ctx['path_pack'].get('time_per_map', 'N/A')}",
-                f"# Number of Points: {self.ctx['path_pack'].get('number_of_points', 'N/A')}",
-                f"# ROI Selection: {mode_str}",
-                f"# Channels: {roi_ch_str}",
-                f"# Normalization: {i0_source}",
-                f"# SDD Calibration: {'ACTIVE' if self.sync.use_sdd_calib else 'DISABLED'}",
-                "#"
-            ]
-            
-            rows.append("# Column 1: Calibrated Energy (eV)")
-            rows.append("# Column 2: Original Energy (eV)")
-            c_idx = 3
-            # List Raw Columns
+            console_log(f"  Exporting {mode} ROI summary...")
+            console_log(f"  -> Active Channel ROI: {roi_ch[0]} - {roi_ch[1]}")
+            # 1. SDD Summaries
             for det in self.ctx['detector_names']:
-                label = SDD_NAMES.get(int(det.replace('sdd','')), det) if 'sdd' in det else det
-                rows.append(f"# Column {c_idx}: RAW_{label}"); c_idx += 1
-            rows.append(f"# Column {c_idx}: RAW_Average_SDD"); c_idx += 1
+                # Re-sum from the LIVE stack_maps (updated during ROI drag)
+                current_summary[det] = np.sum(self.ctx['stack_maps'][det][:, mask], axis=1)
             
-            # List Normalized Columns
-            for det in self.ctx['detector_names']:
-                label = SDD_NAMES.get(int(det.replace('sdd','')), det) if 'sdd' in det else det
-                rows.append(f"# Column {c_idx}: NORM_{label} (by {i0_source})"); c_idx += 1
-            rows.append(f"# Column {c_idx}: NORM_Average_SDD"); c_idx += 1
-            
+            # 2. MCC Summaries
             if self.ctx['mcc_channels']:
                 for ch in self.ctx['mcc_channels']:
-                    label = MCC_NAMES.get(ch, f"mcc{ch}")
+                    mcc_key = f'mcc{ch}'
+                    if mcc_key in self.ctx['mcc_maps']:
+                        mcc_array = self.ctx['mcc_maps'][mcc_key]
+                        means = []
+                        for e_idx in range(mcc_array.shape[0]):
+                            means.append(np.mean(mcc_array[e_idx, mask]) if np.any(mask) else 0.0)
+                        current_mcc[mcc_key] = means
+                    else:
+                        current_mcc[mcc_key] = [0.0] * len(self.sync.all_energies)
+            
+            # 3. I0 Normalization Handling
+            if self.ctx.get('ext_i0_values') is not None:
+                i0_values = self.ctx['ext_i0_values'].copy()
+                src = self.ctx.get('i0_source', '')
+                i0_source = src if src.startswith("Internal") else f"External: {src}"
+            else:
+                mcc1_key = 'mcc1'
+                if mcc1_key in current_mcc and np.any(current_mcc[mcc1_key]):
+                    i0_values = np.array(current_mcc[mcc1_key]).copy()
+                    i0_source = "Internal: mcc1"
+                else:
+                    i0_values = np.ones(len(self.sync.all_energies))
+                    i0_source = "None (Raw Only)"
+            
+            # Prepare Normalized Data
+            i0_safe = np.where(i0_values == 0, 1.0, i0_values)
+            normalized_summary = {det: current_summary[det] / i0_safe for det in self.ctx['detector_names']}
+            norm_avg = np.nanmean([normalized_summary[det] for det in self.ctx['detector_names']], axis=0)
+            
+            # Prepare Normalized MCC Data
+            normalized_mcc = {}
+            for mcc_key, data in current_mcc.items():
+                normalized_mcc[mcc_key] = np.array(data) / i0_safe
+
+            raw_avg = np.nanmean([current_summary[det] for det in self.ctx['detector_names']], axis=0)
+
+            roi_ch = self.ctx.get('channel_roi', (0, 255))
+            roi_ch_str = f"Ch{roi_ch[0]}-{roi_ch[1]}"
+            mode_str = "Poly" if mode=='poly' else "Rect"
+            default_name = f"{self.ctx['scan_name']}_{mode_str}_{roi_ch_str}_summary.csv"
+            
+            console_log(f"  Calling safe_filedialog_call: default={default_name}")
+            save_path = safe_filedialog_call(
+                filedialog.asksaveasfilename,
+                title=f"Save {mode_str} XANES Spectra",
+                initialdir=self.ctx['save_dir'],
+                initialfile=default_name,
+                defaultextension=".csv",
+                filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+            )
+            console_log(f"  safe_filedialog_call returned: {save_path}")
+            
+            if save_path:
+                meta = self.get_metadata()
+                rows = []
+                if self.sync.full_metadata:
+                    rows += [
+                        f"# Name: {meta.get('Name', 'N/A')}",
+                        f"# Formula: {meta.get('Formula', 'N/A')}",
+                        f"# Authors: {meta.get('Authors', 'N/A')}",
+                        f"# Affiliation: {meta.get('Affiliation', 'N/A')}",
+                        f"# Facility: CLS",
+                        f"# Beamline: SGM",
+                        f"# Mono: Spherical Grating Monochromator",
+                        f"# Website: https://sgm.lightsource.ca",
+                        f"# Element: {meta.get('Element', 'N/A')}",
+                        f"# Edge: {meta.get('Edge', 'N/A')}",
+                        f"# Preparation Method: {meta.get('Prep', 'N/A')}",
+                        f"# Calibrated To: {meta.get('Calib', 'N/A')}",
+                        f"# Temperature: {meta.get('Temp', 'N/A')}",
+                        f"# Scan Mode: {meta.get('Mode', 'N/A')}",
+                        f"# Chamber Conditions: {meta.get('Chamber', 'N/A')}",
+                        f"# Comments: {meta.get('Comments', 'N/A')}",
+                        "#"
+                    ]
+                
+                roi_ch = self.ctx.get('channel_roi', (0, 255))
+                roi_ch_str = f"Ch{roi_ch[0]}-{roi_ch[1]}"
+                rows += [
+                    f"# Scan Name: {self.ctx['scan_name']}",
+                    f"# Project: {self.ctx['project_name']}",
+                    f"# Date: {self.ctx['path_pack'].get('date', 'N/A')}",
+                    f"# Number of Images: {len(self.sync.all_energies)}",
+                    f"# Energy Regions: {self.ctx['path_pack'].get('Energy Regions', 'N/A')}",
+                    f"# Grid: {self.ctx['path_pack'].get('nx', 'N/A')} x {self.ctx['path_pack'].get('ny', 'N/A')} (Total: {len(self.ctx['x_coords'])})",
+                    f"# Grating: {self.ctx['path_pack'].get('grating', 'N/A')}",
+                    f"# Harmonic: {self.ctx['path_pack'].get('harmonic', 'N/A')}",
+                    f"# Strip: {self.ctx['path_pack'].get('strip', 'N/A')}",
+                    f"# Polarization: {self.ctx['path_pack'].get('polarization', 'N/A')}",
+                    f"# Exit Slit Gap: {self.ctx['path_pack'].get('exit_slit_gap', 'N/A')}",
+                    f"# XPS Z: {self.ctx['path_pack'].get('xps_z', 'N/A')}",
+                    f"# Time Per Map: {self.ctx['path_pack'].get('time_per_map', 'N/A')}",
+                    f"# Number of Points: {self.ctx['path_pack'].get('number_of_points', 'N/A')}",
+                    f"# ROI Selection: {mode_str}",
+                    f"# Channels: {roi_ch_str}",
+                    f"# Normalization: {i0_source}",
+                    f"# SDD Calibration: {'ACTIVE' if self.sync.use_sdd_calib else 'DISABLED'}",
+                    "#"
+                ]
+                
+                rows.append("# Column 1: Calibrated Energy (eV)")
+                rows.append("# Column 2: Original Energy (eV)")
+                c_idx = 3
+                # List Raw Columns
+                for det in self.ctx['detector_names']:
+                    label = SDD_NAMES.get(int(det.replace('sdd','')), det) if 'sdd' in det else det
                     rows.append(f"# Column {c_idx}: RAW_{label}"); c_idx += 1
-                for ch in self.ctx['mcc_channels']:
-                    label = MCC_NAMES.get(ch, f"mcc{ch}")
+                rows.append(f"# Column {c_idx}: RAW_Average_SDD"); c_idx += 1
+                
+                # List Normalized Columns
+                for det in self.ctx['detector_names']:
+                    label = SDD_NAMES.get(int(det.replace('sdd','')), det) if 'sdd' in det else det
                     rows.append(f"# Column {c_idx}: NORM_{label} (by {i0_source})"); c_idx += 1
-            rows.append("#")
-            for i, energy in enumerate(self.sync.all_energies):
-                row_data = [f"{self.ctx['calibrated_energies'][i]:.2f}", f"{energy:.2f}"]
-                # Raw Columns
-                for det in self.ctx['detector_names']: row_data.append(f"{current_summary[det][i]:.2f}")
-                row_data.append(f"{raw_avg[i]:.2f}")
-                # Normalized Columns
-                for det in self.ctx['detector_names']: row_data.append(f"{normalized_summary[det][i]:.6f}")
-                row_data.append(f"{norm_avg[i]:.6f}")
-                # MCC Columns
+                rows.append(f"# Column {c_idx}: NORM_Average_SDD"); c_idx += 1
+                
                 if self.ctx['mcc_channels']:
-                    for ch in self.ctx['mcc_channels']: row_data.append(f"{current_mcc[f'mcc{ch}'][i]:.6f}")
-                    for ch in self.ctx['mcc_channels']: row_data.append(f"{normalized_mcc[f'mcc{ch}'][i]:.6f}")
-                rows.append(",".join(row_data))
-            save_csv_idl(save_path, rows)
-            root_msg = get_tk_root()
-            root_msg.attributes("-topmost", True)
-            messagebox.showinfo("Save Successful", f"Exported {mode_str} XANES spectra to:\n{save_path}", parent=root_msg)
+                    for ch in self.ctx['mcc_channels']:
+                        label = MCC_NAMES.get(ch, f"mcc{ch}")
+                        rows.append(f"# Column {c_idx}: RAW_{label}"); c_idx += 1
+                    for ch in self.ctx['mcc_channels']:
+                        label = MCC_NAMES.get(ch, f"mcc{ch}")
+                        rows.append(f"# Column {c_idx}: NORM_{label} (by {i0_source})"); c_idx += 1
+                rows.append("#")
+                for i, energy in enumerate(self.sync.all_energies):
+                    row_data = [f"{self.ctx['calibrated_energies'][i]:.2f}", f"{energy:.2f}"]
+                    # Raw Columns
+                    for det in self.ctx['detector_names']: row_data.append(f"{current_summary[det][i]:.2f}")
+                    row_data.append(f"{raw_avg[i]:.2f}")
+                    # Normalized Columns
+                    for det in self.ctx['detector_names']: row_data.append(f"{normalized_summary[det][i]:.6f}")
+                    row_data.append(f"{norm_avg[i]:.6f}")
+                    # MCC Columns
+                    if self.ctx['mcc_channels']:
+                        for ch in self.ctx['mcc_channels']: row_data.append(f"{current_mcc[f'mcc{ch}'][i]:.6f}")
+                        for ch in self.ctx['mcc_channels']: row_data.append(f"{normalized_mcc[f'mcc{ch}'][i]:.6f}")
+                    rows.append(",".join(row_data))
+                console_log(f"  Writing {len(rows)} rows to CSV...")
+                save_csv_idl(save_path, rows)
+                root_msg = get_tk_root()
+                root_msg.attributes("-topmost", True)
+                messagebox.showinfo("Save Successful", f"Exported {mode_str} XANES spectra to:\n{save_path}", parent=root_msg)
+                console_log("  Save summary CSV complete!")
+        except Exception as e:
+            console_log(f"[ERROR] Exception in save_summary_csv: {e}")
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            try:
+                sys.__stderr__.write(traceback.format_exc() + "\n")
+                sys.__stderr__.flush()
+            except:
+                pass
 
     def save_consolidated_xrd_spectrum(self, event):
-        roi, poly, mode = self.sync.current_roi, self.sync.current_poly, self.sync.mode
-        consolidated_specs = {det: np.zeros(256, dtype=np.float64) for det in self.ctx['detector_names']}
-        
-        print(f"  Integrating Consolidated XRD (Mode: {mode})...")
-        for i, energy in enumerate(self.sync.all_energies):
-            if (i+1) % 50 == 0 or (i+1) == len(self.sync.all_energies):
-                print(f"    Energy step {i+1}/{len(self.sync.all_energies)} ({energy:.2f} eV)...")
+        console_log("\n[BUTTON CLICK] 'Save XRD Spectra' clicked!")
+        try:
+            roi, poly, mode = self.sync.current_roi, self.sync.current_poly, self.sync.mode
+            consolidated_specs = {det: np.zeros(256, dtype=np.float64) for det in self.ctx['detector_names']}
             
-            for det in self.ctx['detector_names']:
-                p = self.ctx['path_pack']['sdd_files'][det].get(energy)
-                if not p:
-                     for k in self.ctx['path_pack']['sdd_files'][det].keys():
-                         if abs(k - energy) < 0.001:
-                             p = self.ctx['path_pack']['sdd_files'][det][k]; break
-                if not p or not os.path.exists(p): continue
-                try:
-                    d1d = np.fromfile(p, dtype=np.uint32)
-                    num_s = min(len(d1d) // 256, self.ctx['x_coords'].size)
-                    s2d = d1d[:num_s * 256].reshape((num_s, 256))
-                    if self.ctx['roll_shift'] != 0: s2d = np.roll(s2d, shift=self.ctx['roll_shift'], axis=0)
-                    m = get_dynamic_mask(self.ctx['x_coords'][:num_s], self.ctx['y_coords'][:num_s], self.ctx['x_trim'], self.ctx['y_trim'], roi=roi, poly=poly if mode=='poly' else None)
-                    if np.any(m): consolidated_specs[det] += np.sum(s2d[m], axis=0)
-                except: continue
+            console_log(f"  Integrating Consolidated XRD (Mode: {mode})...")
+            for i, energy in enumerate(self.sync.all_energies):
+                if (i+1) % 50 == 0 or (i+1) == len(self.sync.all_energies):
+                    console_log(f"    Energy step {i+1}/{len(self.sync.all_energies)} ({energy:.2f} eV)...")
+                
+                for det in self.ctx['detector_names']:
+                    p = self.ctx['path_pack']['sdd_files'][det].get(energy)
+                    if not p:
+                         for k in self.ctx['path_pack']['sdd_files'][det].keys():
+                             if abs(k - energy) < 0.001:
+                                 p = self.ctx['path_pack']['sdd_files'][det][k]; break
+                    if not p or not os.path.exists(p): continue
+                    try:
+                        d1d = np.fromfile(p, dtype=np.uint32)
+                        num_s = min(len(d1d) // 256, self.ctx['x_coords'].size)
+                        s2d = d1d[:num_s * 256].reshape((num_s, 256))
+                        if self.ctx['roll_shift'] != 0: s2d = np.roll(s2d, shift=self.ctx['roll_shift'], axis=0)
+                        m = get_dynamic_mask(self.ctx['x_coords'][:num_s], self.ctx['y_coords'][:num_s], self.ctx['x_trim'], self.ctx['y_trim'], roi=roi, poly=poly if mode=='poly' else None)
+                        if np.any(m): consolidated_specs[det] += np.sum(s2d[m], axis=0)
+                    except: continue
 
-        roi_ch_str = f"Ch{self.ctx['channel_roi'][0]}-{self.ctx['channel_roi'][1]}"
-        mode_str = "Poly" if mode=='poly' else "Rect"
-        default_name = f"{self.ctx['scan_name']}_Consolidated_{mode_str}_ROI_{roi_ch_str}_XRF.csv"
-        save_path = get_safe_save_path(self.ctx['save_dir'], default_name)
-        
-        if save_path:
-            meta = self.get_metadata()
-            rows = []
-            if self.sync.full_metadata:
+            roi_ch_str = f"Ch{self.ctx['channel_roi'][0]}-{self.ctx['channel_roi'][1]}"
+            mode_str = "Poly" if mode=='poly' else "Rect"
+            default_name = f"{self.ctx['scan_name']}_Consolidated_{mode_str}_ROI_{roi_ch_str}_XRF.csv"
+            
+            console_log(f"  Calling safe_filedialog_call: default={default_name}")
+            save_path = safe_filedialog_call(
+                filedialog.asksaveasfilename,
+                title=f"Save Consolidated {mode_str} XRD Spectra",
+                initialdir=self.ctx['save_dir'],
+                initialfile=default_name,
+                defaultextension=".csv",
+                filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+            )
+            console_log(f"  safe_filedialog_call returned: {save_path}")
+            
+            if save_path:
+                meta = self.get_metadata()
+                rows = []
+                if self.sync.full_metadata:
+                    rows += [
+                        f"# Name: {meta.get('Name', 'N/A')}", f"# Formula: {meta.get('Formula', 'N/A')}",
+                        f"# Authors: {meta.get('Authors', 'N/A')}", f"# Affiliation: {meta.get('Affiliation', 'N/A')}",
+                        f"# Facility: CLS", f"# Beamline: SGM", f"# Element: {meta.get('Element', 'N/A')}", f"# Edge: {meta.get('Edge', 'N/A')}", "#"
+                    ]
+
                 rows += [
-                    f"# Name: {meta.get('Name', 'N/A')}", f"# Formula: {meta.get('Formula', 'N/A')}",
-                    f"# Authors: {meta.get('Authors', 'N/A')}", f"# Affiliation: {meta.get('Affiliation', 'N/A')}",
-                    f"# Facility: CLS", f"# Beamline: SGM", f"# Element: {meta.get('Element', 'N/A')}", f"# Edge: {meta.get('Edge', 'N/A')}", "#"
+                    f"# Scan Name: {self.ctx['scan_name']}", f"# Project: {self.ctx['project_name']}",
+                    f"# Date: {self.ctx['path_pack'].get('date', 'N/A')}", f"# Number of Images: {len(self.sync.all_energies)}",
+                    f"# Energy Regions: {self.ctx['path_pack'].get('Energy Regions', 'N/A')}",
+                    f"# Grid: {self.ctx['path_pack'].get('nx', 'N/A')} x {self.ctx['path_pack'].get('ny', 'N/A')} (Total: {len(self.ctx['x_coords'])})",
+                    f"# Grating: {self.ctx['path_pack'].get('grating', 'N/A')}", f"# Harmonic: {self.ctx['path_pack'].get('harmonic', 'N/A')}",
+                    f"# Strip: {self.ctx['path_pack'].get('strip', 'N/A')}", f"# Polarization: {self.ctx['path_pack'].get('polarization', 'N/A')}",
+                    f"# Exit Slit Gap: {self.ctx['path_pack'].get('exit_slit_gap', 'N/A')}", f"# XPS Z: {self.ctx['path_pack'].get('xps_z', 'N/A')}",
+                    f"# Time Per Map: {self.ctx['path_pack'].get('time_per_map', 'N/A')}",
+                    f"# Number of Points: {self.ctx['path_pack'].get('number_of_points', 'N/A')}",
+                    f"# ROI Selection: {mode_str}", f"# SDD ROI Channels: {roi_ch_str}",
+                    f"# Image Energy: {self.sync.all_energies[self.sync.energy_idx]:.2f} eV",
+                    f"# Selection Coordinates: {roi if mode=='rect' else poly}", "#"
                 ]
-
-            rows += [
-                f"# Scan Name: {self.ctx['scan_name']}", f"# Project: {self.ctx['project_name']}",
-                f"# Date: {self.ctx['path_pack'].get('date', 'N/A')}", f"# Number of Images: {len(self.sync.all_energies)}",
-                f"# Energy Regions: {self.ctx['path_pack'].get('Energy Regions', 'N/A')}",
-                f"# Grid: {self.ctx['path_pack'].get('nx', 'N/A')} x {self.ctx['path_pack'].get('ny', 'N/A')} (Total: {len(self.ctx['x_coords'])})",
-                f"# Grating: {self.ctx['path_pack'].get('grating', 'N/A')}", f"# Harmonic: {self.ctx['path_pack'].get('harmonic', 'N/A')}",
-                f"# Strip: {self.ctx['path_pack'].get('strip', 'N/A')}", f"# Polarization: {self.ctx['path_pack'].get('polarization', 'N/A')}",
-                f"# Exit Slit Gap: {self.ctx['path_pack'].get('exit_slit_gap', 'N/A')}", f"# XPS Z: {self.ctx['path_pack'].get('xps_z', 'N/A')}",
-                f"# Time Per Map: {self.ctx['path_pack'].get('time_per_map', 'N/A')}",
-                f"# Number of Points: {self.ctx['path_pack'].get('number_of_points', 'N/A')}",
-                f"# ROI Selection: {mode_str}", f"# SDD ROI Channels: {roi_ch_str}",
-                f"# Image Energy: {self.sync.all_energies[self.sync.energy_idx]:.2f} eV",
-                f"# Selection Coordinates: {roi if mode=='rect' else poly}", "#"
-            ]
-            rows.append("#")
-            rows.append("# Column 1: Channel")
-            c_idx = 2
-            for det in self.ctx['detector_names']:
-                rows.append(f"# Column {c_idx}: {det}"); c_idx += 1
-            rows.append("#")
-            rows.append(",".join(["Channel"] + self.ctx['detector_names']))
-            for i in range(256):
-                row_data = [str(i)]
-                for det in self.ctx['detector_names']: row_data.append(f"{consolidated_specs[det][i]:.2f}")
-                rows.append(",".join(row_data))
-            save_csv_idl(save_path, rows)
-            root_msg = get_tk_root()
-            root_msg.attributes("-topmost", True)
-            messagebox.showinfo("Save Successful", f"Exported Consolidated {mode_str} ROI XRF to:\n{save_path}", parent=root_msg)
+                rows.append("#")
+                rows.append("# Column 1: Channel")
+                c_idx = 2
+                for det in self.ctx['detector_names']:
+                    rows.append(f"# Column {c_idx}: {det}"); c_idx += 1
+                rows.append("#")
+                rows.append(",".join(["Channel"] + self.ctx['detector_names']))
+                for i in range(256):
+                    row_data = [str(i)]
+                    for det in self.ctx['detector_names']: row_data.append(f"{consolidated_specs[det][i]:.2f}")
+                    rows.append(",".join(row_data))
+                console_log(f"  Writing XRD spectra to {save_path}...")
+                save_csv_idl(save_path, rows)
+                root_msg = get_tk_root()
+                root_msg.attributes("-topmost", True)
+                messagebox.showinfo("Save Successful", f"Exported Consolidated {mode_str} ROI XRF to:\n{save_path}", parent=root_msg)
+                console_log("  Save consolidated XRD spectrum complete!")
+        except Exception as e:
+            console_log(f"[ERROR] Exception in save_consolidated_xrd_spectrum: {e}")
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            try:
+                sys.__stderr__.write(traceback.format_exc() + "\n")
+                sys.__stderr__.flush()
+            except:
+                pass
 
     def save_all_images(self, event):
-        total = len(self.sync.dashboards)
-        save_dir_abs = os.path.abspath(self.ctx['save_dir'])
-        
-        # 1. Path Confirmation Popup
-        root_init = get_tk_root()
-        root_init.attributes("-topmost", True)
-        ok = messagebox.askokcancel("Confirm Export", f"Saving {total*2} images to:\n\n{save_dir_abs}\n\nProceed?", parent=root_init)
-        if not ok: return
-
-        # 2. Update Status via Widget (Safe for Jupyter)
-        if self.sync.status_widget:
-            self.sync.status_widget.value = f"EXPORT START: 0/{total} processed..."
-        
-        plt.ioff() # Temporary disable interactive display
-        print(f"\n--- [EXPORT START] Saving High-Quality PNGs for {total} Detectors ---", flush=True)
-        print(f"Target Directory: {save_dir_abs}", flush=True)
-        
-        for i, d in enumerate(self.sync.dashboards):
-            idx = i + 1
-            percent = (idx / total) * 100
-            msg = f"Processing {d.name}... ({idx}/{total}, {percent:.0f}%)"
-            if self.sync.status_widget:
-                self.sync.status_widget.value = msg
+        console_log("\n[BUTTON CLICK] 'Save All Images' clicked!")
+        try:
+            total = len(self.sync.dashboards)
+            save_dir_abs = os.path.abspath(self.ctx['save_dir'])
             
-            print(f"  {msg}", flush=True)
-            try:
-                d.export_images()
-            except Exception as e:
-                print(f"    ! Error exporting {d.name}: {e}", flush=True)
-        
-        # 3. Final Summary
-        if self.sync.status_widget:
-            self.sync.status_widget.value = f"EXPORT COMPLETE: {total} detectors saved."
-        plt.ion()
+            # 1. Path Selection Popup
+            console_log("  Calling safe_filedialog_call for directory...")
+            new_dir = safe_filedialog_call(
+                filedialog.askdirectory,
+                title="Select Directory to Save All Images",
+                initialdir=save_dir_abs
+            )
+            console_log(f"  safe_filedialog_call returned: {new_dir}")
+            
+            if not new_dir: 
+                console_log("  Directory selection cancelled.")
+                return
+                
+            save_dir_abs = os.path.abspath(new_dir)
 
-        # Safe Tkinter MessageBox
-        root_msg = get_tk_root()
-        root_msg.attributes("-topmost", True)
-        messagebox.showinfo("Export Complete", f"Successfully exported all maps to:\n{save_dir_abs}", parent=root_msg)
-        
-        if self.sync.status_widget:
-            self.sync.status_widget.value = f"EXPORT COMPLETE: All {total} maps saved to {save_dir_abs}"
-        print(f"--- [EXPORT COMPLETE] All {total} detectors saved to {save_dir_abs} ---\n", flush=True)
+            # 2. Update Status via Widget (Safe for Jupyter)
+            if self.sync.status_widget:
+                self.sync.status_widget.value = f"EXPORT START: 0/{total} processed..."
+            
+            plt.ioff() # Temporary disable interactive display
+            console_log(f"\n--- [EXPORT START] Saving High-Quality PNGs for {total} Detectors ---")
+            console_log(f"Target Directory: {save_dir_abs}")
+            
+            for i, d in enumerate(self.sync.dashboards):
+                idx = i + 1
+                percent = (idx / total) * 100
+                msg = f"Processing {d.name}... ({idx}/{total}, {percent:.0f}%)"
+                if self.sync.status_widget:
+                    self.sync.status_widget.value = msg
+                
+                console_log(f"  {msg}")
+                try:
+                    d.export_images()
+                except Exception as e:
+                    console_log(f"    ! Error exporting {d.name}: {e}")
+            
+            # 3. Final Summary
+            if self.sync.status_widget:
+                self.sync.status_widget.value = f"EXPORT COMPLETE: {total} detectors saved."
+            plt.ion()
+
+            # Safe Tkinter MessageBox
+            root_msg = get_tk_root()
+            root_msg.attributes("-topmost", True)
+            messagebox.showinfo("Export Complete", f"Successfully exported all maps to:\n{save_dir_abs}", parent=root_msg)
+            
+            if self.sync.status_widget:
+                self.sync.status_widget.value = f"EXPORT COMPLETE: All {total} maps saved to {save_dir_abs}"
+            console_log(f"--- [EXPORT COMPLETE] All {total} detectors saved to {save_dir_abs} ---\n")
+        except Exception as e:
+            console_log(f"[ERROR] Exception in save_all_images: {e}")
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            try:
+                sys.__stderr__.write(traceback.format_exc() + "\n")
+                sys.__stderr__.flush()
+            except:
+                pass
 
     def save_pymca_stack_call(self, event):
         """Callback for saving ROI-summed PyMca stack (3D)."""
-        from save_pymca_stack_h5 import save_pymca_stack_h5
-        # Use current state
-        roi_ch = self.ctx.get('channel_roi', (0, 255))
-        roi_map = self.sync.current_roi
-        
-        ipfy = getattr(self.sync, 'ipfy_mode', False)
-        print(f"  [EXPORT] Launching ROI-summed PyMca Stack Export (3D)... (IPFY Mode: {ipfy})")
-        print(f"  -> Active Channel ROI: {roi_ch}")
-        
+        console_log("\n[BUTTON CLICK] 'Save XANES Spectra for PCA/CA' clicked!")
         try:
+            from save_pymca_stack_h5 import save_pymca_stack_h5
+            # Use current state
+            roi_ch = self.ctx.get('channel_roi', (0, 255))
+            roi_map = self.sync.current_roi
+            
+            ipfy = getattr(self.sync, 'ipfy_mode', False)
+            console_log(f"  [EXPORT] Launching ROI-summed PyMca Stack Export (3D)... (IPFY Mode: {ipfy})")
+            console_log(f"  -> Active Channel ROI: {roi_ch}")
+            
             # Note: save_pymca_stack_h5 will handle the file dialog
             self.ctx['path_pack']['ipfy_mode'] = ipfy
+            console_log("  Calling save_pymca_stack_h5...")
             save_path = save_pymca_stack_h5(self.ctx['path_pack'], channel_roi=roi_ch, map_roi=roi_map)
+            console_log(f"  save_pymca_stack_h5 returned: {save_path}")
             
             # Automatically update the Jupyter global namespace
             if save_path:
@@ -1572,26 +1654,37 @@ class SummaryDashboard:
                     ip = get_ipython()
                     if ip:
                         ip.user_ns['saved_pymca_stack'] = save_path
-                        print(f"  [AUTO] Variable 'saved_pymca_stack' updated in notebook.")
-                except: pass
+                        console_log(f"  [AUTO] Variable 'saved_pymca_stack' updated in notebook.")
+                except Exception as e:
+                    console_log(f"  [WARNING] Failed to update Jupyter namespace: {e}")
+            console_log("  Save PyMca stack call complete!")
         except Exception as e:
-            print(f"Error during 3D Stack Export: {e}")
-            traceback.print_exc()
+            console_log(f"[ERROR] Exception in save_pymca_stack_call: {e}")
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            try:
+                sys.__stderr__.write(traceback.format_exc() + "\n")
+                sys.__stderr__.flush()
+            except:
+                pass
 
     def save_pymca_4d_stack_call(self, event):
         """Callback for saving full 4D PyMca stack."""
-        from save_pymca_4d_stack_h5 import save_pymca_4d_stack_h5
-        # Use current state
-        roi_ch = self.ctx.get('channel_roi', (0, 255))
-        
-        ipfy = getattr(self.sync, 'ipfy_mode', False)
-        print(f"  [EXPORT] Launching Full 4D PyMca Stack Export (4D Cube)... (IPFY Mode: {ipfy})")
-        print(f"  -> Active Channel ROI (for 3D preview): {roi_ch}")
-        
+        console_log("\n[BUTTON CLICK] 'Save XRF Spectra for Elemental Analysis using PyMca' clicked!")
         try:
+            from save_pymca_4d_stack_h5 import save_pymca_4d_stack_h5
+            # Use current state
+            roi_ch = self.ctx.get('channel_roi', (0, 255))
+            
+            ipfy = getattr(self.sync, 'ipfy_mode', False)
+            console_log(f"  [EXPORT] Launching Full 4D PyMca Stack Export (4D Cube)... (IPFY Mode: {ipfy})")
+            console_log(f"  -> Active Channel ROI (for 3D preview): {roi_ch}")
+            
             # Note: save_pymca_4d_stack_h5 will handle the file dialog
             self.ctx['path_pack']['ipfy_mode'] = ipfy
+            console_log("  Calling save_pymca_4d_stack_h5...")
             save_path = save_pymca_4d_stack_h5(self.ctx['path_pack'], normalize=True, channel_roi=roi_ch)
+            console_log(f"  save_pymca_4d_stack_h5 returned: {save_path}")
             
             # Automatically update the Jupyter global namespace
             if save_path:
@@ -1601,11 +1694,19 @@ class SummaryDashboard:
                     if ip:
                         ip.user_ns['saved_pymca_4d_stack'] = save_path
                         ip.user_ns['saved_pymca_stack'] = save_path # Often used interchangeably for the next step
-                        print(f"  [AUTO] Variables 'saved_pymca_4d_stack' and 'saved_pymca_stack' updated in notebook.")
-                except: pass
+                        console_log(f"  [AUTO] Variables 'saved_pymca_4d_stack' and 'saved_pymca_stack' updated in notebook.")
+                except Exception as e:
+                    console_log(f"  [WARNING] Failed to update Jupyter namespace: {e}")
+            console_log("  Save PyMca 4D stack call complete!")
         except Exception as e:
-            print(f"Error during 4D Stack Export: {e}")
-            traceback.print_exc()
+            console_log(f"[ERROR] Exception in save_pymca_4d_stack_call: {e}")
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            try:
+                sys.__stderr__.write(traceback.format_exc() + "\n")
+                sys.__stderr__.flush()
+            except:
+                pass
 
     def plot(self):
         has_mcc_data = (self.ctx['mcc_channels'] and len(self.ctx['mcc_channels']) > 0)
@@ -1924,7 +2025,8 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
             avg_dependence = np.zeros(len(all_energies))
 
         # ---- EXTERNAL I0 PROMPT ----
-        root_i0 = get_tk_root(); root_i0.attributes("-topmost", True)
+        root_i0 = get_tk_root()
+        root_i0.withdraw()
         
         # If single energy, skip the prompt and default to internal I0 (mcc1)
         if len(all_energies) <= 1:
@@ -1938,7 +2040,11 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
         i0_source = "mcc1" if (mcc_channels and 1 in mcc_channels) else "None (Raw Only)"
         
         if use_ext:
-            ext_path = filedialog.askopenfilename(title="Select External I0 CSV", filetypes=[("CSV files", "*.csv"), ("All files", "*.*")])
+            ext_path = safe_filedialog_call(
+                filedialog.askopenfilename,
+                title="Select External I0 CSV",
+                filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+            )
             if ext_path:
                 try:
                     ext_df = pd.read_csv(ext_path, comment='#')

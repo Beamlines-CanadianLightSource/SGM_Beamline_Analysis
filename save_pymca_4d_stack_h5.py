@@ -5,6 +5,7 @@ import os
 import tkinter as tk
 from tkinter import messagebox, filedialog
 from analyze_sgm_bsky_data import analyze_sgm_bsky_data
+from alignment_utils import safe_filedialog_call
 
 def save_pymca_4d_stack_h5(path_pack, output_path=None, normalize=True, channel_roi=None):
     """
@@ -28,22 +29,18 @@ def save_pymca_4d_stack_h5(path_pack, output_path=None, normalize=True, channel_
     # --- Determine the final save path ---
     final_save_path = output_path
     if not final_save_path:
-        root = tk.Tk()
-        root.withdraw()
-        root.attributes('-topmost', True)
-        
         h5_src = path_pack.get('h5_file_path', '')
         initial_dir = os.path.dirname(h5_src) if h5_src else os.getcwd()
         initial_name = os.path.splitext(os.path.basename(h5_src))[0] + "_Elemental_PyMca.h5" if h5_src else "elemental_pymca.h5"
         
-        final_save_path = filedialog.asksaveasfilename(
+        final_save_path = safe_filedialog_call(
+            filedialog.asksaveasfilename,
             title="Save 4D PyMca HDF5 Stack",
             initialdir=initial_dir,
             initialfile=initial_name,
             defaultextension=".h5",
             filetypes=[("HDF5 files", "*.h5"), ("All files", "*.*")]
         )
-        root.destroy()
         if not final_save_path:
             print("    -> Save operation cancelled.")
             return

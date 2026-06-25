@@ -5,6 +5,7 @@ import os
 import tkinter as tk
 from tkinter import messagebox, simpledialog, filedialog
 from analyze_sgm_bsky_data import analyze_sgm_bsky_data
+from alignment_utils import safe_filedialog_call
 
 def get_user_file_action(filename, output_path):
     """
@@ -74,23 +75,19 @@ def save_pymca_stack_h5(path_pack, output_path=None, channel_roi=None, map_roi=N
     
     # If no output path is provided, or if we want to give the user the chance to rename/pick folder
     if not final_save_path:
-        root = tk.Tk()
-        root.withdraw()
-        root.attributes('-topmost', True)
-        
         # Get source folder from path_pack (h5_file_path is stored there in analyze_sgm_bsky_data)
         h5_src = path_pack.get('h5_file_path', '')
         initial_dir = os.path.dirname(h5_src) if h5_src else os.getcwd()
         initial_name = os.path.splitext(os.path.basename(h5_src))[0] + "_PCA-CA.h5" if h5_src else "pca_ca_stack.h5"
         
-        final_save_path = filedialog.asksaveasfilename(
+        final_save_path = safe_filedialog_call(
+            filedialog.asksaveasfilename,
             title="Save PyMca-compatible HDF5 Stack",
             initialdir=initial_dir,
             initialfile=initial_name,
             defaultextension=".h5",
             filetypes=[("HDF5 files", "*.h5"), ("All files", "*.*")]
         )
-        root.destroy()
         
         if not final_save_path:
             print("    -> Save operation cancelled by user.")
