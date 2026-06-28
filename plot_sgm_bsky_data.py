@@ -1991,6 +1991,19 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
         print(f"  [Metadata] Full Headers: {'Enabled' if use_full_metadata else 'Disabled'}")
         print(f"  Location: {save_dir}")
         print(f"  [Alignment] Roll Shift: {roll_shift} | Trim: X={x_trim:.3f} mm, Y={y_trim:.3f} mm")
+        
+        # Load and display SDD calibration metadata
+        calib_data = sdd_calib.load_calibration()
+        if calib_data and "_metadata" in calib_data:
+            meta = calib_data["_metadata"]
+            scan_used = meta.get("scan_used", "Unknown / Not recorded")
+            edges_used = meta.get("edges_used", "Unknown / Not recorded")
+            last_updated = meta.get("last_updated", "Unknown")
+            print(f"  [SDD Calibration] Calibrated using scan: {scan_used}")
+            print(f"  [SDD Calibration] Edges used: {edges_used}")
+            print(f"  [SDD Calibration] Last updated: {last_updated}")
+        else:
+            print("  [SDD Calibration] No calibration metadata found.")
 
         summary_data = {det: [] for det in detector_names}
         avg_maps = {det: None for det in detector_names} 

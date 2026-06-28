@@ -298,6 +298,24 @@ class SDDCalibrationGUI:
             summary_text += f" - {sdd_id}: Gain={gain:.3f}, Offset={offset:.1f}<br>"
         
         self.calibrations.update(new_calib)
+        
+        # Collect edges used and scan file
+        edges_used = []
+        for i in range(n_pts):
+            name_val = self.point_configs[i]['name'].value
+            if name_val == "Custom":
+                energy_val = self.point_configs[i]['val'].value
+                edges_used.append(f"Custom ({energy_val} eV)")
+            else:
+                edges_used.append(name_val)
+        
+        scan_file = os.path.basename(self.data_pack['h5_file_path']) if self.data_pack else "Unknown"
+        
+        if "_metadata" not in self.calibrations:
+            self.calibrations["_metadata"] = {}
+        self.calibrations["_metadata"]["scan_used"] = scan_file
+        self.calibrations["_metadata"]["edges_used"] = edges_used
+        
         if calib_utils.save_calibration(self.calibrations):
             self.status.value = summary_text + "<br><font color='green'><b>Successfully saved to sdd_calibration.json</b></font>"
         else:

@@ -25,9 +25,9 @@ def save_calibration(calib_data):
     try:
         # Add a timestamp or metadata if needed
         import datetime
-        calib_data["_metadata"] = {
-            "last_updated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        }
+        if "_metadata" not in calib_data:
+            calib_data["_metadata"] = {}
+        calib_data["_metadata"]["last_updated"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with open(CALIBRATION_FILE, 'w') as f:
             json.dump(calib_data, f, indent=4)
         print(f"  -> [CALIBRATION] Saved to {CALIBRATION_FILE}")
