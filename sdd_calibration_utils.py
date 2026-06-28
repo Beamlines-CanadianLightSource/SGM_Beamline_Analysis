@@ -80,11 +80,29 @@ def calculate_calibration_params(channel_positions, energy_values):
     Performs a linear fit to determine Gain and Offset.
     Energy = Gain * Channel + Offset
     """
-    if len(channel_positions) < 2:
-        return 1.0, 0.0 # Default
+    channel_positions = np.asarray(channel_positions)
+    energy_values = np.asarray(energy_values)
     
-    # Fit: y = mx + c => Energy = Gain * Channel + Offset
-    coeffs = np.polyfit(channel_positions, energy_values, 1)
-    gain = coeffs[0]
-    offset = coeffs[1]
-    return float(gain), float(offset)
+    # Clean any NaNs or Infs
+    mask = np.isfinite(channel_positions) & np.isfinite(energy_values)
+    channel_positions = channel_positions[mask]
+    energy_values = energy_values[mask]
+    
+    if len(np.unique(channel_positions)) < 2 or len(np.unique(energy_values)) < 2:
+        print("  [Warning] Insufficient unique, finite points for linear calibration fit (requires at least 2 distinct channels and energies). Returning default params.")
+        return 1.0, 0.0 # Default fallback
+    
+    try:
+        # Fit: y = mx + c => Energy = Gain * Channel + Offset
+        coeffs = np.polyfit(channel_positions, energy_values, 1)
+        gain = coeffs[0]
+        offset = coeffs[1]
+        
+        # Avoid dividing by zero downstream if gain is exactly 0
+        if gain == 0:
+            gain = 1.0
+            
+        return float(gain), float(offset)
+    except np.linalg.LinAlgError as e:
+        print(f"  [Warning] SVD did not converge in calibration fit: {e}. Returning default params.")
+        return 1.0, 0.0

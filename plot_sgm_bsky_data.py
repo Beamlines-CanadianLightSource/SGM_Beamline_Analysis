@@ -371,7 +371,17 @@ class Synchronizer:
         # SDD Energy Calibration
         self.sdd_calib_data = sdd_calib.load_calibration()
         self.use_sdd_calib = False
-        self.energy_roi = (1470.0, 1500.0) # Default Energy ROI (Al region)
+        
+        # Initialize energy_roi dynamically based on first detector calibration and channel_roi
+        self.energy_roi = (1470.0, 1500.0) # Fallback
+        if self.sdd_calib_data:
+            first_det = next(iter(self.sdd_calib_data.keys()), None)
+            if first_det:
+                gain = self.sdd_calib_data[first_det].get('gain', 1.0)
+                offset = self.sdd_calib_data[first_det].get('offset', 0.0)
+                e1 = sdd_calib.channel_to_energy(self.channel_roi[0], gain, offset)
+                e2 = sdd_calib.channel_to_energy(self.channel_roi[1], gain, offset)
+                self.energy_roi = (float(min(e1, e2)), float(max(e1, e2)))
 
     def _find_nearest_idx(self, value):
         if value is None or len(self.all_energies) == 0: return 0
@@ -486,6 +496,16 @@ class Synchronizer:
             if self.status_widget:
                 self.status_widget.value = f"Spectral ROI: Ch{x1}-{x2}. (Energy Map updated. Click REFRESH for Average Map & Summary)"
             
+            # Update numeric input widgets if available
+            if hasattr(self, 'roi_start_widget') and self.roi_start_widget:
+                rounded_x1 = round(x1, 2)
+                if abs(self.roi_start_widget.value - rounded_x1) > 0.01:
+                    self.roi_start_widget.value = rounded_x1
+            if hasattr(self, 'roi_end_widget') and self.roi_end_widget:
+                rounded_x2 = round(x2, 2)
+                if abs(self.roi_end_widget.value - rounded_x2) > 0.01:
+                    self.roi_end_widget.value = rounded_x2
+            
             print(f"[DASHBOARD] Broadcasting new ROI: {new_roi}")
             
             # 2. Update the master context
@@ -531,6 +551,16 @@ class Synchronizer:
             if self.status_widget:
                 self.status_widget.value = f"Energy ROI: {e1:.1f}-{e2:.1f} eV. (Maps updated. Click REFRESH for Summary)"
             
+            # Update numeric input widgets if available
+            if hasattr(self, 'roi_start_widget') and self.roi_start_widget:
+                rounded_e1 = round(e1, 2)
+                if abs(self.roi_start_widget.value - rounded_e1) > 0.01:
+                    self.roi_start_widget.value = rounded_e1
+            if hasattr(self, 'roi_end_widget') and self.roi_end_widget:
+                rounded_e2 = round(e2, 2)
+                if abs(self.roi_end_widget.value - rounded_e2) > 0.01:
+                    self.roi_end_widget.value = rounded_e2
+
             print(f"[DASHBOARD] Broadcasting Energy ROI: {new_roi}")
             
             sd = self.summary_dash or _GLOBAL_SUMMARY_DASH
@@ -584,21 +614,29 @@ class Synchronizer:
         
         if self.is_syncing: return
         
-        x1, x2 = self.channel_roi
-        if getattr(self, '_last_refresh_roi', None) == (x1, x2):
+        if self.use_sdd_calib:
+            current_roi = self.energy_roi
+            roi_type = "Energy"
+            roi_label = f"{current_roi[0]:.1f}-{current_roi[1]:.1f} eV"
+        else:
+            current_roi = self.channel_roi
+            roi_type = "Channel"
+            roi_label = f"Ch{current_roi[0]}-{current_roi[1]}"
+            
+        if getattr(self, '_last_refresh_roi', None) == (current_roi, self.use_sdd_calib):
             import datetime
             timestamp = datetime.datetime.now().strftime("%H:%M:%S")
-            print(f"\n[{timestamp}] [GLOBAL REFRESH] Spectral ROI Ch{x1}-{x2} has not changed. Skipping redundant I/O.", flush=True)
+            print(f"\n[{timestamp}] [GLOBAL REFRESH] Spectral {roi_type} ROI {roi_label} has not changed. Skipping redundant I/O.", flush=True)
             if self.status_widget:
                 self.status_widget.value = f"[{timestamp}] REFRESH SKIPPED (ROI Unchanged)."
             return
             
         self.is_syncing = True 
-        self._last_refresh_roi = (x1, x2)
+        self._last_refresh_roi = (current_roi, self.use_sdd_calib)
         try:
             import datetime
             timestamp = datetime.datetime.now().strftime("%H:%M:%S")
-            print(f"\n[{timestamp}] [GLOBAL REFRESH] Re-integrating stack for Channels {x1}-{x2}...", flush=True)
+            print(f"\n[{timestamp}] [GLOBAL REFRESH] Re-integrating stack for {roi_type} ROI {roi_label}...", flush=True)
             if self.status_widget:
                 self.status_widget.value = f"[{timestamp}] RE-INTEGRATING STACK... (Please wait)"
             
@@ -619,8 +657,10 @@ class Synchronizer:
                 if self.use_sdd_calib:
                     e_min, e_max = self.energy_roi
                     ch1, ch2 = sdd_calib.get_calibrated_bounds(e_min, e_max, det, self.sdd_calib_data)
+                    ch_slice = slice(ch1, ch2)
                 else:
                     ch1, ch2 = self.channel_roi
+                    ch_slice = slice(ch1, ch2 + 1)
                 
                 for e_idx, energy in enumerate(all_energies):
                     p = path_pack['sdd_files'][det].get(energy)
@@ -631,7 +671,7 @@ class Synchronizer:
                             num_s = min(len(d1d) // 256, num_pixels)
                             s2d = d1d[:num_s * 256].reshape((num_s, 256))
                             if roll_shift != 0: s2d = np.roll(s2d, shift=roll_shift, axis=0)
-                            inten = np.sum(s2d[:, ch1:ch2], axis=1)
+                            inten = np.sum(s2d[:, ch_slice], axis=1)
                             master_ctx['stack_maps'][det][e_idx, :num_s] = inten
                             if master_ctx['avg_maps'][det] is None: master_ctx['avg_maps'][det] = inten.copy()
                             else: master_ctx['avg_maps'][det] += inten
@@ -655,7 +695,7 @@ class Synchronizer:
                 print("  [Warning] No Summary Dashboard found to refresh.", flush=True)
 
             if self.status_widget:
-                self.status_widget.value = f"[{timestamp}] REFRESH COMPLETE: Ch{x1}-{x2}."
+                self.status_widget.value = f"[{timestamp}] REFRESH COMPLETE: {roi_label}."
             print(f"[{timestamp}] [GLOBAL REFRESH] Complete.", flush=True)
         except Exception as e:
             print(f"  [Refresh Error] {e}", flush=True)
@@ -745,9 +785,11 @@ class DashboardRow:
             if self.sync.use_sdd_calib:
                 e1, e2 = self.sync.energy_roi
                 ch1, ch2 = sdd_calib.get_calibrated_bounds(e1, e2, self.name, self.sync.sdd_calib_data)
+                ch_slice = slice(ch1, ch2)
             else:
                 ch1, ch2 = self.ctx['channel_roi']
-            m_rep = np.sum(self.s2d_rep[:, ch1:ch2+1], axis=1)
+                ch_slice = slice(ch1, ch2 + 1)
+            m_rep = np.sum(self.s2d_rep[:, ch_slice], axis=1)
         tm = get_dynamic_mask(self.ctx['x_coords'][:len(m_rep)], self.ctx['y_coords'][:len(m_rep)], self.ctx['x_trim'], self.ctx['y_trim'])
         if self.sc_en:
             try:
@@ -1247,11 +1289,15 @@ class SummaryDashboard:
                 print(f"  [Summary] Error in MCC Lines: {e}")
             
             # Update Title to show active ROI for feedback
-            roi_ch = self.ctx.get('channel_roi', (0, 255))
+            if self.sync.use_sdd_calib:
+                roi_label = f"{self.sync.energy_roi[0]:.1f}-{self.sync.energy_roi[1]:.1f} eV"
+            else:
+                roi_ch = self.ctx.get('channel_roi', (0, 255))
+                roi_label = f"Ch{roi_ch[0]}-{roi_ch[1]}"
             i0_src = self.ctx.get('i0_source', 'mcc1')
             if self.sync.i0_calib_enabled and "Internal" not in i0_src:
                 i0_src += f" (Energy Shift: {self.sync.i0_energy_shift:+.2f} eV)"
-            title_str = f"Normalized Fluorescence Spectra (Ch{roi_ch[0]}-{roi_ch[1]}): {self.ctx['scan_name']} (by {i0_src})"
+            title_str = f"Normalized Fluorescence Spectra ({roi_label}): {self.ctx['scan_name']} (by {i0_src})"
             try:
                 # Handle both 1D and 2D axis arrays
                 if self.ax.ndim == 2 and self.ax.shape == (2, 2): target_ax = self.ax[1, 0]
@@ -1354,10 +1400,13 @@ class SummaryDashboard:
 
             raw_avg = np.nanmean([current_summary[det] for det in self.ctx['detector_names']], axis=0)
 
-            roi_ch = self.ctx.get('channel_roi', (0, 255))
-            roi_ch_str = f"Ch{roi_ch[0]}-{roi_ch[1]}"
+            if self.sync.use_sdd_calib:
+                roi_str = f"{self.sync.energy_roi[0]:.1f}-{self.sync.energy_roi[1]:.1f}eV"
+            else:
+                roi_ch = self.ctx.get('channel_roi', (0, 255))
+                roi_str = f"Ch{roi_ch[0]}-{roi_ch[1]}"
             mode_str = "Poly" if mode=='poly' else "Rect"
-            default_name = f"{self.ctx['scan_name']}_{mode_str}_{roi_ch_str}_summary.csv"
+            default_name = f"{self.ctx['scan_name']}_{mode_str}_{roi_str}_summary.csv"
             
             console_log(f"  Calling safe_filedialog_call: default={default_name}")
             save_path = safe_filedialog_call(
@@ -1394,8 +1443,6 @@ class SummaryDashboard:
                         "#"
                     ]
                 
-                roi_ch = self.ctx.get('channel_roi', (0, 255))
-                roi_ch_str = f"Ch{roi_ch[0]}-{roi_ch[1]}"
                 rows += [
                     f"# Scan Name: {self.ctx['scan_name']}",
                     f"# Project: {self.ctx['project_name']}",
@@ -1412,7 +1459,7 @@ class SummaryDashboard:
                     f"# Time Per Map: {self.ctx['path_pack'].get('time_per_map', 'N/A')}",
                     f"# Number of Points: {self.ctx['path_pack'].get('number_of_points', 'N/A')}",
                     f"# ROI Selection: {mode_str}",
-                    f"# Channels: {roi_ch_str}",
+                    f"# {'Energy ROI' if self.sync.use_sdd_calib else 'Channels'}: {roi_str}",
                     f"# Normalization: {i0_source}",
                     f"# SDD Calibration: {'ACTIVE' if self.sync.use_sdd_calib else 'DISABLED'}",
                     "#"
@@ -1497,9 +1544,12 @@ class SummaryDashboard:
                         if np.any(m): consolidated_specs[det] += np.sum(s2d[m], axis=0)
                     except: continue
 
-            roi_ch_str = f"Ch{self.ctx['channel_roi'][0]}-{self.ctx['channel_roi'][1]}"
+            if self.sync.use_sdd_calib:
+                roi_str = f"{self.sync.energy_roi[0]:.1f}-{self.sync.energy_roi[1]:.1f}eV"
+            else:
+                roi_str = f"Ch{self.ctx['channel_roi'][0]}-{self.ctx['channel_roi'][1]}"
             mode_str = "Poly" if mode=='poly' else "Rect"
-            default_name = f"{self.ctx['scan_name']}_Consolidated_{mode_str}_ROI_{roi_ch_str}_XRF.csv"
+            default_name = f"{self.ctx['scan_name']}_Consolidated_{mode_str}_ROI_{roi_str}_XRF.csv"
             
             console_log(f"  Calling safe_filedialog_call: default={default_name}")
             save_path = safe_filedialog_call(
@@ -2198,6 +2248,39 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
         log_spec_toggle = widgets.Checkbox(value=False, description='Use Log Scale (Spectra)', indent=False)
         log_spec_toggle.observe(lambda c: sync.broadcast_log_spec(c['new']), names='value')
 
+        # New: ROI Limits numeric inputs
+        roi_start_input = widgets.FloatText(value=round(sync.energy_roi[0], 2) if sync.use_sdd_calib else round(sync.channel_roi[0], 2), 
+                                            description='ROI Start (eV):' if sync.use_sdd_calib else 'ROI Start (Ch):', 
+                                            layout=widgets.Layout(width='180px'))
+        roi_end_input = widgets.FloatText(value=round(sync.energy_roi[1], 2) if sync.use_sdd_calib else round(sync.channel_roi[1], 2), 
+                                          description='ROI End (eV):' if sync.use_sdd_calib else 'ROI End (Ch):', 
+                                          layout=widgets.Layout(width='180px'))
+        
+        sync.roi_start_widget = roi_start_input
+        sync.roi_end_widget = roi_end_input
+        
+        def on_roi_input_change(change):
+            if sync.is_syncing: return
+            start_val = roi_start_input.value
+            end_val = roi_end_input.value
+            if start_val is None or end_val is None: return
+            
+            if sync.use_sdd_calib:
+                # Energy ROI (can be Float)
+                sync.broadcast_energy_roi(None, (start_val, end_val))
+            else:
+                # Channel ROI (must be Int)
+                x1 = int(np.clip(start_val, 0, 255))
+                x2 = int(np.clip(end_val, 0, 256))
+                if x1 == x2:
+                    if x1 < 256: x2 = x1 + 1
+                    else: x1 = x1 - 1
+                x1, x2 = sorted([x1, x2])
+                sync.broadcast_channel_roi(None, (x1, x2))
+                
+        roi_start_input.observe(on_roi_input_change, names='value')
+        roi_end_input.observe(on_roi_input_change, names='value')
+
         energy_controls = widgets.VBox([
             widgets.HBox([energy_slider, energy_label]),
             widgets.HBox([contrast_slider, log_toggle, log_spec_toggle]),
@@ -2206,7 +2289,12 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                 widgets.Checkbox(value=sync.i0_calib_enabled, description='Enable I0 Shift', indent=False),
                 widgets.FloatText(value=sync.i0_energy_shift, description='I0 Shift (eV):', layout=widgets.Layout(width='180px')),
                 widgets.Label("|", layout=widgets.Layout(width='20px')),
-                widgets.Checkbox(value=sync.use_sdd_calib, description='Enable SDD Energy Calib', indent=False, tooltip='Sync ROIs by Energy instead of Channels'),
+                widgets.Checkbox(value=sync.use_sdd_calib, description='Enable  SDD Energy Calibration (run_calibration() script must have been run in order for this to take effect)', indent=False, tooltip='Sync ROIs by Energy instead of Channels'),
+            ]),
+            widgets.HBox([
+                widgets.Label("Spectral ROI Limits:", layout=widgets.Layout(width='200px')),
+                roi_start_input,
+                roi_end_input,
             ]),
         ])
         
@@ -2221,9 +2309,37 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
         def on_sdd_cal_change(change):
             sync.use_sdd_calib = change['new']
             print(f"  [SDD Calibration] {'ENABLED' if sync.use_sdd_calib else 'DISABLED'}")
-            # Refresh all plots to show Energy vs Channel axis
+            
+            # Temporarily set syncing flag to avoid recursive broadcasts during unit toggle
+            old_sync = sync.is_syncing
+            sync.is_syncing = True
+            try:
+                # Update the numeric inputs to match the new units
+                if sync.use_sdd_calib:
+                    roi_start_input.description = "ROI Start (eV):"
+                    roi_end_input.description = "ROI End (eV):"
+                    roi_start_input.value = round(sync.energy_roi[0], 2)
+                    roi_end_input.value = round(sync.energy_roi[1], 2)
+                else:
+                    roi_start_input.description = "ROI Start (Ch):"
+                    roi_end_input.description = "ROI End (Ch):"
+                    roi_start_input.value = round(sync.channel_roi[0], 2)
+                    roi_end_input.value = round(sync.channel_roi[1], 2)
+            finally:
+                sync.is_syncing = old_sync
+            
+            # Explicitly sync the span selector extents to match the new units
             for d in sync.dashboards:
+                if hasattr(d, 'selector_span') and d.selector_span:
+                    try:
+                        if sync.use_sdd_calib:
+                            d.selector_span.extents = sync.energy_roi
+                        else:
+                            d.selector_span.extents = sync.channel_roi
+                    except Exception as e:
+                        print(f"  [Warning] Failed to update span selector extents: {e}")
                 d.update_spectrum()
+                
             if sync.status_widget:
                 sync.status_widget.value = f"SDD Calibration {'Enabled (ROI in eV)' if sync.use_sdd_calib else 'Disabled (ROI in Channels)'}."
         

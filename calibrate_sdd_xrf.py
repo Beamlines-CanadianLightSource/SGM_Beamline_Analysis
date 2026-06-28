@@ -16,6 +16,7 @@ class SDDCalibrationGUI:
         self.current_spectra = {} # {sdd_id: array_of_256}
         self.calibrations = calib_utils.load_calibration()
         self.detected_peaks_all = {} # {sdd_id: array_of_peak_channels}
+        self.detector_active = {} # {sdd_id: Checkbox}
         
         # Known peaks for reference (User can override)
         self.standard_peaks = {
@@ -199,16 +200,30 @@ class SDDCalibrationGUI:
         n_pts = self.num_points.value
         
         for sdd_id in sorted(self.current_spectra.keys()):
+            # Detect if flat line (all zeros or constant value)
+            spec = self.current_spectra.get(sdd_id, np.zeros(256))
+            is_flat = np.all(spec == 0) or np.std(spec) == 0
+            
+            # Retrieve or create active checkbox
+            if sdd_id not in self.detector_active:
+                self.detector_active[sdd_id] = widgets.Checkbox(
+                    value=not is_flat, 
+                    description="Active", 
+                    layout=widgets.Layout(width='80px')
+                )
+            
+            active_checkbox = self.detector_active[sdd_id]
+            
             peaks = self.detected_peaks_all.get(sdd_id, [])
             peak_options = [("Manual", -1)] + [(f"Peak {i} (Ch {p})", i) for i, p in enumerate(peaks)]
             
-            det_label = widgets.HTML(value=f"<b>{sdd_id} Assignments:</b>", layout=widgets.Layout(width='150px'))
+            det_label = widgets.HTML(value=f"<b>{sdd_id} Assignments:</b>", layout=widgets.Layout(width='130px'))
             
             point_selectors = []
             for i in range(n_pts):
                 sel = widgets.Dropdown(options=peak_options, value=i if i < len(peaks) else -1, 
-                                       description=f"P{i+1}:", layout=widgets.Layout(width='160px'))
-                man = widgets.IntText(value=0, description="Manual Ch:", layout=widgets.Layout(width='140px'))
+                                       description=f"P{i+1}:", layout=widgets.Layout(width='140px'))
+                man = widgets.IntText(value=0, description="Manual Ch:", layout=widgets.Layout(width='120px'))
                 
                 # Default manual value if no peak found
                 if i < len(peaks): man.value = peaks[i]
@@ -222,8 +237,24 @@ class SDDCalibrationGUI:
                 
                 point_selectors.append({'sel': sel, 'man': man, 'box': widgets.HBox([sel, man])})
             
+            # Setup active state change observer to disable/enable dropdowns
+            def make_active_observer(selectors_list):
+                def observer(change):
+                    disabled = not change['new']
+                    for ps in selectors_list:
+                        ps['sel'].disabled = disabled
+                        ps['man'].disabled = disabled
+                return observer
+            active_checkbox.observe(make_active_observer(point_selectors), names='value')
+            
+            # Initial state setup
+            disabled = not active_checkbox.value
+            for ps in point_selectors:
+                ps['sel'].disabled = disabled
+                ps['man'].disabled = disabled
+            
             self.detector_widgets[sdd_id] = point_selectors
-            rows.append(widgets.HBox([det_label] + [ps['box'] for ps in point_selectors]))
+            rows.append(widgets.HBox([det_label, active_checkbox] + [ps['box'] for ps in point_selectors]))
         
         self.detector_box.children = rows
 
@@ -235,6 +266,15 @@ class SDDCalibrationGUI:
         summary_text = "<b>Calibration Summary:</b><br>"
         
         for sdd_id, selectors in self.detector_widgets.items():
+            # Check if active checkbox is checked
+            is_active = self.detector_active[sdd_id].value if sdd_id in self.detector_active else True
+            
+            if not is_active:
+                gain, offset = 1.0, 0.0
+                new_calib[sdd_id] = {"gain": round(gain, 4), "offset": round(offset, 4)}
+                summary_text += f" - {sdd_id}: Inactive (Default Gain=1.0, Offset=0.0)<br>"
+                continue
+                
             channels = []
             for i in range(n_pts):
                 sel_idx = selectors[i]['sel'].value
@@ -242,6 +282,11 @@ class SDDCalibrationGUI:
                     channels.append(selectors[i]['man'].value)
                 else:
                     channels.append(self.detected_peaks_all[sdd_id][sel_idx])
+            
+            # Check for duplicate channel selection
+            if len(set(channels)) < len(channels):
+                self.status.value = f"<b>Status:</b> <font color='red'>Error: Duplicate channels {channels} assigned for detector '{sdd_id}'. Please select unique peaks or manual values, or uncheck 'Active'.</font>"
+                return
             
             # Linear fit: Energy = Gain * Channel + Offset
             # We sort both to ensure correct mapping (lower channel -> lower energy)
