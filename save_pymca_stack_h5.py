@@ -36,6 +36,89 @@ def get_user_file_action(filename, output_path):
     root.destroy() # Clean up the Tkinter window
     return action
 
+def read_csv_with_comments(filepath):
+    import re
+    import pandas as pd
+    
+    comment_lines = []
+    first_data_line = None
+    delimiter = ','
+    
+    with open(filepath, 'r') as f:
+        for line in f:
+            line_str = line.strip()
+            if not line_str:
+                continue
+            if line_str.startswith('#'):
+                comment_lines.append(line_str)
+            else:
+                first_data_line = line_str
+                break
+                
+    if not first_data_line:
+        return pd.read_csv(filepath, comment='#')
+        
+    if '\t' in first_data_line:
+        delimiter = '\t'
+    elif ',' in first_data_line:
+        delimiter = ','
+    else:
+        comma_count = first_data_line.count(',')
+        tab_count = first_data_line.count('\t')
+        space_count = first_data_line.count(' ')
+        if tab_count > comma_count:
+            delimiter = '\t'
+        elif comma_count == 0 and space_count > 0:
+            delimiter = None
+        else:
+            delimiter = ','
+            
+    if delimiter is None:
+        data_cols = first_data_line.split()
+    else:
+        data_cols = [x.strip() for x in first_data_line.split(delimiter)]
+    num_cols = len(data_cols)
+    
+    column_names = [None] * num_cols
+    col_pattern = re.compile(r'#\s*Column\s+(\d+)\s*:\s*(.*)', re.IGNORECASE)
+    has_column_meta = False
+    
+    for line in comment_lines:
+        match = col_pattern.match(line)
+        if match:
+            col_idx = int(match.group(1))
+            col_name = match.group(2).strip()
+            if 1 <= col_idx <= num_cols:
+                column_names[col_idx - 1] = col_name
+                has_column_meta = True
+                
+    if has_column_meta:
+        for idx in range(num_cols):
+            if column_names[idx] is None:
+                column_names[idx] = f"Column_{idx + 1}"
+        df = pd.read_csv(filepath, comment='#', sep=delimiter if delimiter else r'\s+', header=None, names=column_names, engine='python' if delimiter is None else None)
+        return df
+
+    for line in reversed(comment_lines):
+        cleaned = line.lstrip('#').strip()
+        if delimiter is None:
+            fields = cleaned.split()
+        else:
+            fields = [f.strip() for f in cleaned.split(delimiter)]
+        if len(fields) == num_cols:
+            is_header = False
+            for f in fields:
+                try:
+                    float(f)
+                except ValueError:
+                    is_header = True
+                    break
+            if is_header:
+                df = pd.read_csv(filepath, comment='#', sep=delimiter if delimiter else r'\s+', header=None, names=fields, engine='python' if delimiter is None else None)
+                return df
+                
+    return pd.read_csv(filepath, comment='#', sep=delimiter if delimiter else r'\s+', engine='python' if delimiter is None else None)
+
 def load_external_i0(i0_path, target_energies):
     """
     Loads an external I0 CSV file and interpolates it to match target energies.
@@ -43,7 +126,7 @@ def load_external_i0(i0_path, target_energies):
     """
     try:
         import pandas as pd
-        df = pd.read_csv(i0_path, comment='#')
+        df = read_csv_with_comments(i0_path)
         # Try to find energy and intensity columns
         e_col = next((c for c in df.columns if 'energy' in c.lower()), df.columns[0])
         i_col = next((c for c in df.columns if any(k in c.lower() for k in ['i0', 'intensity', 'norm', 'tey'])), df.columns[1])

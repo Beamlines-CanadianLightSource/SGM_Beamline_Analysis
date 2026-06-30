@@ -1909,6 +1909,89 @@ class SummaryDashboard:
         self.fig.canvas.mpl_connect('button_press_event', _on_dashboard_click)
         # plt.show() removed to prevent double-plotting in Jupyter notebooks
 
+def read_csv_with_comments(filepath):
+    import re
+    import pandas as pd
+    
+    comment_lines = []
+    first_data_line = None
+    delimiter = ','
+    
+    with open(filepath, 'r') as f:
+        for line in f:
+            line_str = line.strip()
+            if not line_str:
+                continue
+            if line_str.startswith('#'):
+                comment_lines.append(line_str)
+            else:
+                first_data_line = line_str
+                break
+                
+    if not first_data_line:
+        return pd.read_csv(filepath, comment='#')
+        
+    if '\t' in first_data_line:
+        delimiter = '\t'
+    elif ',' in first_data_line:
+        delimiter = ','
+    else:
+        comma_count = first_data_line.count(',')
+        tab_count = first_data_line.count('\t')
+        space_count = first_data_line.count(' ')
+        if tab_count > comma_count:
+            delimiter = '\t'
+        elif comma_count == 0 and space_count > 0:
+            delimiter = None
+        else:
+            delimiter = ','
+            
+    if delimiter is None:
+        data_cols = first_data_line.split()
+    else:
+        data_cols = [x.strip() for x in first_data_line.split(delimiter)]
+    num_cols = len(data_cols)
+    
+    column_names = [None] * num_cols
+    col_pattern = re.compile(r'#\s*Column\s+(\d+)\s*:\s*(.*)', re.IGNORECASE)
+    has_column_meta = False
+    
+    for line in comment_lines:
+        match = col_pattern.match(line)
+        if match:
+            col_idx = int(match.group(1))
+            col_name = match.group(2).strip()
+            if 1 <= col_idx <= num_cols:
+                column_names[col_idx - 1] = col_name
+                has_column_meta = True
+                
+    if has_column_meta:
+        for idx in range(num_cols):
+            if column_names[idx] is None:
+                column_names[idx] = f"Column_{idx + 1}"
+        df = pd.read_csv(filepath, comment='#', sep=delimiter if delimiter else r'\s+', header=None, names=column_names, engine='python' if delimiter is None else None)
+        return df
+
+    for line in reversed(comment_lines):
+        cleaned = line.lstrip('#').strip()
+        if delimiter is None:
+            fields = cleaned.split()
+        else:
+            fields = [f.strip() for f in cleaned.split(delimiter)]
+        if len(fields) == num_cols:
+            is_header = False
+            for f in fields:
+                try:
+                    float(f)
+                except ValueError:
+                    is_header = True
+                    break
+            if is_header:
+                df = pd.read_csv(filepath, comment='#', sep=delimiter if delimiter else r'\s+', header=None, names=fields, engine='python' if delimiter is None else None)
+                return df
+                
+    return pd.read_csv(filepath, comment='#', sep=delimiter if delimiter else r'\s+', engine='python' if delimiter is None else None)
+
 # --- Main Entry Point ---
 
 def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 256), roll_shift=0, as_scatter_plot: bool = False, map_roi=None, contrast=None, show_markers: bool = True, output_csv: bool = False, energy_shift=0.0, mcc_channels=None, mcc_to_map=None, x_trim=0.0, y_trim=0.0, save_images: bool = False, fixed_roi: bool = False, use_color: bool = True, use_full_metadata: bool = False):
@@ -2110,7 +2193,7 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
             )
             if ext_path:
                 try:
-                    ext_df = pd.read_csv(ext_path, comment='#')
+                    ext_df = read_csv_with_comments(ext_path)
                     # Trim whitespace from columns to prevent lookup errors
                     ext_df.columns = [c.strip() for c in ext_df.columns]
                     
