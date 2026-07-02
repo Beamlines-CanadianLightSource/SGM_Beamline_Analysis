@@ -18,14 +18,20 @@ The `SGM_BSky_Data_Analysis.ipynb` notebook is an end-to-end processing pipeline
 
 ## Quick Start: Running the Notebook
 
-To use the pipeline, open `SGM_BSky_Data_Analysis.ipynb` in your Jupyter environment and run the cells sequentially (using `Shift + Enter`). 
+To use the pipeline, we highly recommend running the notebook inside **VS Code** configured to use the project's virtual environment:
+
+1. **Open the Project in VS Code:** Open the cloned repository directory (the root folder containing the notebook files).
+2. **Open the Notebook:** Double-click on `SGM_BSky_Data_Analysis.ipynb`.
+3. **Select the Kernel:** In the top-right corner of the notebook editor in VS Code, click **"Select Kernel"** -> **"Python Environments"** and choose the virtual environment located at `.venv/Scripts/python` (the project's virtual environment).
+4. **Run Cells:** Execute the cells sequentially (using `Shift + Enter`). 
+
+> [!NOTE]
+> **Why VS Code + `.venv`?**  
+> Running the notebook in VS Code with the local `.venv` environment ensures that all necessary dependencies (including `scikit-image` and standard Matplotlib backends) load correctly. It also handles interactive widgets (like ROI selectors and the deconvolution panel) with much better performance and lower interface lag than standard browser-based Jupyter setups.
 
 For datasets involving multi-quadrant stitching, refer to the example notebook: `SGM_BSky_Data_Analysis-4quad.ipynb`.
 
-As you progress through the notebook, various file dialogs and interactive GUIs will pop up. **Keep an eye on your taskbar**, as some pop-ups (especially the Matplotlib/Tkinter windows) might open behind your browser window.
-
-> [!TIP]
-> Make sure you are using the `.venv` environment configured for this project to avoid any missing dependency errors.
+As you progress through the notebook, various file dialogs and interactive GUIs will pop up. **Keep an eye on your taskbar**, as some pop-ups (especially the Matplotlib/Tkinter windows) might open behind your browser or IDE window.
 
 ---
 
@@ -135,6 +141,14 @@ run_calibration()
 - When saving spectra or data from the summary dashboard, you have the option to toggle the **"Add Sample Specific Information to File Header"** checkbox (located just above the Save buttons).
 - **Unchecked (Default):** This is the default setting. It skips the metadata prompt and simply includes a standard header containing all relevant beamline parameters that the data was collected by.
 - **Checked:** This opens a dialog generating an expanded header where the User can add additional information such as compound name, chemical formula, authors, sample preparation details, etc. It is expected to be used primarily for **reference compounds**. We expect to submit these reference compounds to the [Canadian Light Source X-ray Absorption database](https://xasdb.lightsource.ca/). This information will subsequently be submitted to the [Federated Research Data Repository (FRDR)](https://www.frdr-dfdr.ca/repo/).
+
+- **Live Spatial Deconvolution:**
+  - **Purpose:** Restores spatial resolution lost to the finite size of the X-ray beam spot (PSF) and scanning motion blur.
+  - **How to Use:** Located in the dashboard controls panel under the label **Deconvolution (Live)**. Check **"Enable Deconv"**, select the algorithm (**Richardson-Lucy** or **Wiener Filter**), and adjust the **PSF FWHM (µm)** slider to match your estimated beam size (e.g. $10\,\mu\text{m}$).
+  - **Iterative Optimization:** For Richardson-Lucy, use the **Iterations** slider to tune the deblurring intensity (typically 15 to 30 is optimal).
+  - **Responsiveness:** Sliders use delayed updates (`continuous_update=False`) to avoid CPU lag during dragging. The calculation runs immediately once you release the slider handle.
+  - **Stability Notes:** Utilizes a custom division-by-zero epsilon check ($10^{-12}$) and intensity normalization to prevent NaNs and solid-color blank plots on masked/trimmed margins.
+
 
 ### 4. `pca_xanes_analysis.py`
 **Purpose:** Performs Principal Component Analysis (PCA) to reduce the dimensionality of the XANES stack and isolate the primary chemical variations (components) while filtering out background noise.

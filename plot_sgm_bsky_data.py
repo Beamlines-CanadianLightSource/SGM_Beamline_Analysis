@@ -24,11 +24,17 @@ import pandas as pd
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from tkinter import ttk
-from scipy.signal import savgol_filter
+from scipy.signal import savgol_filter, convolve2d
 import ipywidgets as widgets
 from IPython.display import display
 import io
 import time
+from scipy.interpolate import griddata, RegularGridInterpolator
+try:
+    from skimage import restoration
+    HAS_SKIMAGE = True
+except ImportError:
+    HAS_SKIMAGE = False
 
 # Global to track double-click timing for backends that don't support event.dblclick
 _LAST_CLICK_TIME = 0
@@ -342,6 +348,123 @@ def get_dynamic_mask(cx, cy, xt, yt, roi=None, poly=None):
         mask &= (cx >= x1) & (cx <= x2) & (cy >= y1) & (cy <= y2)
     return mask
 
+def generate_gaussian_psf(fwhm_x, fwhm_y, shape=(15, 15)):
+    """Generates a normalized 2D Gaussian PSF."""
+    sigma_x = fwhm_x / 2.355
+    sigma_y = fwhm_y / 2.355
+    y, x = np.mgrid[-shape[0]//2 + 1 : shape[0]//2 + 1,
+                    -shape[1]//2 + 1 : shape[1]//2 + 1]
+    psf = np.exp(-((x**2)/(2*sigma_x**2) + (y**2)/(2*sigma_y**2)))
+    return psf / np.sum(psf)
+
+def safe_richardson_lucy(image, psf, num_iter=20, eps=1e-12):
+    """
+    A stable Richardson-Lucy deconvolution implementation.
+    Uses an epsilon to prevent division by zero in zero-valued/masked areas.
+    """
+    im_deconv = np.copy(image)
+    psf_mirror = np.flip(psf)
+    
+    for _ in range(num_iter):
+        blur = convolve2d(im_deconv, psf, mode='same', boundary='symm')
+        ratio = image / (blur + eps)
+        correction = convolve2d(ratio, psf_mirror, mode='same', boundary='symm')
+        im_deconv *= correction
+        im_deconv = np.nan_to_num(im_deconv, nan=0.0)
+        im_deconv[im_deconv < 0] = 0.0
+        
+    return im_deconv
+
+def apply_deconvolution_to_map(x, y, z, fwhm_um, num_iter=20, deconv_type='lucy', resolution=100):
+    """
+    Applies deconvolution to unstructured (x, y, z) data by gridding,
+    deblurring, and interpolating back to the original scattered points.
+    """
+    if not HAS_SKIMAGE:
+        print("[Warning] Deconvolution skipped: scikit-image is not installed.")
+        return z
+        
+    if len(z) == 0:
+        return z
+
+    # 1. Define grid limits in mm
+    x_min, x_max = np.min(x), np.max(x)
+    y_min, y_max = np.min(y), np.max(y)
+    
+    x_range = x_max - x_min
+    y_range = y_max - y_min
+    
+    if x_range == 0 or y_range == 0:
+        return z # Cannot grid a 1D line or point map
+        
+    xi = np.linspace(x_min, x_max, resolution)
+    yi = np.linspace(y_min, y_max, resolution)
+    grid_x, grid_y = np.meshgrid(xi, yi)
+    
+    # 2. Grid the unstructured data (linear interpolation)
+    grid_z = griddata((x, y), z, (grid_x, grid_y), method='linear')
+    grid_z = np.nan_to_num(grid_z, nan=0.0)
+    grid_z = np.clip(grid_z, 0.0, None)  # Enforce non-negativity
+    
+    z_max = np.max(grid_z)
+    if z_max <= 0:
+        return z  # All zeros, nothing to deconvolve
+        
+    # Normalize grid_z to [0, 1] range to prevent numerical overflow/underflow
+    grid_z_norm = grid_z / z_max
+    
+    # 3. Calculate pixel spacing in mm
+    dx = x_range / (resolution - 1)
+    dy = y_range / (resolution - 1)
+    
+    # 4. Convert FWHM from micrometers to pixels (1 um = 0.001 mm)
+    fwhm_x_px = (fwhm_um / 1000.0) / dx
+    fwhm_y_px = (fwhm_um / 1000.0) / dy
+    
+    # Limit minimum FWHM to avoid zero division in PSF calculation
+    fwhm_x_px = max(fwhm_x_px, 0.1)
+    fwhm_y_px = max(fwhm_y_px, 0.1)
+    
+    # 5. Generate PSF
+    k_size_x = int(np.ceil(fwhm_x_px * 3.5)) // 2 * 2 + 1
+    k_size_y = int(np.ceil(fwhm_y_px * 3.5)) // 2 * 2 + 1
+    k_size = max(k_size_x, k_size_y, 5)
+    
+    psf = generate_gaussian_psf(fwhm_x_px, fwhm_y_px, shape=(k_size, k_size))
+    
+    # 6. Run restoration
+    deconvolved_grid = None
+    try:
+        if deconv_type == 'lucy':
+            # Use our custom stable Richardson-Lucy implementation instead of skimage
+            # to prevent NaN propagation on zero/masked regions.
+            deconvolved_grid = safe_richardson_lucy(grid_z_norm, psf, num_iter=num_iter)
+        else:
+            # Wiener filter is frequency-domain, so run it safely and clip negative artifacts
+            deconvolved_grid, _ = restoration.unsupervised_wiener(grid_z_norm, psf)
+            deconvolved_grid = np.nan_to_num(deconvolved_grid, nan=0.0)
+            deconvolved_grid = np.clip(deconvolved_grid, 0.0, None)
+    except Exception as e:
+        print(f"[Deconv Error] restoration failed: {e}. Falling back to input.")
+        return z
+        
+    if deconvolved_grid is None:
+        return z
+        
+    # Scale back to original intensity range
+    deconvolved_grid = deconvolved_grid * z_max
+    
+    # 7. Interpolate the deconvolved grid back to the original scattered coordinates
+    try:
+        rgi = RegularGridInterpolator((yi, xi), deconvolved_grid, bounds_error=False, fill_value=0.0)
+        z_deconv = rgi(np.column_stack((y, x)))
+        # Replace any residual NaNs with 0.0
+        z_deconv = np.nan_to_num(z_deconv, nan=0.0)
+        return z_deconv
+    except Exception as e:
+        print(f"[Interpolation Error] Failed to map back to scattered: {e}")
+        return z
+
 # --- Core Dashboard State & Synchronization ---
 
 class Synchronizer:
@@ -382,6 +505,12 @@ class Synchronizer:
                 e1 = sdd_calib.channel_to_energy(self.channel_roi[0], gain, offset)
                 e2 = sdd_calib.channel_to_energy(self.channel_roi[1], gain, offset)
                 self.energy_roi = (float(min(e1, e2)), float(max(e1, e2)))
+                
+        # Deconvolution Settings
+        self.use_deconv = False
+        self.deconv_type = 'lucy'
+        self.deconv_fwhm_um = 10.0
+        self.deconv_iterations = 20
 
     def _find_nearest_idx(self, value):
         if value is None or len(self.all_energies) == 0: return 0
@@ -429,6 +558,21 @@ class Synchronizer:
         print(f"  [I0 Energy Calib] Enabled: {self.i0_calib_enabled}, Shift: {self.i0_energy_shift}")
         if sd:
             sd.update_plots(self.current_roi, self.current_poly, self.mode)
+        
+    def broadcast_deconv(self, use_deconv=None, deconv_type=None, deconv_fwhm_um=None, deconv_iterations=None):
+        """Updates deconvolution settings and forces map updates."""
+        if use_deconv is not None: self.use_deconv = use_deconv
+        if deconv_type is not None: self.deconv_type = deconv_type
+        if deconv_fwhm_um is not None: self.deconv_fwhm_um = deconv_fwhm_um
+        if deconv_iterations is not None: self.deconv_iterations = deconv_iterations
+        
+        print(f"  [Deconv Update] Enabled: {self.use_deconv}, Type: {self.deconv_type}, FWHM: {self.deconv_fwhm_um} um, Iter: {self.deconv_iterations}")
+        
+        for d in self.dashboards:
+            try:
+                d.update_energy(self.energy_idx)
+            except Exception as e:
+                print(f"    ! Error refreshing map for {d.name}: {e}")
         
     def broadcast_theme(self):
         self.use_color = not self.use_color
@@ -794,6 +938,15 @@ class DashboardRow:
         if self.sc_en:
             try:
                 data = m_rep[tm]
+                if self.sync.use_deconv and not self.is_mcc:
+                    data = apply_deconvolution_to_map(
+                        self.ctx['x_coords'][:len(m_rep)][tm],
+                        self.ctx['y_coords'][:len(m_rep)][tm],
+                        data,
+                        self.sync.deconv_fwhm_um,
+                        self.sync.deconv_iterations,
+                        self.sync.deconv_type
+                    )
                 if len(data) == self.sc_en.get_array().size:
                     self.sc_en.set_array(data)
                     # Apply contrast scaling
@@ -815,6 +968,15 @@ class DashboardRow:
                 # Calculate average by dividing sum by number of energies
                 num_en = len(self.sync.all_energies)
                 avg_data = self.ctx['avg_maps'][self.name][tm] / num_en
+                if self.sync.use_deconv:
+                    avg_data = apply_deconvolution_to_map(
+                        self.ctx['x_coords'][:len(avg_data)][tm],
+                        self.ctx['y_coords'][:len(avg_data)][tm],
+                        avg_data,
+                        self.sync.deconv_fwhm_um,
+                        self.sync.deconv_iterations,
+                        self.sync.deconv_type
+                    )
                 if len(avg_data) == self.sc_avg.get_array().size:
                     self.sc_avg.set_array(avg_data)
                     # Apply contrast scaling
@@ -1034,12 +1196,23 @@ class DashboardRow:
             m_rep = np.sum(self.s2d_rep[:, self.ctx['channel_roi'][0]:self.ctx['channel_roi'][1]], axis=1)
             
         tm = get_dynamic_mask(self.ctx['x_coords'][:len(m_rep)], self.ctx['y_coords'][:len(m_rep)], self.ctx['x_trim'], self.ctx['y_trim'])
+        m_rep_plot = m_rep[tm]
+        if self.sync.use_deconv and not self.is_mcc:
+            m_rep_plot = apply_deconvolution_to_map(
+                self.ctx['x_coords'][:len(m_rep)][tm],
+                self.ctx['y_coords'][:len(m_rep)][tm],
+                m_rep_plot,
+                self.sync.deconv_fwhm_um,
+                self.sync.deconv_iterations,
+                self.sync.deconv_type
+            )
+            
         tri_en = get_masked_triangulation(self.ctx['x_coords'][:len(m_rep)][tm], self.ctx['y_coords'][:len(m_rep)][tm])
         if tri_en is not None:
-            self.sc_en = self.ax[0].tripcolor(tri_en, m_rep[tm], 
+            self.sc_en = self.ax[0].tripcolor(tri_en, m_rep_plot, 
                                         shading='gouraud', edgecolors='none', rasterized=True, cmap=cmap)
         else:
-            self.sc_en = self.ax[0].tripcolor(self.ctx['x_coords'][:len(m_rep)][tm], self.ctx['y_coords'][:len(m_rep)][tm], m_rep[tm],
+            self.sc_en = self.ax[0].tripcolor(self.ctx['x_coords'][:len(m_rep)][tm], self.ctx['y_coords'][:len(m_rep)][tm], m_rep_plot,
                                         shading='gouraud', edgecolors='none', rasterized=True, cmap=cmap)
         plt.colorbar(self.sc_en, ax=self.ax[0]); self.ax[0].set_aspect('equal')
         
@@ -1056,12 +1229,23 @@ class DashboardRow:
         self.ax[0].set_title(f"{title_name} @ {self.rep_e:.2f} eV", fontsize='small')
         
         m_avg = self.ctx['avg_maps'][self.name] / len(self.sync.all_energies)
+        m_avg_plot = m_avg[tm]
+        if self.sync.use_deconv and not self.is_mcc:
+            m_avg_plot = apply_deconvolution_to_map(
+                self.ctx['x_coords'][:len(m_avg)][tm],
+                self.ctx['y_coords'][:len(m_avg)][tm],
+                m_avg_plot,
+                self.sync.deconv_fwhm_um,
+                self.sync.deconv_iterations,
+                self.sync.deconv_type
+            )
+            
         tri_avg = get_masked_triangulation(self.ctx['x_coords'][:len(m_avg)][tm], self.ctx['y_coords'][:len(m_avg)][tm])
         if tri_avg is not None:
-            self.sc_avg = self.ax[1].tripcolor(tri_avg, m_avg[tm],
+            self.sc_avg = self.ax[1].tripcolor(tri_avg, m_avg_plot,
                                          shading='gouraud', edgecolors='none', rasterized=True, cmap=cmap)
         else:
-            self.sc_avg = self.ax[1].tripcolor(self.ctx['x_coords'][:len(m_avg)][tm], self.ctx['y_coords'][:len(m_avg)][tm], m_avg[tm],
+            self.sc_avg = self.ax[1].tripcolor(self.ctx['x_coords'][:len(m_avg)][tm], self.ctx['y_coords'][:len(m_avg)][tm], m_avg_plot,
                                          shading='gouraud', edgecolors='none', rasterized=True, cmap=cmap)
         plt.colorbar(self.sc_avg, ax=self.ax[1]); self.ax[1].set_aspect('equal')
         
@@ -2392,6 +2576,13 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                 roi_start_input,
                 roi_end_input,
             ]),
+            widgets.HBox([
+                widgets.Label("Deconvolution (Live):", layout=widgets.Layout(width='200px')),
+                widgets.Checkbox(value=sync.use_deconv, description='Enable Deconv', indent=False),
+                widgets.Dropdown(options=[('Richardson-Lucy', 'lucy'), ('Wiener Filter', 'wiener')], value=sync.deconv_type, layout=widgets.Layout(width='150px')),
+                widgets.FloatSlider(value=sync.deconv_fwhm_um, min=0.5, max=50.0, step=0.5, description='PSF FWHM (µm):', layout=widgets.Layout(width='300px'), style={'description_width': 'initial'}, continuous_update=False),
+                widgets.IntSlider(value=sync.deconv_iterations, min=5, max=100, step=1, description='Iterations:', layout=widgets.Layout(width='250px'), style={'description_width': 'initial'}, continuous_update=False),
+            ]),
         ])
         
         # Set up I0 & SDD Calibration Observers
@@ -2440,6 +2631,18 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                 sync.status_widget.value = f"SDD Calibration {'Enabled (ROI in eV)' if sync.use_sdd_calib else 'Disabled (ROI in Channels)'}."
         
         sdd_cal_chk.observe(on_sdd_cal_change, names='value')
+
+        # Deconvolution Observers
+        deconv_hbox = energy_controls.children[4]
+        deconv_enable_chk = deconv_hbox.children[1]
+        deconv_type_dropdown = deconv_hbox.children[2]
+        deconv_fwhm_slider = deconv_hbox.children[3]
+        deconv_iter_slider = deconv_hbox.children[4]
+        
+        deconv_enable_chk.observe(lambda c: sync.broadcast_deconv(use_deconv=c['new']), names='value')
+        deconv_type_dropdown.observe(lambda c: sync.broadcast_deconv(deconv_type=c['new']), names='value')
+        deconv_fwhm_slider.observe(lambda c: sync.broadcast_deconv(deconv_fwhm_um=c['new']), names='value')
+        deconv_iter_slider.observe(lambda c: sync.broadcast_deconv(deconv_iterations=c['new']), names='value')
 
         try:
             get_ipython()
