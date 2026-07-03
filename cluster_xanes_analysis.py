@@ -363,7 +363,10 @@ def plot_multi_cluster_results(all_results, h5_path):
     # --- Figure 1: Cluster Maps ---
     fig_map, axes_map = plt.subplots(1, n_det, figsize=(2.8*n_det, 3.5), squeeze=False)
     fig_map.suptitle(f"Multi-Detector Cluster Maps: {scan_name}", fontsize=16)
-    cmap = plt.cm.get_cmap('tab10', n_clusters)
+    try:
+        cmap = plt.colormaps['tab10'].resampled(n_clusters)
+    except (AttributeError, KeyError):
+        cmap = plt.cm.get_cmap('tab10', n_clusters)
     
     for i, res in enumerate(all_results):
         ax = axes_map[0, i]
@@ -447,7 +450,10 @@ def plot_results(x_coords, y_coords, energy, cluster_map, spectra, dataset_name,
 
     fig.suptitle(f"K-Means Cluster Analysis: {dataset_name}", fontsize=18)
 
-    cmap = plt.cm.get_cmap('tab10', n_clusters)
+    try:
+        cmap = plt.colormaps['tab10'].resampled(n_clusters)
+    except (AttributeError, KeyError):
+        cmap = plt.cm.get_cmap('tab10', n_clusters)
     masked_map = np.ma.masked_where(cluster_map == -1, cluster_map)
     
     im = ax1.imshow(masked_map, extent=[x_coords[0], x_coords[-1], y_coords[-1], y_coords[0]], 
