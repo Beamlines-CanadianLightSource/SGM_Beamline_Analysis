@@ -208,6 +208,13 @@ def save_pymca_stack_h5(path_pack, output_path=None, channel_roi=None, map_roi=N
     if x_trim > 0 or y_trim > 0:
         print(f"    -> Applying Spatial Trim: X={x_trim}, Y={y_trim}")
         
+    # --- SDD Energy Calibration ---
+    use_sdd_calib = path_pack.get('use_sdd_calib', False)
+    energy_roi = path_pack.get('energy_roi', None)
+    sdd_calib_data = path_pack.get('sdd_calib_data', None)
+    if use_sdd_calib:
+        print(f"    -> SDD Calibration is ACTIVE. Energy ROI: {energy_roi}")
+        
     # --- Spatial Masking (ROI + Trim) ---
     # Calculate full scan bounds first (needed for trim and fallback)
     x_min_full, x_max_full = np.min(x_raw), np.max(x_raw)
@@ -388,7 +395,8 @@ def save_pymca_stack_h5(path_pack, output_path=None, channel_roi=None, map_roi=N
                     i0_values = np.ones(len(all_energies))
                     i0_source = "None"
             
-            # Ensure I0 has no zeros
+            # Ensure I0 is positive and avoid division by zero or negative values
+            i0_values = np.abs(i0_values)
             i0_values = np.where(i0_values <= 0, 1.0, i0_values)
             
             # Apply manual energy calibration if enabled (External I0 Only)
@@ -466,8 +474,15 @@ def save_pymca_stack_h5(path_pack, output_path=None, channel_roi=None, map_roi=N
                             spectra = np.roll(spectra, shift=roll_shift, axis=0)
                         
                         # Sum across the specified channels for each pixel
-                        ch_start, ch_end = channel_roi
-                        spectra_roi = np.sum(spectra[:, ch_start:ch_end+1], axis=1).astype(np.float32)
+                        if use_sdd_calib and energy_roi is not None:
+                            import sdd_calibration_utils as sdd_calib
+                            if sdd_calib_data is None:
+                                sdd_calib_data = sdd_calib.load_calibration()
+                            ch_start, ch_end = sdd_calib.get_calibrated_bounds(energy_roi[0], energy_roi[1], det_name, sdd_calib_data)
+                            spectra_roi = np.sum(spectra[:, ch_start:ch_end], axis=1).astype(np.float32)
+                        else:
+                            ch_start, ch_end = channel_roi
+                            spectra_roi = np.sum(spectra[:, ch_start:ch_end+1], axis=1).astype(np.float32)
                         
                         # Map to grid, ONLY for points within the final mask
                         grid_2d = np.zeros((ny, nx), dtype=np.float32)

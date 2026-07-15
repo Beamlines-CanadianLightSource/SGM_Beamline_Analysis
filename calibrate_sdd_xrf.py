@@ -28,6 +28,8 @@ class SDDCalibrationGUI:
             "Cr-L": 574.1, "Mn-L": 638.7, "Fe-L": 706.8, "Co-L": 778.1, "Ni-L": 852.7, 
             "Cu-L": 932.7, "Zn-L": 1021.8, "Ga-L": 1116.4, "Ge-L": 1217.0, "As-L": 1323.2, 
             "Se-L": 1433.9, "Br-L": 1550.0,
+            # M-Edges (M-alpha emission)
+            "Mo-M": 229.3, "Ru-M": 280.0, "Ba-M": 780.5,
             # Rare Earth M-Edges (M-alpha emission)
             "La-M": 833.3, "Ce-M": 883.3, "Pr-M": 928.8, "Nd-M": 977.7, "Sm-M": 1080.9, 
             "Eu-M": 1130.9, "Gd-M": 1185.2, "Tb-M": 1241.1, "Dy-M": 1292.8, "Ho-M": 1351.1, 
@@ -129,7 +131,11 @@ class SDDCalibrationGUI:
                 self.status.value = "<b>Status:</b> No file selected."
                 return
             
-            self.txt_file.value = os.path.basename(self.data_pack['h5_file_path'])
+            h5_path = self.data_pack['h5_file_path']
+            norm = os.path.normpath(h5_path)
+            parts = norm.split(os.sep)
+            display_name = os.path.join(parts[-2], parts[-1]) if len(parts) >= 2 else os.path.basename(h5_path)
+            self.txt_file.value = display_name
             self.process_data()
             self.plot_spectra()
             self.rebuild_detector_widgets()
@@ -222,7 +228,7 @@ class SDDCalibrationGUI:
             point_selectors = []
             for i in range(n_pts):
                 sel = widgets.Dropdown(options=peak_options, value=i if i < len(peaks) else -1, 
-                                       description=f"P{i+1}:", layout=widgets.Layout(width='140px'))
+                                       description=f"P{i+1}:", layout=widgets.Layout(width='200px'))
                 man = widgets.IntText(value=0, description="Manual Ch:", layout=widgets.Layout(width='120px'))
                 
                 # Default manual value if no peak found
@@ -309,7 +315,13 @@ class SDDCalibrationGUI:
             else:
                 edges_used.append(name_val)
         
-        scan_file = os.path.basename(self.data_pack['h5_file_path']) if self.data_pack else "Unknown"
+        if self.data_pack:
+            h5_path = self.data_pack['h5_file_path']
+            norm = os.path.normpath(h5_path)
+            parts = norm.split(os.sep)
+            scan_file = os.path.join(parts[-2], parts[-1]) if len(parts) >= 2 else os.path.basename(h5_path)
+        else:
+            scan_file = "Unknown"
         
         if "_metadata" not in self.calibrations:
             self.calibrations["_metadata"] = {}

@@ -123,11 +123,9 @@ run_calibration()
 
 8. **Enable SDD Energy Calib:**
    - **How it Works:** Located in the dashboard settings area, checking the **"Enable SDD Energy Calib"** checkbox applies your saved calibration parameters (`gain` and `offset` stored in `sdd_calibration.json`) to all detectors in real-time.
-   - **Transitioning from Bin (Channels) to Energy (eV):** 
-     - **ROI Inputs:** Checking this box dynamically changes the **Spectral ROI Limits** input fields at the bottom from channel bin coordinates (e.g. `ROI Start (Ch)` / `ROI End (Ch)`) to physical energy values (e.g. `ROI Start (eV)` / `ROI End (eV)`). Unchecking it instantly reverts them back to channel bins.
-     - **Span Selector Sync:** The horizontal Span Selector overlay on your spectral plots shifts its scale accordingly. When calibration is enabled, selecting a region on the plot defines physical energy boundaries.
-     - **X-Axis Update:** The X-axis labels on the emission spectra update from raw channels (`0` to `255`) to calibrated energy levels in electron-volts (`eV`).
-     - **ROI Syncing:** When enabled, ROI selection perfectly synchronizes across all detectors by **Energy (eV)** rather than raw channels. This ensures that selecting an element's characteristic emission peak (e.g., Al-K at ~1486.7 eV) is accurate for all four SDDs, even if they have slight hardware offset differences.
+   - **X-Axis and Units:** By default, the emission spectra X-axis, span selectors, and input boxes always display in **Energy (eV)**. When uncalibrated (box unchecked), a default approximate scale of `10 eV` per channel is used (mapping channel range `0-255` to `0-2550` eV). 
+   - **Exact Calibration Mode:** Checking the box switches the scale from the approximate 10 eV/channel mapping to the **exact calibration parameters** calculated for each specific detector.
+   - **ROI Inputs & Sync:** The **Spectral ROI Limits** input fields at the bottom are always labeled as `ROI Start (eV)` / `ROI End (eV)`. When exact calibration is enabled, selecting a region on any plot or typing an energy range defines physical energy boundaries. ROI selection perfectly synchronizes across all detectors by **Energy (eV)** rather than raw channels. This ensures that selecting an element's characteristic emission peak (e.g., Al-K at ~1486.7 eV) is accurate for all four SDDs, even if they have slight hardware offset differences.
 
 **I0 Normalization and Smoothing:**
 - At the beginning of plotting, you will be prompted to select the normalization source:

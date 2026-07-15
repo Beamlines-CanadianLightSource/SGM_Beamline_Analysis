@@ -64,6 +64,12 @@ def save_pymca_4d_stack_h5(path_pack, output_path=None, normalize=True, channel_
     else:
         print(f"    -> Using provided channel_roi: {channel_roi}")
     
+    use_sdd_calib = path_pack.get('use_sdd_calib', False)
+    energy_roi = path_pack.get('energy_roi', None)
+    sdd_calib_data = path_pack.get('sdd_calib_data', None)
+    if use_sdd_calib:
+        print(f"    -> SDD Calibration is ACTIVE for 3D XANES preview. Energy ROI: {energy_roi}")
+        
     roll_shift = path_pack.get('roll_shift', 0)
     x_trim = path_pack.get('x_trim', 0.0)
     y_trim = path_pack.get('y_trim', 0.0)
@@ -124,8 +130,9 @@ def save_pymca_4d_stack_h5(path_pack, output_path=None, normalize=True, channel_
                     i0_values = np.array(mcc1_means)
                     i0_source = "mcc1"
         
-        # Avoid division by zero
-        i0_values = np.where(i0_values == 0, 1.0, i0_values)
+        # Ensure I0 is positive and avoid division by zero or negative values
+        i0_values = np.abs(i0_values)
+        i0_values = np.where(i0_values <= 0, 1.0, i0_values)
         
         # Apply manual energy calibration if enabled (External I0 Only)
         if path_pack.get('i0_calib_enabled') and "Internal" not in i0_source and "mcc" not in i0_source.lower():
@@ -185,7 +192,7 @@ def save_pymca_4d_stack_h5(path_pack, output_path=None, normalize=True, channel_
             xanes_meas.attrs['i0_source'] = i0_source
             xanes_meas.create_dataset('y', data=y_axis)
             xanes_meas.create_dataset('x', data=x_axis)
-            xanes_meas.create_dataset('energy', data=en_axis)
+            xanes_meas.create_dataset('energy', data=final_energies)
 
             # --- Metadata Group ---
             meta_group = f.create_group('stack_metadata')
@@ -228,7 +235,7 @@ def save_pymca_4d_stack_h5(path_pack, output_path=None, normalize=True, channel_
             full_meas.attrs['i0_source'] = i0_source
             full_meas.create_dataset('y', data=y_axis)
             full_meas.create_dataset('x', data=x_axis)
-            full_meas.create_dataset('energy', data=en_axis)
+            full_meas.create_dataset('energy', data=final_energies)
             full_meas.create_dataset('channels', data=chan_axis)
 
             has_multiple = len(detector_names) > 1
@@ -240,12 +247,26 @@ def save_pymca_4d_stack_h5(path_pack, output_path=None, normalize=True, channel_
             xrf_dataset_3d.attrs['interpretation'] = 'spectrum'
             xrf_dataset_3d.attrs['long_name'] = "XRF Stack (Energy Sum)"
 
+            xrf_det_datasets_3d = {}
+            for det in detector_names:
+                ds = xrf_meas.create_dataset(det, (ny, nx, n_channels), dtype=np.float32, compression="gzip")
+                ds.attrs['interpretation'] = 'spectrum'
+                ds.attrs['long_name'] = f"{det} XRF Stack (Energy Sum)"
+                xrf_det_datasets_3d[det] = ds
+
             # XANES 3D
             roi_ch = path_pack.get('channel_roi', (0, 255))
             sum_dataset_3d = xanes_meas.create_dataset('sdd_xanes_stack_3d', (ny, nx, num_energies), 
                                                        dtype=np.float32, compression="gzip")
             sum_dataset_3d.attrs['interpretation'] = 'spectrum' 
             sum_dataset_3d.attrs['long_name'] = f"XANES Stack (Ch {roi_ch[0]}-{roi_ch[1]})"
+
+            xanes_det_datasets_3d = {}
+            for det in detector_names:
+                ds = xanes_meas.create_dataset(det, (ny, nx, num_energies), dtype=np.float32, compression="gzip")
+                ds.attrs['interpretation'] = 'spectrum'
+                ds.attrs['long_name'] = f"{det} XANES Stack (Ch {roi_ch[0]}-{roi_ch[1]})"
+                xanes_det_datasets_3d[det] = ds
 
             # FULL 4D
             if has_multiple:
@@ -265,6 +286,7 @@ def save_pymca_4d_stack_h5(path_pack, output_path=None, normalize=True, channel_
 
             # In-memory accumulator for XRF 3D stack
             xrf_sum_accum = np.zeros((ny, nx, n_channels), dtype=np.float32)
+            xrf_det_accum = {det: np.zeros((ny, nx, n_channels), dtype=np.float32) for det in detector_names}
 
             # Loop through energies to populate
             print(f"Building stacks (XRF 3D, XANES 3D, Full 4D Hypercube)...")
@@ -272,6 +294,7 @@ def save_pymca_4d_stack_h5(path_pack, output_path=None, normalize=True, channel_
             for en_idx, energy in enumerate(all_energies):
                 norm_factor = i0_values[en_idx]
                 energy_sum_4d = np.zeros((ny, nx, n_channels), dtype=np.float32)
+                xanes_preview_grid = np.zeros((ny, nx), dtype=np.float32)
                 
                 for det in detector_names:
                     sdd_path = path_pack['sdd_files'][det].get(energy)
@@ -302,25 +325,43 @@ def save_pymca_4d_stack_h5(path_pack, output_path=None, normalize=True, channel_
                         if has_multiple:
                             energy_sum_4d += grid_3d
                             
+                        # Calculate XANES 3D preview grid contribution for this detector
+                        if use_sdd_calib and energy_roi is not None:
+                            import sdd_calibration_utils as sdd_calib
+                            if sdd_calib_data is None:
+                                sdd_calib_data = sdd_calib.load_calibration()
+                            ch_start_det, ch_end_det = sdd_calib.get_calibrated_bounds(energy_roi[0], energy_roi[1], det, sdd_calib_data)
+                            xanes_det_sum = np.sum(grid_3d[:, :, ch_start_det:ch_end_det], axis=2)
+                        else:
+                            ch_start_det, ch_end_det = channel_roi
+                            xanes_det_sum = np.sum(grid_3d[:, :, ch_start_det:ch_end_det+1], axis=2)
+                        
+                        xanes_preview_grid += xanes_det_sum
+                        
+                        # Save detector-specific XANES slice directly
+                        xanes_det_datasets_3d[det][:, :, en_idx] = xanes_det_sum
+                        
+                        # Accumulate detector-specific XRF
+                        xrf_det_accum[det] += grid_3d
+                        
                     except Exception as e:
                         print(f"Error at {energy} eV ({det}): {e}")
 
                 if has_multiple:
                     sum_dataset_4d[:, :, en_idx, :] = energy_sum_4d
                     xrf_sum_accum += energy_sum_4d
-                    # Use full range (0-255) for the 3D preview in 4D files by default
-                    # Use provided channel_roi for the 3D preview dataset
-                    ch_start, ch_end = channel_roi
-                    sum_dataset_3d[:, :, en_idx] = np.sum(energy_sum_4d[:, :, ch_start:ch_end+1], axis=2)
                 else:
                     # Single detector fallback
                     det0 = detector_names[0]
                     single_4d = det_datasets_4d[det0][:, :, en_idx, :]
                     xrf_sum_accum += single_4d
-                    # Use full range (0-255) for the 3D preview in 4D files by default
-                    # Use provided channel_roi for the 3D preview dataset
-                    ch_start, ch_end = channel_roi
-                    sum_dataset_3d[:, :, en_idx] = np.sum(single_4d[:, :, ch_start:ch_end+1], axis=2)
+
+                sum_dataset_3d[:, :, en_idx] = xanes_preview_grid
+
+            # Save XRF Accumulator to datasets
+            xrf_dataset_3d[:] = xrf_sum_accum
+            for det in detector_names:
+                xrf_det_datasets_3d[det][:] = xrf_det_accum[det]
 
                 if (en_idx + 1) % 20 == 0 or en_idx == num_energies - 1:
                     print(f"    -> Progress: {en_idx + 1}/{num_energies} energies.")
