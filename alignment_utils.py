@@ -107,7 +107,138 @@ class CustomTkDialog(tk.Toplevel):
         except: pass
         self.destroy()
 
+def show_custom_dialog_subprocess(title, message, dialog_type="info"):
+    import subprocess
+    import json
+    import sys
+    
+    script = f"""
+import tkinter as tk
+import json
+import sys
+
+class CustomTkDialog(tk.Toplevel):
+    def __init__(self, parent, title, message, dialog_type="info"):
+        super().__init__(parent)
+        self.title(title)
+        self.result = None
+        
+        self.protocol("WM_DELETE_WINDOW", self.on_cancel)
+        self.attributes("-topmost", True)
+        self.grab_set() # Modal dialog behavior
+        
+        frame = tk.Frame(self, padx=15, pady=15)
+        frame.pack(fill=tk.BOTH, expand=True)
+        
+        lbl = tk.Label(frame, text=message, justify=tk.LEFT, wraplength=400)
+        lbl.pack(side=tk.TOP, pady=(0, 15))
+        
+        btn_frame = tk.Frame(frame)
+        btn_frame.pack(side=tk.BOTTOM, fill=tk.X)
+        
+        if dialog_type == "info":
+            btn = tk.Button(btn_frame, text="OK", command=self.on_ok, width=10, bg='lightgray')
+            btn.pack(side=tk.BOTTOM, pady=5)
+        elif dialog_type == "yesno":
+            btn_yes = tk.Button(btn_frame, text="Yes", command=self.on_yes, width=10, bg='lightgreen')
+            btn_yes.pack(side=tk.LEFT, padx=5)
+            btn_no = tk.Button(btn_frame, text="No", command=self.on_no, width=10, bg='lightcoral')
+            btn_no.pack(side=tk.RIGHT, padx=5)
+        elif dialog_type == "okcancel":
+            btn_ok = tk.Button(btn_frame, text="OK", command=self.on_ok, width=10, bg='lightgreen')
+            btn_ok.pack(side=tk.LEFT, padx=5)
+            btn_cancel = tk.Button(btn_frame, text="Cancel", command=self.on_cancel, width=10, bg='lightcoral')
+            btn_cancel.pack(side=tk.RIGHT, padx=5)
+        elif dialog_type == "askstring":
+            self.entry = tk.Entry(frame, width=40)
+            self.entry.pack(side=tk.TOP, pady=(0, 15))
+            self.entry.focus_set()
+            self.entry.bind("<Return>", lambda e: self.on_string_ok())
+            
+            btn_ok = tk.Button(btn_frame, text="OK", command=self.on_string_ok, width=10, bg='lightgreen')
+            btn_ok.pack(side=tk.LEFT, padx=5)
+            btn_cancel = tk.Button(btn_frame, text="Cancel", command=self.on_cancel, width=10, bg='lightcoral')
+            btn_cancel.pack(side=tk.RIGHT, padx=5)
+            
+        self.update_idletasks()
+        width = max(350, self.winfo_width())
+        height = max(150, self.winfo_height())
+        x = (self.winfo_screenwidth() // 2) - (width // 2)
+        y = (self.winfo_screenheight() // 2) - (height // 2)
+        self.geometry(f'{{width}}x{{height}}+{{x}}+{{y}}')
+        
+    def on_ok(self):
+        self.result = True
+        self.close()
+        
+    def on_yes(self):
+        self.result = True
+        self.close()
+        
+    def on_no(self):
+        self.result = False
+        self.close()
+        
+    def on_string_ok(self):
+        self.result = self.entry.get()
+        self.close()
+        
+    def on_cancel(self):
+        self.result = None
+        self.close()
+        
+    def close(self):
+        try: self.grab_release()
+        except: pass
+        self.withdraw()
+        self.update_idletasks()
+        try: self.quit()
+        except: pass
+        self.destroy()
+
+try:
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    root.deiconify()
+    root.update()
+    root.focus_force()
+    
+    try:
+        import os
+        import sys
+        if sys.platform == 'darwin':
+            os.system('''osascript -e 'tell app "System Events" to set frontmost of process "Python" to true' 2>/dev/null''')
+            os.system('''osascript -e 'tell app "System Events" to set frontmost of process "python3" to true' 2>/dev/null''')
+            os.system('''osascript -e 'tell app "System Events" to set frontmost of process "python" to true' 2>/dev/null''')
+    except:
+        pass
+        
+    dialog = CustomTkDialog(root, {repr(title)}, {repr(message)}, dialog_type={repr(dialog_type)})
+    dialog.mainloop()
+    print(json.dumps({{"result": dialog.result}}))
+except Exception as e:
+    print(json.dumps({{"error": str(e)}}))
+finally:
+    try: root.destroy()
+    except: pass
+"""
+    try:
+        res = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True)
+        out = res.stdout.strip()
+        data = json.loads(out)
+        if "error" in data:
+            return (False, None)
+        return (True, data.get("result"))
+    except Exception as e:
+        return (False, None)
+
 def show_custom_dialog(title, message, dialog_type="info"):
+    if _in_jupyter():
+        success, res = show_custom_dialog_subprocess(title, message, dialog_type=dialog_type)
+        if success:
+            return res
+            
     root = get_tk_root()
     # DO NOT deiconify the root, as it causes a blank tk window to appear.
     # The CustomTkDialog is a Toplevel and handles its own topmost attribute.
