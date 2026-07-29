@@ -1824,6 +1824,7 @@ class SummaryDashboard:
                         f"# Edge: {meta.get('Edge', 'N/A')}",
                         f"# Preparation Method: {meta.get('Prep', 'N/A')}",
                         f"# Calibrated To: {meta.get('Calib', 'N/A')}",
+                        f"# Calibration Reference: {meta.get('CalibRef', 'N/A')}",
                         f"# Temperature: {meta.get('Temp', 'N/A')}",
                         f"# Scan Mode: {meta.get('Mode', 'N/A')}",
                         f"# Chamber Conditions: {meta.get('Chamber', 'N/A')}",
