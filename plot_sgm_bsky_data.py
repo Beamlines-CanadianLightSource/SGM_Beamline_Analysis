@@ -1778,13 +1778,34 @@ class SummaryDashboard:
             
             # Prepare Normalized Data
             i0_safe = np.where(i0_values <= 0, 1.0, i0_values)
-            normalized_summary = {det: current_summary[det] / i0_safe for det in self.ctx['detector_names']}
+            ipfy_active = getattr(self.sync, 'ipfy_mode', False)
+            
+            raw_summary = {det: current_summary[det] for det in self.ctx['detector_names']}
+            normalized_summary = {}
+            ipfy_offsets = {}
+            
+            for det in self.ctx['detector_names']:
+                norm_raw = raw_summary[det] / i0_safe
+                if ipfy_active:
+                    inv_norm = -norm_raw
+                    offset = float(np.abs(np.min(inv_norm)) + 500)
+                    normalized_summary[det] = inv_norm + offset
+                    ipfy_offsets[det] = offset
+                else:
+                    normalized_summary[det] = norm_raw
+
             norm_avg = np.nanmean([normalized_summary[det] for det in self.ctx['detector_names']], axis=0)
             
             # Prepare Normalized MCC Data
             normalized_mcc = {}
+            mcc4_offset = None
             for mcc_key, data in current_mcc.items():
-                normalized_mcc[mcc_key] = np.array(data) / i0_safe
+                norm_mcc_val = np.array(data) / i0_safe
+                if ipfy_active and mcc_key == 'mcc4':
+                    inv_mcc = -norm_mcc_val
+                    mcc4_offset = float(np.abs(np.min(inv_mcc)) + 500)
+                    norm_mcc_val = inv_mcc + mcc4_offset
+                normalized_mcc[mcc_key] = norm_mcc_val
 
             raw_avg = np.nanmean([current_summary[det] for det in self.ctx['detector_names']], axis=0)
 
@@ -1866,8 +1887,22 @@ class SummaryDashboard:
                     f"# {'Energy ROI' if self.sync.use_sdd_calib else 'Channels'}: {roi_str}",
                     f"# Normalization: {i0_source}",
                     f"# SDD Calibration: {calib_str}",
-                    "#"
                 ]
+                
+                if ipfy_active:
+                    offsets_str = ", ".join([f"{det}: +{ipfy_offsets.get(det, 0.0):.2f}" for det in self.ctx['detector_names']])
+                    rows += [
+                        f"# IPFY Mode: Active",
+                        f"# IPFY Math Operation: Normalized_IPFY = (-1 * (RAW / I0)) + Offset",
+                        f"# IPFY Baseline Formula: Offset = abs(min(-1 * (RAW / I0))) + 500",
+                        f"# IPFY Detector Offsets: {offsets_str}",
+                    ]
+                    if mcc4_offset is not None:
+                        rows.append(f"# IPFY TEY (mcc4) Baseline Offset: +{mcc4_offset:.2f}")
+                else:
+                    rows.append("# IPFY Mode: Disabled")
+
+                rows.append("#")
                 
                 rows.append("# Column 1: Calibrated Energy (eV)")
                 rows.append("# Column 2: Original Energy (eV)")
@@ -1881,8 +1916,16 @@ class SummaryDashboard:
                 # List Normalized Columns
                 for det in self.ctx['detector_names']:
                     label = SDD_NAMES.get(int(det.replace('sdd','')), det) if 'sdd' in det else det
-                    rows.append(f"# Column {c_idx}: NORM_{label} (by {i0_source})"); c_idx += 1
-                rows.append(f"# Column {c_idx}: NORM_Average_SDD"); c_idx += 1
+                    if ipfy_active:
+                        off_val = ipfy_offsets.get(det, 0.0)
+                        rows.append(f"# Column {c_idx}: NORM_IPFY_{label} (Inverted: -1*(RAW/{i0_source}) + {off_val:.2f})"); c_idx += 1
+                    else:
+                        rows.append(f"# Column {c_idx}: NORM_{label} (by {i0_source})"); c_idx += 1
+                
+                if ipfy_active:
+                    rows.append(f"# Column {c_idx}: NORM_IPFY_Average_SDD"); c_idx += 1
+                else:
+                    rows.append(f"# Column {c_idx}: NORM_Average_SDD"); c_idx += 1
                 
                 has_ext_i0 = (self.ctx.get('ext_i0_values') is not None)
                 if has_ext_i0:
@@ -1896,7 +1939,10 @@ class SummaryDashboard:
                             rows.append(f"# Column {c_idx}: RAW_External_I0 (from {i0_source})"); c_idx += 1
                     for ch in self.ctx['mcc_channels']:
                         label = MCC_NAMES.get(ch, f"mcc{ch}")
-                        rows.append(f"# Column {c_idx}: NORM_{label} (by {i0_source})"); c_idx += 1
+                        if ipfy_active and ch == 4:
+                            rows.append(f"# Column {c_idx}: NORM_IPFY_{label} (Inverted TEY by {i0_source} + {mcc4_offset:.2f})"); c_idx += 1
+                        else:
+                            rows.append(f"# Column {c_idx}: NORM_{label} (by {i0_source})"); c_idx += 1
                 elif has_ext_i0:
                     rows.append(f"# Column {c_idx}: RAW_External_I0 (from {i0_source})"); c_idx += 1
 

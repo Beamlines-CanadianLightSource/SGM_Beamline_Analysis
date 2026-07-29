@@ -143,6 +143,18 @@ run_calibration()
   - **Compound Optical Density (SF) Correction:** Optionally divide the $I_0$ signal by the Optical Density of a compound (e.g., BN) using the Henke database (`sf.py`), with custom density (g/cm³), thickness (µm), and auto-scaling.
 - **Normalized Plot Titles:** $I_0$ normalization details are formatted into compact, 2-line small print (`fontsize=8.5`) above normalized subplots so long parameter strings never overlap or crowd the spectral curves.
 
+**IPFY Mode (Inverse Partial Fluorescence Yield):**
+- **Purpose & Inversion Math:** When **"IPFY Mode (Invert for PCA)"** is checked, the normalized spectra $N(E) = \text{RAW}(E) / I_0(E)$ are inverted by multiplying by $-1$ and shifted by a baseline constant:
+  $$\text{Offset} = |\min(-N(E))| + 500 = \max(N(E)) + 500$$
+  $$\text{IPFY}(E) = -N(E) + \text{Offset}$$
+  This transforms inverse fluorescence dips into positive absorption-like XANES peaks with a 500-unit baseline offset above zero, making them directly ready for PCA, K-Means clustering, and speciation.
+- **CSV Export in IPFY Mode:** Clicking **"Save XANES Spectra"** while IPFY Mode is active exports the inverted and baseline-shifted IPFY normalized spectra into the `NORM_IPFY_sdd1`, `NORM_IPFY_sdd2`, `NORM_IPFY_sdd3`, `NORM_IPFY_sdd4`, `NORM_IPFY_Average_SDD`, and `NORM_IPFY_sample_tey` columns.
+- **Header Metadata Transparency:** The saved CSV header includes complete IPFY mathematical details:
+  - `# IPFY Mode: Active`
+  - `# IPFY Math Operation: Normalized_IPFY = (-1 * (RAW / I0)) + Offset`
+  - `# IPFY Baseline Formula: Offset = abs(min(-1 * (RAW / I0))) + 500`
+  - `# IPFY Detector Offsets: sdd1: +<offset1>, sdd2: +<offset2>, sdd3: +<offset3>, sdd4: +<offset4>`
+
 **Exporting Data & Research Metadata Caching:**
 - When saving spectra or data from the summary dashboard, you can toggle **"Add Sample Specific Information to File Header"** or click the green **"Edit Metadata"** button located directly on the control panel.
 - **Unchecked (Default):** Skips the metadata prompt and includes a standard header containing all relevant beamline parameters (`Endstation:`, `# Grid Dimensions: Nx x Ny (# points)`, `# Time Per Image:`, and `# SDD Calibration: Active (Scan: ..., Edges: ...)`).
