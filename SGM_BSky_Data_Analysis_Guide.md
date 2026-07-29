@@ -37,7 +37,9 @@ As you progress through the notebook, various file dialogs and interactive GUIs 
 
 ## Core Modules & GUI Instructions
 
-  - Changes made here are saved to the `path_pack` and applied to all downstream steps.
+### 1. `analyze_sgm_bsky_data.py` (Data Loading & Preprocessing)
+**Purpose:** Reads raw HDF5 beamline files, parses motor positions (X/Y coordinates), extracts energy vectors, reads SDD spectra and MCC scaler channels, and structures everything into a standard `path_pack` dictionary.
+- Changes made here are saved to the `path_pack` and applied to all downstream steps.
 
 ### 2. `calibrate_sdd_xrf.py` (Energy Calibration)
 **Purpose:** Precisely maps the SDD detector "channels" (0-255) to physical "energy" (eV). This is essential for identifying elements in your XRF spectra and ensuring your XANES plots have an accurate X-axis.
@@ -84,6 +86,12 @@ run_calibration()
 - **Data Preservation:** The stitched dataset now preserves all 4 MCC reference channels (`mcc1` through `mcc4`), ensuring complete metadata for normalization.
 - **Bake Stitched Map:** Once the maps join perfectly without visible "seams" or overshoots, click this button to generate a new master HDF5 file and data directory. The resulting "baked" map is fully compatible with the rest of the pipeline.
 
+### 2.2 `sf.py` (Scattering Factors & Compound Optical Density Correction)
+**Purpose:** Calculates anomalous atomic scattering factors ($f_1, f_2$), attenuation lengths, and X-ray Optical Density ($\text{OD}$) for any chemical compound using the Henke database (`henke.xdr`).
+- **Core Functionality:** Given a compound formula (e.g., `BN`, `SiO2`, `Al2O3`), photon energy grid (eV), density $\rho$ ($\text{g/cm}^3$), and sample thickness $t$ ($\mu\text{m}$), `sf.py` computes:
+  $$\text{OD}(E) = \mu(E) \cdot \rho \cdot t$$
+- **Primary Use Case:** Modifying raw or reference $I_0$ signals by dividing out the compound's absorption profile ($I_{0,\text{modified}} = I_{0,\text{raw}} / \text{OD}$) to isolate true sample absorption edges during normalization.
+
 ### 3. `plot_sgm_bsky_data.py` (The Main Interactive Dashboard)
 **Purpose:** This is the most critical component of the notebook. It acts as the "Command Center" where you visually explore the 4D hypercube, correlate spatial maps with XANES spectra, and manage normalization.
 
@@ -100,23 +108,20 @@ run_calibration()
    - Click and drag a rectangle on any map (left or middle panels) to select a spatial Region of Interest (ROI). 
    - Alternatively, click the "Switch to Polygon" button at the bottom to draw custom freehand shapes.
    - *Result:* As soon as you draw the ROI, the right-hand panel updates to show the emission spectrum of *only those pixels*. The Summary Dashboard at the bottom also updates to show the full XANES scan for that specific physical area.
-    - *Result:* The dashboard will trigger a **GLOBAL REFRESH**. It will re-integrate the entire 4D stack across all energies for your newly selected channels, instantly updating every map in the dashboard.
+3. **Spectral Channel ROI Selection (Spectrum to Map):**
+   - Click and drag on the right-hand spectrum plot (or use the `ROI Start` / `ROI End` input boxes) to define an emission channel range (e.g. channels `21-35` or energy `1470-1500 eV`).
+   - *Result:* The dashboard triggers a **GLOBAL REFRESH**, re-integrating the 4D stack across all energies for your selected channels and updating every spatial map.
 4. **Global Contrast Slider:**
-   - Located right below the energy slider, the **"Image Contrast %"** range slider allows you to adjust the min/max percentiles for all map displays simultaneously.
-   - **Tip:** Drag the handles to roughly **[2.0, 98.0]** to ignore noisy "hot pixels" and instantly reveal the high-contrast features of your sample. This affects the visualization only and does not change the underlying data values.
+   - Located right below the energy slider, the **"Image Contrast %"** range slider allows you to adjust the min/max percentiles for all map displays simultaneously (e.g. `[2.0, 98.0]`).
 5. **Synchronization:** Everything is synced! Drawing an ROI on `sdd1` will automatically apply the exact same ROI to `sdd2`, `sdd3`, and `sdd4`.
-5. **Double-Click to Copy (Quick Export):**
-   - You can instantly copy any plot to your clipboard by **double-clicking** it.
-   - **Single Plot:** Double-click inside a map or spectrum area to copy just that specific plot.
-   - **Full Window:** Double-click in the gray margin area to copy the entire dashboard layout (e.g., all 3 plots in a row).
    - *Result:* High-resolution images are ready to be pasted directly into PowerPoint or other documents.
 
 6. **Exporting Processed Data:**
    - The Summary Dashboard at the bottom contains several yellow action buttons for saving your results:
-   - **Save XANES Spectra for PCA/CA:** (Formerly "Save PyMca Stack"). This exports a compact **3D HDF5 stack** (`_PCA-CA.h5`) where the spectrum is reduced to a single intensity value (from your ROI) per pixel. This is the format required for **PCA and Clustering** analysis.
+   - **Save Normalized XANES Spectra for PCA/CA:** (Formerly "Save PyMca Stack"). This exports a compact **3D HDF5 stack** (`_PCA-CA.h5`) where the spectrum is reduced to a single intensity value (from your ROI) per pixel. This is the format required for **PCA and Clustering** analysis.
    - **Save XRF Spectra for Elemental Analysis using PyMca:** (Formerly "Save 4D PyMca Stack"). This exports a massive **4D HDF5 hypercube** (`_Elemental_PyMca.h5`) containing the full raw spectrum for every pixel. Use this for **elemental peak fitting** in PyMca.
    - **Save XRD/XANES Spectra:** Exports your currently extracted 1D spectra (Intensity vs Energy) to a CSV file.
-   - **Save XRD Spectra:** Exports the 1D fluorescence spectrum (Intensity vs Channels) for the selected spatial area to a CSV file.
+   - **Save XRD Spectra:** Exports the consolidated 1D fluorescence spectrum for the selected spatial area to a CSV file. **Column 1** is **`Energy_eV`** (Calibrated Energy in eV) for direct X-axis plotting in Excel/PyMca, **Column 2** is **`Channel`** (0-255), followed by individual detector counts (`sdd1`, `sdd2`, `sdd3`, `sdd4`) and **`Average_SDD`**. The header dynamically displays calibrated energy range `# SDD ROI Energy: min-max eV (ChStart-ChEnd)` when active.
 
 7. **Sync Map ROI:**
    - The light green **"Sync Map ROI"** button is located directly above the energy maps on each individual detector's dashboard row. If you draw an ROI on one map and the summary spectrum doesn't automatically update, or if the visual regions get out of sync, click this button on the active map to force all other maps to align perfectly with your drawn ROI.
@@ -127,18 +132,23 @@ run_calibration()
    - **Exact Calibration Mode:** Checking the box switches the scale from the approximate 10 eV/channel mapping to the **exact calibration parameters** calculated for each specific detector.
    - **ROI Inputs & Sync:** The **Spectral ROI Limits** input fields at the bottom are always labeled as `ROI Start (eV)` / `ROI End (eV)`. When exact calibration is enabled, selecting a region on any plot or typing an energy range defines physical energy boundaries. ROI selection perfectly synchronizes across all detectors by **Energy (eV)** rather than raw channels. This ensures that selecting an element's characteristic emission peak (e.g., Al-K at ~1486.7 eV) is accurate for all four SDDs, even if they have slight hardware offset differences.
 
-**I0 Normalization and Smoothing:**
+**I0 Normalization, Smoothing & OD Division:**
 - At the beginning of plotting, you will be prompted to select the normalization source:
-  - **Internal I0 (`mcc1`):** Uses the current from the **Au mesh** collected during your scan.
-  - **External I0 CSV:** Uses a previously collected standard. 
-    - *Example:* For Carbon (**C K-edge**) analysis, it is standard practice to use a spectrum from **BN** (Boron Nitride) as your external I0.
-- Regardless of your choice, an **I0 Preview Dialog** will open. For external files, you will first use dropdowns to select the Energy (X) and Intensity (Y) columns.
-- **Smoothing:** You can enable Savitzky-Golay smoothing to remove noise from your chosen I0 standard (internal or external) before applying it to your data. Adjust the "Window Size" and see the preview update live compared to the raw I0 spectrum.
+  - **Internal I0 (`mcc1`):** Uses the Au mesh reference current collected during your scan.
+  - **External I0 CSV:** Uses a previously collected standard (e.g., BN for Carbon C K-edge analysis).
+- An **I0 Preview Dialog** opens to configure processing parameters:
+  - **Column Selection:** Select Energy (X) and Intensity (Y) columns.
+  - **Smoothing:** Enable Savitzky-Golay smoothing with an adjustable window size to filter out noise in your $I_0$ standard.
+  - **Energy Shift:** Apply an energy calibration offset (eV) to align the $I_0$ standard with your scan energies.
+  - **Compound Optical Density (SF) Correction:** Optionally divide the $I_0$ signal by the Optical Density of a compound (e.g., BN) using the Henke database (`sf.py`), with custom density (g/cm³), thickness (µm), and auto-scaling.
+- **Normalized Plot Titles:** $I_0$ normalization details are formatted into compact, 2-line small print (`fontsize=8.5`) above normalized subplots so long parameter strings never overlap or crowd the spectral curves.
 
-**Exporting Data (Adding Sample Specific Information):**
-- When saving spectra or data from the summary dashboard, you have the option to toggle the **"Add Sample Specific Information to File Header"** checkbox (located just above the Save buttons).
-- **Unchecked (Default):** This is the default setting. It skips the metadata prompt and simply includes a standard header containing all relevant beamline parameters that the data was collected by.
-- **Checked:** This opens a dialog generating an expanded header where the User can add additional information such as compound name, chemical formula, authors, sample preparation details, etc. It is expected to be used primarily for **reference compounds**. We expect to submit these reference compounds to the [Canadian Light Source X-ray Absorption database](https://xasdb.lightsource.ca/). This information will subsequently be submitted to the [Federated Research Data Repository (FRDR)](https://www.frdr-dfdr.ca/repo/).
+**Exporting Data & Research Metadata Caching:**
+- When saving spectra or data from the summary dashboard, you can toggle **"Add Sample Specific Information to File Header"** or click the green **"Edit Metadata"** button located directly on the control panel.
+- **Unchecked (Default):** Skips the metadata prompt and includes a standard header containing all relevant beamline parameters (`Endstation:`, `# Grid Dimensions: Nx x Ny (# points)`, `# Time Per Image:`, and `# SDD Calibration: Active (Scan: ..., Edges: ...)`).
+- **Checked / Edit Metadata:** Opens an expanded dialog where you can add or edit sample-specific research metadata (Compound Name, Chemical Formula, Authors, Affiliation, Element, Edge, Preparation Method, Calibrated To, Temperature, Scan Mode, Chamber Conditions, Comments). This information is expected to be used primarily for **reference compounds** submitted to the [Canadian Light Source X-ray Absorption database](https://xasdb.lightsource.ca/) and the [Federated Research Data Repository (FRDR)](https://www.frdr-dfdr.ca/repo/).
+- **Persistent Memory & Auto-Filling Across Scans:** All research metadata entries are automatically cached in Python memory and atomically saved to disk (`~/.sgm_last_metadata.json`). When loading a new scan, opening the dialog pre-fills all your previous research parameters while automatically substituting **Sample Name** (`Name`) with the current scan's name, allowing single-click confirmation or quick on-the-fly editing without re-typing.
+- **Re-Editing Anytime:** You can click **Edit Metadata** or save again at any time to review or modify the pre-filled metadata fields before or after exporting.
 
 - **Live Spatial Deconvolution:**
   - **Purpose:** Restores spatial resolution lost to the finite size of the X-ray beam spot (PSF) and scanning motion blur.
@@ -147,6 +157,34 @@ run_calibration()
   - **Responsiveness:** Sliders use delayed updates (`continuous_update=False`) to avoid CPU lag during dragging. The calculation runs immediately once you release the slider handle.
   - **Stability Notes:** Utilizes a custom division-by-zero epsilon check ($10^{-12}$) and intensity normalization to prevent NaNs and solid-color blank plots on masked/trimmed margins.
 
+### 3.1 `plot_sgm_bsky_data_batch.py` (Batch Processing & Comparison of Multiple Scans)
+**Purpose:** Enables batch processing and side-by-side comparison of XANES spectra across multiple loaded stack scans (`SGM_BSky_Data_Analysis-batch.ipynb`). It processes all scans using unified spatial and spectral ROI parameters, normalizes the spectra ($I_0$ internal/external with optional smoothing, energy shift, and optical density correction), and exports summary CSV files for each scan to its original directory.
+
+**Batch Workflow & Features:**
+1. **Interactive XRF ROI Inspector (Tab 0):** The batch dashboard includes an integrated XRF spectrum inspector. You can click and drag the mouse on the peak (or use the interactive span selector) to dynamically adjust your spectral ROI (`xrf_roi` in eV or `channel_roi`), or type exact bounds into the `ROI Start` and `ROI End` input fields.
+2. **Live Batch Refresh:** Click the green **REFRESH BATCH PLOTS** button to instantly re-calculate and update all raw and normalized XANES spectra across every loaded scan.
+3. **$I_0$ Selection & Interactive Preview Dialog:** Prompts whether to use Internal $I_0$ (`mcc1`) or load an External $I_0$ CSV file. For external files, the interactive **I0 Preview Dialog** lets you:
+   - Select Energy (X) and Intensity (Y) columns.
+   - Apply **Savitzky-Golay smoothing** with an adjustable window size.
+   - Apply an **Energy Shift (eV)** to align the $I_0$ standard with your scan energies.
+   - Divide by **Compound Optical Density (OD)** using the Henke database (`sf.py`), with configurable chemical formula, density (g/cm³), thickness (µm), and auto-scaling.
+4. **SDD Energy Calibration:** Prompts whether to apply `sdd_calibration.json` calibration. When active, it uses energy-equivalent physical bounds (eV) to ensure precise cross-detector alignment.
+5. **Waterfall Offset Option:** Offers an optional vertical offset to separate and stagger spectral lines for clear comparison.
+6. **Comparative Figures:** Generates multi-panel comparative figures for both **RAW** and **NORMALIZED** XANES spectra across all scans. Normalized titles use compact multi-line formatting so long $I_0$ parameters never overlap the plots.
+7. **Automatic CSV Export:** Click the yellow **Save XANES Spectra CSVs** button to export individual XANES summary CSV files (`<ScanName>_Rect_<ROI>_summary.csv`) with complete metadata headers directly into each scan's original folder.
+
+### 3.2 `plot_2d_rixs_map.py` (2D Incident vs. Emission RIXS Maps)
+**Purpose:** Generates 2D heatmaps of Incident Energy (X-axis) vs. Emission Energy/Channel (Y-axis) for RIXS and 2D XRF map visualization.
+- **Orientation:** Incident energy is plotted on the X-axis (eV) and Emission energy (eV) or channels (0-255) on the Y-axis.
+- **Grid Layout:** Plots are displayed compactly side-by-side (1x2 for 2 detectors, 2x2 grid for 4 detectors).
+- **Interactive Save Button:** Includes a yellow **"Save 2D Map"** button on the figure canvas so you can inspect the image on screen first before choosing to save to the original data folder with overwrite confirmation.
+
+### 3.3 `plot_selected_emission_spectra.py` (Overlaid Emission / XRD Spectra Analysis)
+**Purpose:** Extracts and overlays 1D emission/XRD spectra for up to 5 selected incident energy steps to track scatter peak shifts as a function of incident energy.
+- **Energy Selection:** Select up to 5 incident energies (or indices) to plot simultaneously.
+- **Color Coding:** Each spectrum is rendered in a distinct color for easy visual differentiation.
+- **Waterfall Spacing:** Supports `apply_waterfall=True` to add vertical offset between spectra or `apply_waterfall=False` for direct overlay.
+- **Interactive Save Button:** Includes a yellow **"Save Spectra Plot"** button on the figure canvas for exporting to the original scan folder.
 
 ### 4. `pca_xanes_analysis.py`
 **Purpose:** Performs Principal Component Analysis (PCA) to reduce the dimensionality of the XANES stack and isolate the primary chemical variations (components) while filtering out background noise.
@@ -154,9 +192,19 @@ run_calibration()
 - Flattens the 3D stack, scales the data, and computes eigenvectors (Loadings) and eigenimages (Scores).
 - Automatically filters out dead/empty pixels to prevent math errors.
 - Saves eigenvectors to a CSV and the eigenimages back into the HDF5 file under `entry/pca_results`.
+- Displays spatial map axes with physical units **`X (mm)`** and **`Y (mm)`**.
+
+> [!IMPORTANT]
+> **Data Normalization & Scaling in PCA/CA:**
+> - **$I_0$ Intensity Normalization:** The input HDF5 stack (e.g. `_PCA-CA.h5`) contains data already normalized by the incident beam intensity $I_0$ (via `mcc1 (Au Mesh)` or external standards) during the saving stage in the main dashboard.
+> - **Metadata & Header Transparency:** PCA execution logs, plot suptitles, and saved vector CSVs (`*_pca_vectors_<dataset>.csv`) include explicit normalization info:
+>   `# Normalized: Yes (I0 Source: Internal (mcc1 / Au Mesh))`
+> - **Standard Scaling (Z-score Normalization):** Before performing the PCA decomposition, the data is automatically centered (mean subtracted) and scaled (divided by standard deviation) using `scikit-learn`'s `StandardScaler` to prevent high-intensity features/energies from disproportionately dominating the variance.
+> - **Automatic HDF5 File Redirection:** If an `_Elemental_PyMca.h5` 4D hypercube file path is selected by mistake, `resolve_pca_h5_path` automatically detects it and redirects to the corresponding 3D XANES stack (`_PCA-CA.h5`).
+
 **Multi-Detector "Run All" Mode:**
 - You can process individual datasets (like `average`) or you can tell the script to run **all** datasets at once (`sdd1`, `sdd2`, `sdd3`, `sdd4`, and `average`).
-- Running them all at once automatically generates comparative, side-by-side grids (one for eigenimages, one for eigenvectors) so you can easily spot detector-specific artifacts or verify consistency across all SDDs.
+- Running them all at once automatically generates comparative, side-by-side grids (one for eigenimages, one for eigenvectors) so you can easily spot detector-specific artifacts or verify consistency across all SDDs. All figure titles display $I_0$ normalization metadata (e.g. `[Normalized: Yes (I0 Source: Internal (mcc1 / Au Mesh))]`).
 - *Note: To maintain high visibility in Jupyter, these large comparative grids are rendered with a built-in horizontal scrollbar, preventing them from overflowing or shrinking too small.*
 
 ### 5. `cluster_xanes_analysis.py`
@@ -166,6 +214,9 @@ run_calibration()
 - The algorithm assigns each valid pixel to a cluster, producing a spatial map of distinct "zones" or species.
 - It then computes the average XANES spectrum for all pixels within each cluster.
 - Saves the cluster maps and extracted spectra to CSVs, PNG previews, and back into the HDF5 file.
+- All exported CSV headers (`*_cluster_spectra_summary.csv` and `*_all_detectors_cluster_sums.csv`) and figure suptitles document $I_0$ normalization details (e.g., `# Normalized: Yes (I0 Source: Internal (mcc1 / Au Mesh))`).
+- Automatically redirects `_Elemental_PyMca.h5` inputs to `_PCA-CA.h5`.
+
 **Multi-Detector "Run All" Mode:**
 - Just like the PCA analysis, you can cluster all SDD detectors and the `average` simultaneously.
 - This outputs a comparative grid of cluster maps and a grid of the extracted cluster XANES spectra. It is extremely useful for validating that the chemical zones detected are real sample features and not just anomalies occurring on a single detector.
@@ -173,17 +224,19 @@ run_calibration()
 - **Cluster Sums:** In multi-detector mode, the tool also calculates and saves the **Sum** of all spectra in each cluster (in addition to the Mean), providing the total integrated signal per detector.
 
 **Metadata & CSV Export:**
-- All clustering CSV exports now include a standard header with beamline metadata.
+- All clustering CSV exports include a standard header with beamline metadata and $I_0$ normalization details (`# Normalized: Yes (I0 Source: Internal (mcc1 / Au Mesh))`).
 - **Pass `metadata` dict:** To ensure headers are complete (Project, Date, etc.), pass the `pp` (path_pack) dictionary from `analyze_sgm_bsky_data` to the `metadata` parameter of the clustering functions.
 - **Full Metadata Mode:** You can enable `use_full_metadata=True` to prompt for detailed research metadata (Authors, Affiliation, etc.) before saving.
 
 ### 6. `interactive_cluster_merger.py`
 **Purpose:** A powerful interactive dashboard that lets you review the K-Means clustering results, combine similar clusters, and extract a single, high signal-to-noise XANES spectrum.
 **User Interaction (GUI):**
-- The dashboard displays the Cluster Map on the left and the Merged Spectrum on the right.
+- The dashboard displays the Cluster Map on the left and the Merged Spectrum on the right. Both display physical units (`X (mm)`, `Y (mm)`) and $I_0$ normalization metadata.
 - **Detector Dropdown:** Switch between `sdd1`, `sdd2`, `sdd3`, `sdd4`, or `average` to see how clustering performed across different detectors.
 - **Checkboxes:** Check or uncheck clusters ($C1, C2, C3...$) to see their combined average spectrum update in real-time. The map will also mask out unselected clusters so you can verify exactly which spatial regions are contributing to your spectrum.
-- **Save Button:** Click "Save Merged Spectrum" to export the live spectrum to a CSV file (includes all beamline metadata in the file header).
+- **Normalization Info:** Displays $I_0$ normalization source details (e.g. `Data Normalized: Yes (I0 Source: Internal (mcc1 / Au Mesh))`) in the UI header and saved CSV headers.
+- **Save Button:** Click "Save Merged Spectrum" to export the live spectrum to a CSV file (includes beamline metadata and normalization info in the file header).
+- **Auto-Redirection:** Automatically resolves `_Elemental_PyMca.h5` paths to `_PCA-CA.h5`.
 
 ### 7. `save_pymca_4d_stack_h5.py`
 **Purpose:** Packages the final normalized and aligned data into a multi-mode HDF5 file specifically formatted for PyMca.

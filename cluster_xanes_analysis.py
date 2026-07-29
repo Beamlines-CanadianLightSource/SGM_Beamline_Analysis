@@ -1,12 +1,20 @@
+import os
+import sys
+
+# Prevent OpenMP duplicate runtime warnings from threadpoolctl / scikit-learn
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
+import warnings
+warnings.filterwarnings("ignore", category=RuntimeWarning, message=".*OpenMP.*")
+
 import h5py
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.cluster import KMeans
-import os
-import sys
 import tkinter as tk
 from tkinter import simpledialog
+from alignment_utils import format_num_val, safe_metadata_dialog_call
 
 # Global cache to prevent multiple prompts during a multi-detector run
 _USER_METADATA_CACHE = None
@@ -76,6 +84,21 @@ def get_h5_metadata(h5_path):
 
             if 'scan_name' not in meta or meta['scan_name'] == 'N/A':
                 meta['scan_name'] = os.path.splitext(os.path.basename(h5_path))[0]
+
+            # Ensure normalized and i0_source are properly populated
+            if 'i0_source' not in meta or not meta['i0_source']:
+                meta['i0_source'] = 'Internal (mcc1 / Au Mesh)'
+            
+            s = str(meta['i0_source'])
+            if "mcc1" in s.lower() and "au mesh" not in s.lower():
+                meta['i0_source'] = s.replace("mcc1", "mcc1 (Au Mesh)")
+            elif s.lower() in ["internal", "mcc1"] and "au mesh" not in s.lower():
+                meta['i0_source'] = "Internal (mcc1 / Au Mesh)"
+
+            if meta['i0_source'] in ['None', 'Unknown']:
+                meta['normalized'] = 'No'
+            elif 'normalized' not in meta:
+                meta['normalized'] = 'Yes'
     except Exception as e:
         print(f"  [Metadata] Warning: Error during robust attribute search: {e}")
     return meta
@@ -89,8 +112,8 @@ def save_csv_with_header(csv_path, df, scan_info, full_meta=None):
             f"# Formula: {full_meta.get('Formula', 'N/A')}",
             f"# Authors: {full_meta.get('Authors', 'N/A')}",
             f"# Affiliation: {full_meta.get('Affiliation', 'N/A')}",
-            f"# Facility: CLS",
-            f"# Beamline: SGM",
+            f"# Facility: Canadian Light Source (CLS)",
+            f"# Beamline: Spherical Grating Monochromator (SGM) (11ID-1)",
             f"# Mono: Spherical Grating Monochromator",
             f"# Website: https://sgm.lightsource.ca",
             f"# Element: {full_meta.get('Element', 'N/A')}",
@@ -104,25 +127,27 @@ def save_csv_with_header(csv_path, df, scan_info, full_meta=None):
             "#"
         ]
     
-    # Try to find ny/nx if available (robust)
-    nx = scan_info.get('nx', 'N/A')
-    ny = scan_info.get('ny', 'N/A')
-    grid_str = f"{nx} x {ny}" if nx != 'N/A' else 'N/A'
+    pts_str = f" ({nx * ny} points)" if isinstance(nx, (int, float, np.number)) and isinstance(ny, (int, float, np.number)) else ""
+    grid_str = f"{nx} x {ny}{pts_str}" if nx != 'N/A' else 'N/A'
 
     rows += [
         f"# Scan Name: {scan_info.get('scan_name', 'N/A')}",
+        f"# Scan Type: {scan_info.get('scan_type', 'N/A')}",
         f"# Date: {scan_info.get('date', 'N/A')}",
         f"# Project: {scan_info.get('project', 'N/A')}",
         f"# Energy Regions: {scan_info.get('Energy Regions', 'N/A')}",
-        f"# Grid: {grid_str}",
+        f"# Grid Dimensions: {grid_str}",
         f"# Grating: {scan_info.get('grating', 'N/A')}",
         f"# Harmonic: {scan_info.get('harmonic', 'N/A')}",
         f"# Strip: {scan_info.get('strip', 'N/A')}",
         f"# Polarization: {scan_info.get('polarization', 'N/A')}",
-        f"# Exit Slit Gap: {scan_info.get('exit_slit_gap', 'N/A')}",
-        f"# XPS Z: {scan_info.get('xps_z', 'N/A')}",
-        f"# Time Per Map: {scan_info.get('time_per_map', 'N/A')}",
-        f"# Number of Points: {scan_info.get('number_of_points', 'N/A')}",
+        f"# Exit Slit Gap: {format_num_val(scan_info.get('exit_slit_gap'))}",
+        f"# XPS Z: {format_num_val(scan_info.get('xps_z'))}",
+    ]
+    t_per_img = scan_info.get('time_per_map') or scan_info.get('time_per_image')
+    if t_per_img and str(t_per_img).strip() not in ('N/A', 'None', ''):
+        rows.append(f"# Time Per Image: {t_per_img}")
+    rows += [
         "#"
     ]
 
@@ -150,16 +175,17 @@ def save_csv_with_header(csv_path, df, scan_info, full_meta=None):
     except Exception as e:
         print(f"  [CSV Export] Error saving to {csv_path}: {e}")
 
+from pca_xanes_analysis import resolve_pca_h5_path
+
 def cluster_xanes_analysis(h5_path, dataset_name='average', n_clusters=4, show_plot=True, return_dict=False, use_full_metadata=False, metadata=None):
     """
     Performs K-Means clustering on the PCA scores and extracts averaged XANES spectra for each cluster.
     """
+    h5_path = resolve_pca_h5_path(h5_path)
     if not os.path.exists(h5_path):
         print(f"Error: File not found: {h5_path}")
         return None
 
-    print(f"Loading PCA results for '{dataset_name}' from {h5_path}...")
-    
     # Use provided metadata dictionary if available, otherwise read from H5
     if metadata and isinstance(metadata, dict):
         scan_info = metadata.copy()
@@ -168,14 +194,19 @@ def cluster_xanes_analysis(h5_path, dataset_name='average', n_clusters=4, show_p
     else:
         scan_info = get_h5_metadata(h5_path)
 
+    i0_source = scan_info.get('i0_source', 'Internal (mcc1)')
+    norm_status = scan_info.get('normalized', 'Yes')
+    i0_info = f"Yes (I0 Source: {i0_source})" if norm_status == 'Yes' else "No (Raw Intensity)"
+
+    print(f"Loading PCA results for '{dataset_name}' from {h5_path}...")
+    print(f"    [NORMALIZATION] Data is Normalized: {i0_info}")
+    
     global _USER_METADATA_CACHE
     full_meta = None
     if use_full_metadata:
         if _USER_METADATA_CACHE is None:
-            root = tk.Tk(); root.withdraw(); root.attributes("-topmost", True)
-            d = MetadataDialog(root, "Clustering Metadata Input", initial_data={"Name": scan_info.get('scan_name', 'N/A')})
-            if d.result: _USER_METADATA_CACHE = d.result
-            root.destroy()
+            res = safe_metadata_dialog_call(initial_data={"Name": scan_info.get('scan_name', 'N/A')})
+            if res: _USER_METADATA_CACHE = res
         full_meta = _USER_METADATA_CACHE
 
     try:
@@ -187,10 +218,11 @@ def cluster_xanes_analysis(h5_path, dataset_name='average', n_clusters=4, show_p
             
             # Load PCA scores (eigenimages) and original stack
             eigenimages = f[f"{pca_path}/eigenimages"][()] # (ny, nx, n_components)
-            stack = f[f"entry/measurement/{dataset_name}"][()] # (ny, nx, n_energies)
-            energy = f["entry/measurement/energy"][()]
-            x_axis = f["entry/measurement/x"][()]
-            y_axis = f["entry/measurement/y"][()]
+            meas = f['entry/measurement'] if 'entry/measurement' in f else f['measurement']
+            stack = meas[dataset_name][()] # (ny, nx, n_energies)
+            energy = meas["energy"][()]
+            x_axis = meas["x"][()]
+            y_axis = meas["y"][()]
             
             ny, nx, n_comp = eigenimages.shape
             
@@ -212,7 +244,6 @@ def cluster_xanes_analysis(h5_path, dataset_name='average', n_clusters=4, show_p
             cluster_map = cluster_map_flat.reshape(ny, nx)
 
             # 3. Extract Averaged and Summed XANES
-            meas = f['entry/measurement']
             ipfy_mode = bool(meas.attrs.get('ipfy_mode', False))
             if ipfy_mode:
                 print("    [IPFY] IPFY Mode detected in HDF5 metadata. Saving both Original and PFY (inverted) spectra.")
@@ -266,6 +297,8 @@ def cluster_xanes_analysis(h5_path, dataset_name='average', n_clusters=4, show_p
             
             cluster_group = f.create_group(cluster_group_path)
             cluster_group.attrs['n_clusters'] = n_clusters
+            cluster_group.attrs['i0_source'] = i0_source
+            cluster_group.attrs['normalized_info'] = i0_info
             cluster_group.create_dataset('cluster_map', data=cluster_map, compression="gzip")
             cluster_group.create_dataset('cluster_spectra', data=cluster_spectra_orig)
             if ipfy_mode:
@@ -276,7 +309,7 @@ def cluster_xanes_analysis(h5_path, dataset_name='average', n_clusters=4, show_p
 
         if show_plot:
             # For plotting and interactive use, we use the PFY (peaks up) version
-            plot_results(x_axis, y_axis, energy, cluster_map, cluster_spectra_pfy, dataset_name, output_dir, scan_name)
+            plot_results(x_axis, y_axis, energy, cluster_map, cluster_spectra_pfy, dataset_name, output_dir, scan_name, i0_info=i0_info)
         
         results = {
             'dataset': dataset_name,
@@ -285,7 +318,8 @@ def cluster_xanes_analysis(h5_path, dataset_name='average', n_clusters=4, show_p
             'cluster_sums': cluster_sums,
             'energy': energy,
             'x': x_axis,
-            'y': y_axis
+            'y': y_axis,
+            'i0_info': i0_info
         }
         
         return results if return_dict else h5_path
@@ -298,7 +332,15 @@ def run_clustering_all_detectors(h5_path, n_clusters=4, use_full_metadata=False,
     """
     Performs K-Means clustering on sdd1-4 and average, then plots comparison.
     """
+    h5_path = resolve_pca_h5_path(h5_path)
+    scan_info = get_h5_metadata(h5_path)
+    i0_source = scan_info.get('i0_source', 'Internal (mcc1)')
+    norm_status = scan_info.get('normalized', 'Yes')
+    i0_info = f"Yes (I0 Source: {i0_source})" if norm_status == 'Yes' else "No (Raw Intensity)"
+
     print(f"\n{'='*60}\nRunning Multi-Detector Clustering Analysis\n{'='*60}")
+    print(f"Dataset File: {os.path.basename(h5_path)}")
+    print(f"Data Normalization: {i0_info}")
     
     datasets = ['sdd1', 'sdd2', 'sdd3', 'sdd4', 'average']
     all_results = []
@@ -312,7 +354,7 @@ def run_clustering_all_detectors(h5_path, n_clusters=4, use_full_metadata=False,
         print("Error: No datasets were successfully clustered.")
         return
 
-    plot_multi_cluster_results(all_results, h5_path)
+    plot_multi_cluster_results(all_results, h5_path, i0_info=i0_info)
     
     # NEW: Save combined cluster sums for each detector
     save_combined_cluster_sums(all_results, h5_path, use_full_metadata=use_full_metadata, metadata=metadata)
@@ -346,10 +388,16 @@ def _display_scrollable_figure(fig):
         print(f"Warning: Could not display scrollable figure: {e}")
     return False
 
-def plot_multi_cluster_results(all_results, h5_path):
+def plot_multi_cluster_results(all_results, h5_path, i0_info=None):
     """
     Plots cluster maps and spectra for all detectors side-by-side.
     """
+    if i0_info is None:
+        scan_info = get_h5_metadata(h5_path)
+        i0_source = scan_info.get('i0_source', 'Internal (mcc1)')
+        norm_status = scan_info.get('normalized', 'Yes')
+        i0_info = f"Yes (I0 Source: {i0_source})" if norm_status == 'Yes' else "No (Raw Intensity)"
+
     n_det = len(all_results)
     n_clusters = all_results[0]['cluster_spectra'].shape[0]
     
@@ -362,7 +410,7 @@ def plot_multi_cluster_results(all_results, h5_path):
     
     # --- Figure 1: Cluster Maps ---
     fig_map, axes_map = plt.subplots(1, n_det, figsize=(2.8*n_det, 3.5), squeeze=False)
-    fig_map.suptitle(f"Multi-Detector Cluster Maps: {scan_name}", fontsize=16)
+    fig_map.suptitle(f"Multi-Detector Cluster Maps: {scan_name}\n[Normalized: {i0_info}]", fontsize=15)
     try:
         cmap = plt.colormaps['tab10'].resampled(n_clusters)
     except (AttributeError, KeyError):
@@ -376,13 +424,13 @@ def plot_multi_cluster_results(all_results, h5_path):
         ax.set_xlabel("X (mm)")
         if i == 0: ax.set_ylabel("Y (mm)")
 
-    plt.tight_layout(rect=[0, 0, 1, 0.92])
+    plt.tight_layout(rect=[0, 0, 1, 0.90])
     map_plot_path = os.path.join(output_dir, f"{scan_name}_cluster_comparison_maps.png")
     plt.savefig(map_plot_path, dpi=150)
 
     # --- Figure 2: Cluster Spectra ---
     fig_spec, axes_spec = plt.subplots(1, n_det, figsize=(2.8*n_det, 3.5), squeeze=False)
-    fig_spec.suptitle(f"Multi-Detector Cluster Spectra: {scan_name}", fontsize=16)
+    fig_spec.suptitle(f"Multi-Detector Cluster Spectra: {scan_name}\n[Normalized: {i0_info}]", fontsize=15)
     
     for i, res in enumerate(all_results):
         ax = axes_spec[0, i]
@@ -396,7 +444,7 @@ def plot_multi_cluster_results(all_results, h5_path):
         if i == n_det - 1:
             ax.legend(loc='upper right', fontsize='x-small')
 
-    plt.tight_layout(rect=[0, 0, 1, 0.92])
+    plt.tight_layout(rect=[0, 0, 1, 0.90])
     spec_plot_path = os.path.join(output_dir, f"{scan_name}_cluster_comparison_spectra.png")
     plt.savefig(spec_plot_path, dpi=150)
     
@@ -441,14 +489,17 @@ def save_combined_cluster_sums(all_results, h5_path, use_full_metadata=False, me
     
     print(f"    -> Combined cluster sums saved to: {csv_path}")
 
-def plot_results(x_coords, y_coords, energy, cluster_map, spectra, dataset_name, output_dir, scan_name):
+def plot_results(x_coords, y_coords, energy, cluster_map, spectra, dataset_name, output_dir, scan_name, i0_info=None):
     """
     Plots the cluster map and the averaged XANES spectra for a single dataset.
     """
+    if i0_info is None:
+        i0_info = "Yes"
+
     n_clusters = spectra.shape[0]
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4.5))
 
-    fig.suptitle(f"K-Means Cluster Analysis: {dataset_name}", fontsize=18)
+    fig.suptitle(f"K-Means Cluster Analysis: {dataset_name}\n[Normalized: {i0_info}]", fontsize=15)
 
     try:
         cmap = plt.colormaps['tab10'].resampled(n_clusters)

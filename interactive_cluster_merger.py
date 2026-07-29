@@ -8,13 +8,16 @@ import ipywidgets as widgets
 from IPython.display import display
 import tkinter as tk
 from tkinter import messagebox, filedialog
-from alignment_utils import safe_filedialog_call
+from alignment_utils import safe_filedialog_call, format_num_val
+
+from pca_xanes_analysis import resolve_pca_h5_path
 
 def interactive_cluster_merger(h5_path, dataset_name='average'):
     """
     Provides an interactive widget to select specific clusters and view/extract 
     their combined averaged XANES spectrum. Supports switching between different detectors.
     """
+    h5_path = resolve_pca_h5_path(h5_path)
     if not os.path.exists(h5_path):
         print(f"Error: File not found: {h5_path}")
         return
@@ -66,17 +69,41 @@ def interactive_cluster_merger(h5_path, dataset_name='average'):
                 ny, nx, n_en = state['stack'].shape
                 state['stack_flat'] = state['stack'].reshape(ny * nx, -1)
                 
+                # Retrieve I0 Normalization Metadata
+                state['i0_source'] = 'Internal (mcc1 / Au Mesh)'
+                for source_grp in [f.get('entry/measurement'), f.get('stack_metadata'), f.get('scan_metadata'), f.get('entry')]:
+                    if source_grp is not None and 'i0_source' in source_grp.attrs:
+                        val = source_grp.attrs['i0_source']
+                        if isinstance(val, (bytes, np.bytes_)): val = val.decode('utf-8')
+                        state['i0_source'] = str(val)
+                        break
+                
+                s = str(state['i0_source'])
+                if "mcc1" in s.lower() and "au mesh" not in s.lower():
+                    state['i0_source'] = s.replace("mcc1", "mcc1 (Au Mesh)")
+                elif s.lower() in ["internal", "mcc1"] and "au mesh" not in s.lower():
+                    state['i0_source'] = "Internal (mcc1 / Au Mesh)"
+
+                state['normalized'] = "Yes" if state['i0_source'] not in ['None', 'Unknown'] else "No"
+                state['i0_info'] = f"Yes (I0 Source: {state['i0_source']})" if state['normalized'] == "Yes" else "No (Raw Intensity)"
+                
+                with output:
+                    print(f"    [NORMALIZATION] Data is Normalized: {state['i0_info']}")
+
                 # Metadata
-                state['meta_header'] = [f"# Facility: CLS", f"# Beamline: SGM"]
-                meta_map = {'beamline': 'Beamline', 'date': 'Date', 'project': 'Project', 'exit_slit_gap': 'Exit Slit Gap', 'xps_z': 'XPS Z', 'time_per_map': 'Time Per Map'}
+                state['meta_header'] = [f"# Facility: Canadian Light Source (CLS)", f"# Beamline: Spherical Grating Monochromator (SGM) (11ID-1)"]
+                meta_map = {'beamline': 'Beamline', 'date': 'Date', 'project': 'Project', 'exit_slit_gap': 'Exit Slit Gap', 'xps_z': 'XPS Z', 'time_per_map': 'Time Per Image', 'time_per_image': 'Time Per Image'}
                 for source in [f.get('entry'), f.get('entry/measurement'), f.get('stack_metadata'), f.get('scan_metadata'), f.get('initial_motor_positions/all_beamline_motors_snapshot')]:
                     if source is not None:
                         for k, label in meta_map.items():
                             if k in source.attrs:
                                 val = source.attrs[k]
                                 if isinstance(val, (bytes, np.bytes_)): val = val.decode('utf-8')
-                                if not any(h.startswith(f"# {label}:") for h in state['meta_header']):
-                                    state['meta_header'].append(f"# {label}: {val}")
+                                if val and str(val).strip() not in ('N/A', 'None', ''):
+                                    if k in ('exit_slit_gap', 'xps_z'):
+                                        val = format_num_val(val)
+                                    if not any(h.startswith(f"# {label}:") for h in state['meta_header']):
+                                        state['meta_header'].append(f"# {label}: {val}")
                 return True
         except Exception as e:
             with output:
@@ -153,13 +180,13 @@ def interactive_cluster_merger(h5_path, dataset_name='average'):
         
         main_vbox.children = [
             widgets.HBox([ds_dropdown, save_btn]),
-            widgets.HTML("<b>Select Clusters to Merge:</b>"),
+            widgets.HTML(f"<b>Select Clusters to Merge:</b> <span style='color: #2b579a;'>(Data Normalized: {state.get('i0_info', 'Yes')})</span>"),
             cb_box,
             output
         ]
         
-        ax_map.set_title(f"Cluster Map: {ds_name}")
-        ax_spec.set_title(f"Merged Spectrum: {ds_name}")
+        ax_map.set_title(f"Cluster Map: {ds_name}\n[Normalized: {state.get('i0_info', 'Yes')}]", fontsize=10)
+        ax_spec.set_title(f"Merged Spectrum: {ds_name}\n[Normalized: {state.get('i0_info', 'Yes')}]", fontsize=10)
         update_plots()
 
     def run_save(b):
@@ -203,6 +230,7 @@ def interactive_cluster_merger(h5_path, dataset_name='average'):
                 header.insert(0, f"# Scan Name: {scan_name}")
                 header.insert(1, f"# Dataset Source: {state['current_dataset']}")
                 header.insert(2, f"# Merged Clusters: {[c+1 for c in selected_c]}")
+                header.insert(3, f"# Normalized: {state.get('i0_info', 'Yes')}")
                 with open(save_path, 'w', newline='') as fh:
                     fh.write("\n".join(header) + "\n")
                     df.to_csv(fh, index=False, lineterminator='\n')

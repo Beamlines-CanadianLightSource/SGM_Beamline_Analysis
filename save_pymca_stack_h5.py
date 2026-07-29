@@ -5,7 +5,7 @@ import os
 import tkinter as tk
 from tkinter import messagebox, simpledialog, filedialog
 from analyze_sgm_bsky_data import analyze_sgm_bsky_data
-from alignment_utils import safe_filedialog_call
+from alignment_utils import safe_filedialog_call, format_num_val
 
 def get_user_file_action(filename, output_path):
     """
@@ -142,7 +142,7 @@ def load_external_i0(i0_path, target_energies):
         print(f"Error loading external I0 from {i0_path}: {e}", file=sys.stderr)
         return None
 
-def save_pymca_stack_h5(path_pack, output_path=None, channel_roi=None, map_roi=None, external_i0_path=None):
+def save_pymca_stack_h5(path_pack, output_path=None, channel_roi=None, xrf_roi=None, map_roi=None, external_i0_path=None):
     """
     Converts the analyzed stack data into a PyMca-compatible HDF5 file.
     
@@ -209,11 +209,17 @@ def save_pymca_stack_h5(path_pack, output_path=None, channel_roi=None, map_roi=N
         print(f"    -> Applying Spatial Trim: X={x_trim}, Y={y_trim}")
         
     # --- SDD Energy Calibration ---
+    if xrf_roi is not None:
+        path_pack['xrf_roi'] = xrf_roi
+        path_pack['energy_roi'] = xrf_roi
+        path_pack['use_sdd_calib'] = True
+
     use_sdd_calib = path_pack.get('use_sdd_calib', False)
-    energy_roi = path_pack.get('energy_roi', None)
+    energy_roi = path_pack.get('energy_roi', xrf_roi)
     sdd_calib_data = path_pack.get('sdd_calib_data', None)
-    if use_sdd_calib:
-        print(f"    -> SDD Calibration is ACTIVE. Energy ROI: {energy_roi}")
+    if energy_roi is not None:
+        use_sdd_calib = True
+        print(f"    -> SDD Calibration is ACTIVE. Energy ROI (xrf_roi): {energy_roi}")
         
     # --- Spatial Masking (ROI + Trim) ---
     # Calculate full scan bounds first (needed for trim and fallback)
@@ -346,7 +352,7 @@ def save_pymca_stack_h5(path_pack, output_path=None, channel_roi=None, map_roi=N
             
             # --- Handle I0 Normalization ---
             i0_values = None
-            i0_source = "mcc1"
+            i0_source = "Internal (mcc1 / Au Mesh)"
             
             if 'ext_i0_values' in path_pack and path_pack['ext_i0_values'] is not None:
                 i0_values = path_pack['ext_i0_values']
@@ -389,7 +395,7 @@ def save_pymca_stack_h5(path_pack, output_path=None, channel_roi=None, map_roi=N
                 
                 if np.any(mcc1_means):
                     i0_values = np.array(mcc1_means)
-                    print("    -> Using Internal I0 (mcc1) for normalization.")
+                    print("    -> Using Internal I0 (mcc1 / Au Mesh) for normalization.")
                 else:
                     print("    -> Warning: No I0 found (mcc1 or external). Results will not be normalized.", file=sys.stderr)
                     i0_values = np.ones(len(all_energies))
@@ -427,16 +433,22 @@ def save_pymca_stack_h5(path_pack, output_path=None, channel_roi=None, map_roi=N
             except Exception:
                 pass
 
-            meta_keys = ['scan_name', 'project', 'date', 'grating', 'harmonic', 'strip', 
-                         'polarization', 'exit_slit_gap', 'command', 'coordinates', 'xps_z', 
-                         'time_per_map', 'number_of_points']
+            meta_keys = ['scan_name', 'scan_type', 'project', 'date', 'beamline', 'grating', 'harmonic', 'strip', 
+                         'polarization', 'exit_slit_gap', 'coordinates', 'xps_z', 
+                         'time_per_map']
             for key in meta_keys:
                 if key in path_pack:
                     val = path_pack[key]
-                    if val is None: val = 'N/A'
+                    if val is None or str(val).strip() in ('N/A', 'None', ''):
+                        continue
+                    if key in ('exit_slit_gap', 'xps_z'):
+                        val = format_num_val(val)
                     meta_group.attrs[key] = str(val)
             
             # Add processing metadata
+            meta_group.attrs['facility'] = "Canadian Light Source (CLS)"
+            if 'beamline' not in meta_group.attrs or meta_group.attrs['beamline'] in ('N/A', 'None', '', 'SGM'):
+                meta_group.attrs['beamline'] = "Spherical Grating Monochromator (SGM) (11ID-1)"
             meta_group.attrs['Energy Regions'] = energy_regions
             meta_group.attrs['i0_source'] = i0_source
             meta_group.attrs['nx'] = nx

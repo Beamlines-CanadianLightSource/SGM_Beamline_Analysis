@@ -1,30 +1,109 @@
+import os
+import sys
+
+# Prevent OpenMP duplicate runtime warnings from threadpoolctl / scikit-learn
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
+import warnings
+warnings.filterwarnings("ignore", category=RuntimeWarning, message=".*OpenMP.*")
+
 import h5py
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
-import os
-import sys
+
+def resolve_pca_h5_path(h5_path):
+    """
+    Checks if the provided HDF5 file is an '_Elemental_PyMca.h5' 4D hypercube.
+    If so, attempts to redirect to the corresponding '_PCA-CA.h5' or '_PyMca.h5' 3D stack.
+    """
+    if not h5_path or not os.path.exists(h5_path):
+        return h5_path
+
+    if '_Elemental_PyMca.h5' in h5_path:
+        dir_name = os.path.dirname(os.path.abspath(h5_path))
+        base_name = os.path.basename(h5_path)
+        prefix = base_name.replace('_Elemental_PyMca.h5', '')
+        
+        candidates = [
+            f"{prefix}_PCA-CA.h5",
+            f"{prefix}_PyMca.h5",
+            f"{prefix}.h5"
+        ]
+        
+        for cand in candidates:
+            cand_path = os.path.join(dir_name, cand)
+            if os.path.exists(cand_path):
+                print(f"\n  [NOTICE] Selected file is an Elemental 4D PyMca hypercube ('*_Elemental_PyMca.h5').")
+                print(f"  -> Automatically redirecting to 3D XANES PCA stack: {cand}")
+                return cand_path
+
+    return h5_path
+
+def get_i0_info(h5_path):
+    """Retrieves normalization status and I0 source string from HDF5 file."""
+    i0_source = "Unknown"
+    normalized = "Yes"
+    try:
+        with h5py.File(h5_path, 'r') as f:
+            for grp_path in ['entry/measurement', 'stack_metadata', 'scan_metadata', 'entry']:
+                if grp_path in f:
+                    grp = f[grp_path]
+                    if 'i0_source' in grp.attrs:
+                        val = grp.attrs['i0_source']
+                        if isinstance(val, (bytes, np.bytes_)): val = val.decode('utf-8')
+                        i0_source = str(val)
+                        break
+            if i0_source in ["None", "Unknown"]:
+                if 'stack_metadata' in f and 'normalized' in f['stack_metadata'].attrs:
+                    norm_val = f['stack_metadata'].attrs['normalized']
+                    if isinstance(norm_val, (bytes, np.bytes_)): norm_val = norm_val.decode('utf-8')
+                    if str(norm_val) == "No":
+                        normalized = "No"
+                        i0_source = "None"
+    except Exception:
+        pass
+    
+    if i0_source == "None" or normalized == "No":
+        return "No (Raw Intensity)", "None"
+
+    if "mcc1" in i0_source.lower() and "au mesh" not in i0_source.lower():
+        i0_source = i0_source.replace("mcc1", "mcc1 (Au Mesh)")
+    elif i0_source.lower() in ["internal", "mcc1"] and "au mesh" not in i0_source.lower():
+        i0_source = "Internal (mcc1 / Au Mesh)"
+
+    return f"Yes (I0 Source: {i0_source})", i0_source
 
 def pca_xanes_analysis(h5_path, dataset_name='average', n_components=5, show_plot=True, return_dict=False):
     """
     Performs PCA on a specific ROI-summed stack within an HDF5 file and exports all results.
     """
+    h5_path = resolve_pca_h5_path(h5_path)
     if not os.path.exists(h5_path):
         print(f"Error: File not found: {h5_path}")
         return None
 
+    i0_info, i0_source = get_i0_info(h5_path)
     print(f"Loading dataset '{dataset_name}' from {h5_path}...")
+    print(f"    [NORMALIZATION] Data is Normalized: {i0_info}")
     
     try:
         with h5py.File(h5_path, 'r+') as f:
-            # Navigate to the measurement group
-            if 'entry/measurement' not in f:
-                print("Error: Could not find 'entry/measurement' in HDF5 file.")
-                return None
+            # Navigate to the measurement group (supporting flexible paths)
+            meas = None
+            search_groups = ['entry/measurement', 'measurement', 'entry', 'entry/data', 'entry/xanes_measurement']
+            for grp in search_groups:
+                if grp in f:
+                    if 'energy' in f[grp] or dataset_name in f[grp]:
+                        meas = f[grp]
+                        break
             
-            meas = f['entry/measurement']
+            if meas is None:
+                print(f"Error: Could not find 'entry/measurement' in HDF5 file: {h5_path}")
+                print("  CRITICAL NOTE: PCA and Clustering require the 3D XANES stack exported via 'Save Normalized XANES Spectra for PCA/CA' (*_PCA-CA.h5), NOT the 4D Elemental hypercube (*_Elemental_PyMca.h5).")
+                return None
             
             if dataset_name not in meas:
                 available = [k for k in meas.keys() if isinstance(meas[k], h5py.Dataset)]
@@ -96,7 +175,21 @@ def pca_xanes_analysis(h5_path, dataset_name='average', n_components=5, show_plo
             for i in range(n_components):
                 cols[f'PC{i+1}_Loading (Var:{explained_var[i]:.2%})'] = pca_loadings[i]
             
-            pd.DataFrame(cols).to_csv(csv_path, index=False)
+            df = pd.DataFrame(cols)
+            header_rows = [
+                f"# Scan Name: {scan_name}",
+                f"# Dataset Source: {dataset_name}",
+                f"# Normalized: {i0_info}",
+                f"# Number of Components: {n_components}",
+                "#"
+            ]
+            for idx, col in enumerate(df.columns, start=1):
+                header_rows.append(f"# Column {idx}: {col}")
+            header_rows.append("#")
+            
+            with open(csv_path, 'w') as fh:
+                fh.write("\n".join(header_rows) + "\n")
+                df.to_csv(fh, index=False, header=False)
 
             # 5. Save back to HDF5
             pca_group_path = f"entry/pca_results/{dataset_name}"
@@ -107,6 +200,8 @@ def pca_xanes_analysis(h5_path, dataset_name='average', n_components=5, show_plo
             pca_group.attrs['n_components'] = n_components
             pca_group.attrs['dataset_source'] = dataset_name
             pca_group.attrs['ipfy_mode'] = ipfy_mode
+            pca_group.attrs['i0_source'] = i0_source
+            pca_group.attrs['normalized_info'] = i0_info
             pca_group.create_dataset('eigenimages', data=eigenimages, compression="gzip")
             pca_group.create_dataset('eigenvectors', data=pca_loadings)
             pca_group.create_dataset('explained_variance', data=explained_var)
@@ -114,7 +209,7 @@ def pca_xanes_analysis(h5_path, dataset_name='average', n_components=5, show_plo
             print(f"    -> {dataset_name} results saved to HDF5.")
 
         if show_plot:
-            plot_results(energy, x_axis, y_axis, eigenimages, pca_loadings, explained_var, dataset_name, h5_path)
+            plot_results(energy, x_axis, y_axis, eigenimages, pca_loadings, explained_var, dataset_name, h5_path, i0_info=i0_info)
         
         results = {
             'dataset': dataset_name,
@@ -123,7 +218,8 @@ def pca_xanes_analysis(h5_path, dataset_name='average', n_components=5, show_plo
             'variance': explained_var,
             'energy': energy,
             'x': x_axis,
-            'y': y_axis
+            'y': y_axis,
+            'i0_info': i0_info
         }
         
         return results if return_dict else h5_path
@@ -136,7 +232,11 @@ def run_pca_all_detectors(h5_path, n_components=3):
     """
     Performs PCA on sdd1, sdd2, sdd3, sdd4 and average, then plots them side-by-side.
     """
+    h5_path = resolve_pca_h5_path(h5_path)
+    i0_info, i0_source = get_i0_info(h5_path)
     print(f"\n{'='*60}\nRunning Multi-Detector PCA Analysis\n{'='*60}")
+    print(f"Dataset File: {os.path.basename(h5_path)}")
+    print(f"Data Normalization: {i0_info}")
     
     detectors = ['sdd1', 'sdd2', 'sdd3', 'sdd4', 'average']
     all_results = []
@@ -150,7 +250,7 @@ def run_pca_all_detectors(h5_path, n_components=3):
         print("Error: No datasets were successfully analyzed.")
         return
 
-    plot_multi_detector_results(all_results, h5_path)
+    plot_multi_detector_results(all_results, h5_path, i0_info=i0_info)
     return h5_path
 
 def _display_scrollable_figure(fig):
@@ -180,10 +280,13 @@ def _display_scrollable_figure(fig):
         print(f"Warning: Could not display scrollable figure: {e}")
     return False
 
-def plot_multi_detector_results(all_results, h5_path):
+def plot_multi_detector_results(all_results, h5_path, i0_info=None):
     """
     Plots comparative grids of eigenimages and eigenvectors for all detectors.
     """
+    if i0_info is None:
+        i0_info, _ = get_i0_info(h5_path)
+
     n_det = len(all_results)
     n_comp = all_results[0]['eigenimages'].shape[2]
     
@@ -196,7 +299,7 @@ def plot_multi_detector_results(all_results, h5_path):
 
     # --- Figure 1: Eigenimages Comparison ---
     fig_img, axes_img = plt.subplots(n_comp, n_det, figsize=(2.8*n_det, 2.8*n_comp), squeeze=False)
-    fig_img.suptitle(f"PCA Eigenimage Comparison: {scan_name}", fontsize=16)
+    fig_img.suptitle(f"PCA Eigenimage Comparison: {scan_name}\n[Normalized: {i0_info}]", fontsize=15)
     
     for c in range(n_comp):
         for d in range(n_det):
@@ -214,13 +317,13 @@ def plot_multi_detector_results(all_results, h5_path):
             if d == 0:
                 ax.set_ylabel(f"Component {c+1}\nY (mm)")
             
-    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.tight_layout(rect=[0, 0, 1, 0.93])
     img_plot_path = os.path.join(base_dir, f"{scan_name}_pca_comparison_images.png")
     plt.savefig(img_plot_path, dpi=150)
     
     # --- Figure 2: Eigenvectors Comparison ---
     fig_vec, axes_vec = plt.subplots(n_comp, n_det, figsize=(2.8*n_det, 2.2*n_comp), squeeze=False)
-    fig_vec.suptitle(f"PCA Eigenvector (Loading) Comparison: {scan_name}", fontsize=16)
+    fig_vec.suptitle(f"PCA Eigenvector (Loading) Comparison: {scan_name}\n[Normalized: {i0_info}]", fontsize=15)
     
     for c in range(n_comp):
         for d in range(n_det):
@@ -237,7 +340,7 @@ def plot_multi_detector_results(all_results, h5_path):
             if c == n_comp - 1:
                 ax.set_xlabel("Energy (eV)")
 
-    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.tight_layout(rect=[0, 0, 1, 0.93])
     vec_plot_path = os.path.join(base_dir, f"{scan_name}_pca_comparison_vectors.png")
     plt.savefig(vec_plot_path, dpi=150)
     
@@ -249,16 +352,19 @@ def plot_multi_detector_results(all_results, h5_path):
     if not (scrolled_img or scrolled_vec):
         plt.show()
 
-def plot_results(energy, x_axis, y_axis, eigenimages, loadings, variance, dataset_name, h5_path):
+def plot_results(energy, x_axis, y_axis, eigenimages, loadings, variance, dataset_name, h5_path, i0_info=None):
     """
     Generates a multi-panel plot previewing the PCA results for a single dataset.
     """
+    if i0_info is None:
+        i0_info, _ = get_i0_info(h5_path)
+
     n_comp = loadings.shape[0]
     fig, axes = plt.subplots(n_comp, 2, figsize=(10, 2.5 * n_comp))
     if n_comp == 1:
         axes = np.expand_dims(axes, axis=0)
 
-    fig.suptitle(f"PCA Results for Stack: {dataset_name}", fontsize=16)
+    fig.suptitle(f"PCA Results for Stack: {dataset_name}\n[Normalized: {i0_info}]", fontsize=15)
 
     for i in range(n_comp):
         # Eigenimage (Left)
@@ -277,7 +383,7 @@ def plot_results(energy, x_axis, y_axis, eigenimages, loadings, variance, datase
         ax_vec.set_ylabel("Weight")
         ax_vec.grid(True, alpha=0.3)
 
-    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    plt.tight_layout(rect=[0, 0, 1, 0.94])
     
     base_dir = os.path.dirname(os.path.abspath(h5_path))
     scan_name = os.path.splitext(os.path.basename(h5_path))[0]

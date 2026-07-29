@@ -8,6 +8,8 @@ import json
 import tkinter as tk
 from tkinter import filedialog
 
+from alignment_utils import format_num_val
+
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".last_dir.json")
 
 def get_last_dir():
@@ -149,22 +151,45 @@ def analyze_sgm_bsky_data(file_path=None, verbose=True):
         "h5_file_path": os.path.abspath(file_path),
     }
 
-    def robust_extract_date(f_path, attrs):
-        # 1. Try HDF5 metadata
-        for key in ['date', 'start_time', 'time']:
-            val = attrs.get(key)
-            if val: return str(val)
+    def robust_extract_date(f_path, f_obj=None, attrs=None):
+        # 1. Try passed metadata attrs
+        if attrs:
+            for key in ['session', 'date', 'start_time', 'time', 'timestamp', 'datetime', 'end_time']:
+                val = attrs.get(key)
+                if val and str(val).strip() not in ('N/A', 'None', ''):
+                    return str(val).strip()
         
-        # 2. Try filename regex (YYYY-MM-DD)
+        # 2. Try searching all common HDF5 groups if f_obj is available
+        if f_obj is not None:
+            groups = [f_obj, f_obj.get('scan_metadata'), f_obj.get('stack_metadata'),
+                      f_obj.get('entry'), f_obj.get('map_data'),
+                      f_obj.get('initial_motor_positions/all_beamline_motors_snapshot')]
+            for grp in groups:
+                if grp is not None and hasattr(grp, 'attrs'):
+                    for key in ['session', 'date', 'start_time', 'time', 'timestamp', 'datetime', 'end_time']:
+                        val = grp.attrs.get(key)
+                        if val and str(val).strip() not in ('N/A', 'None', ''):
+                            return str(val).strip()
+
+        # 3. Try filename regex (YYYY-MM-DD or YYYY_MM_DD)
         fname = os.path.basename(f_path)
-        match = re.search(r'(\d{4}-\d{2}-\d{2})', fname)
-        if match: return match.group(1)
+        match = re.search(r'(\d{4}[-_]\d{2}[-_]\d{2})', fname)
+        if match: return match.group(1).replace('_', '-')
             
-        # 3. Try directory names (search from leaf to root)
-        path_parts = f_path.split(os.sep)
+        # 4. Try directory names (search from leaf to root)
+        path_parts = os.path.abspath(f_path).split(os.sep)
         for part in reversed(path_parts):
-            match = re.search(r'(\d{4}-\d{2}-\d{2})', part)
-            if match: return match.group(1)
+            match = re.search(r'(\d{4}[-_]\d{2}[-_]\d{2})', part)
+            if match: return match.group(1).replace('_', '-')
+            
+        # 5. File modification date fallback from disk
+        try:
+            import datetime
+            mtime = os.path.getmtime(f_path)
+            return datetime.datetime.fromtimestamp(mtime).strftime('%Y-%m-%d')
+        except Exception:
+            pass
+            
         return "N/A"
 
     # Extract scan_name from direct parent as fallback
@@ -188,71 +213,58 @@ def analyze_sgm_bsky_data(file_path=None, verbose=True):
         stack_dir = os.path.dirname(file_path)
         data_pack['h5_dir'] = stack_dir
 
-        # --- Extract Metadata ---
-        metadata_group = None
-        if 'stack_metadata' in f:
-            metadata_group = f['stack_metadata']
-        elif 'scan_metadata' in f:
-            metadata_group = f['scan_metadata']
+        # --- Robust Metadata Extraction ---
+        for key in ['project', 'scan_type', 'grating', 'harmonic', 'strip', 'command', 
+                    'coordinates', 'beamline', 'polarization', 'exit_slit_gap', 
+                    'xps_z', 'time_per_map', 'number_of_points', 'scan_name']:
+            if key not in data_pack:
+                data_pack[key] = 'N/A'
 
-        if metadata_group is not None:
-            metadata_attrs = metadata_group.attrs
-            data_pack['project'] = metadata_attrs.get('project', 'N/A')
-            data_pack['grating'] = metadata_attrs.get('grating', metadata_attrs.get('grating_selection', 'N/A'))
-            data_pack['harmonic'] = metadata_attrs.get('harmonic', 'N/A')
-            data_pack['strip'] = metadata_attrs.get('strip', metadata_attrs.get('mirror_stripe', metadata_attrs.get('mirror_strip', 'N/A')))
-            data_pack['command'] = metadata_attrs.get('command', 'N/A')
-            data_pack['coordinates'] = metadata_attrs.get('coordinates', 'N/A')
-            data_pack['beamline'] = metadata_attrs.get('beamline', 'N/A')
-            data_pack['polarization'] = metadata_attrs.get('polarization', 'N/A')
-            data_pack['exit_slit_gap'] = metadata_attrs.get('exit_slit_gap', 'N/A')
-            data_pack['xps_z'] = metadata_attrs.get('vaz', metadata_attrs.get('xps_z', 'N/A'))
-            data_pack['time_per_map'] = metadata_attrs.get('time_per_map', 'N/A')
-            data_pack['number_of_points'] = metadata_attrs.get('number_of_points', metadata_attrs.get('num_points', 'N/A'))
-            
-            # Robust scan_name extraction (common in map metadata)
-            if 'scan_name' in metadata_attrs:
-                data_pack['scan_name'] = metadata_attrs['scan_name']
-            
-            # Robust Date extraction
-            data_pack['date'] = robust_extract_date(file_path, metadata_attrs)
-            
-        else:
-            print("Warning: Neither /stack_metadata nor /scan_metadata group found in HDF5 file.", file=sys.stderr)
-            return None
+        search_groups = [
+            f, f.get('scan_metadata'), f.get('stack_metadata'),
+            f.get('entry'), f.get('entry/measurement'), f.get('entry/xanes_measurement'),
+            f.get('map_data'), f.get('initial_motor_positions/all_beamline_motors_snapshot')
+        ]
+        
+        for grp in search_groups:
+            if grp is not None and hasattr(grp, 'attrs'):
+                attrs = grp.attrs
+                if data_pack['project'] == 'N/A': data_pack['project'] = attrs.get('project', 'N/A')
+                if data_pack['scan_type'] == 'N/A': data_pack['scan_type'] = attrs.get('plan_name', 'N/A')
+                if data_pack['grating'] == 'N/A': data_pack['grating'] = attrs.get('grating', attrs.get('grating_selection', 'N/A'))
+                if data_pack['harmonic'] == 'N/A': data_pack['harmonic'] = attrs.get('harmonic', 'N/A')
+                if data_pack['strip'] == 'N/A': data_pack['strip'] = attrs.get('stripe', attrs.get('strip', attrs.get('mirror_stripe', attrs.get('mirror_strip', 'N/A'))))
+                if data_pack['command'] == 'N/A': data_pack['command'] = attrs.get('command', 'N/A')
+                if data_pack['coordinates'] == 'N/A': data_pack['coordinates'] = attrs.get('coordinates', 'N/A')
+                if data_pack['beamline'] == 'N/A': data_pack['beamline'] = attrs.get('beamline', 'N/A')
+                if data_pack['polarization'] == 'N/A': data_pack['polarization'] = attrs.get('polarization', 'N/A')
+                if data_pack['exit_slit_gap'] == 'N/A': data_pack['exit_slit_gap'] = attrs.get('exit_slit_gap', 'N/A')
+                if data_pack['xps_z'] == 'N/A': data_pack['xps_z'] = attrs.get('vaz', attrs.get('xps_z', 'N/A'))
+                if data_pack['time_per_map'] == 'N/A': data_pack['time_per_map'] = attrs.get('time_per_map', attrs.get('time_per_image', 'N/A'))
+                if data_pack['number_of_points'] == 'N/A': data_pack['number_of_points'] = attrs.get('number_of_points', attrs.get('num_points', 'N/A'))
+                if data_pack['scan_name'] == 'N/A' and 'scan_name' in attrs: data_pack['scan_name'] = attrs['scan_name']
 
-        # --- Extract Energies and Coordinates ---
+        for k in data_pack:
+            if isinstance(data_pack[k], (bytes, np.bytes_)):
+                data_pack[k] = data_pack[k].decode('utf-8')
+
+        data_pack['date'] = robust_extract_date(file_path, f, None)
+        
+        # Determine fallback energy from metadata groups if not in map_data
+        metadata_energy = -1.0
+        for grp in search_groups:
+            if grp is not None and hasattr(grp, 'attrs') and 'energy' in grp.attrs:
+                metadata_energy = float(grp.attrs['energy'])
+                break
+        
         if 'map_data/energy' in f:
             # Round energies to 2 decimal places immediately upon extraction
             data_pack['energies'] = np.round(f['map_data/energy'][:], 2)
-        elif 'initial_motor_positions/all_beamline_motors_snapshot' in f:
-            # Fallback for single map scans
-            motors_snapshot_attrs = f['initial_motor_positions/all_beamline_motors_snapshot'].attrs
-            energy = motors_snapshot_attrs.get('energy', -1.0)
-            data_pack['energies'] = np.array([np.round(float(energy), 2)])
-            
-        if 'initial_motor_positions/all_beamline_motors_snapshot' in f:
-            motors_snapshot_attrs = f['initial_motor_positions/all_beamline_motors_snapshot'].attrs
-            if data_pack.get('xps_z', 'N/A') == 'N/A':
-                data_pack['xps_z'] = motors_snapshot_attrs.get('vaz', motors_snapshot_attrs.get('xps_z', 'N/A'))
-            if data_pack.get('exit_slit_gap', 'N/A') == 'N/A':
-                data_pack['exit_slit_gap'] = motors_snapshot_attrs.get('exit_slit_gap', 'N/A')
-            if data_pack.get('strip', 'N/A') == 'N/A':
-                data_pack['strip'] = motors_snapshot_attrs.get('mirror_stripe', motors_snapshot_attrs.get('mirror_strip', 'N/A'))
-                
-        if 'map_data' in f:
-            map_data_attrs = f['map_data'].attrs
-            if data_pack.get('strip', 'N/A') == 'N/A':
-                data_pack['strip'] = map_data_attrs.get('mirror_stripe', map_data_attrs.get('mirror_strip', 'N/A'))
-            if data_pack.get('exit_slit_gap', 'N/A') == 'N/A':
-                data_pack['exit_slit_gap'] = map_data_attrs.get('exit_slit_gap', 'N/A')
-                
-        elif metadata_group is not None and 'energy' in metadata_group.attrs:
-            # Another fallback for energy in metadata attributes
-            data_pack['energies'] = np.array([np.round(float(metadata_group.attrs['energy']), 2)])
+        elif metadata_energy != -1.0:
+            data_pack['energies'] = np.array([np.round(metadata_energy, 2)])
         
         # Final fallback: Try to extract energy from the filename (e.g. ..._0.00eV.h5) if still missing or -1.0
-        if len(data_pack['energies']) == 0 or (len(data_pack['energies']) == 1 and data_pack['energies'][0] == -1.0):
+        if len(data_pack.get('energies', [])) == 0 or (len(data_pack['energies']) == 1 and data_pack['energies'][0] == -1.0):
             fname = os.path.basename(file_path)
             match = re.search(r'_(\d+\.\d+)eV', fname)
             if not match:
@@ -373,6 +385,9 @@ def analyze_sgm_bsky_data(file_path=None, verbose=True):
     else:
         data_pack['representative_energy'] = -1.0
 
+    data_pack['exit_slit_gap'] = format_num_val(data_pack.get('exit_slit_gap'))
+    data_pack['xps_z'] = format_num_val(data_pack.get('xps_z'))
+
     # --- Print Summary if requested ---
     if verbose:
         print("\n--- Scan Analysis Summary ---")
@@ -381,22 +396,24 @@ def analyze_sgm_bsky_data(file_path=None, verbose=True):
         print(f"Energy Regions:        {data_pack['Energy Regions']}")
         print(f"X array (shape):       {data_pack['x'].shape} (Nx: {data_pack['nx']})")
         print(f"Y array (shape):       {data_pack['y'].shape} (Ny: {data_pack['ny']})")
-        print(f"Grid Dimensions:       {data_pack['nx']} x {data_pack['ny']}")
+        pts = data_pack['nx'] * data_pack['ny']
+        print(f"Grid Dimensions:       {data_pack['nx']} x {data_pack['ny']} ({pts} points)")
         print("----------------------------")
         print(f"Date:                  {data_pack['date']}")
         print(f"Scan Name:             {data_pack['scan_name']}")
         print(f"Project:               {data_pack['project']}")
-        print(f"Beamline:              {data_pack['beamline']}")
+        print(f"Scan Type:             {data_pack['scan_type']}")
+        print(f"Endstation:            {data_pack['beamline']}")
         print(f"Polarization:          {data_pack['polarization']}")
         print(f"Grating:               {data_pack['grating']}")
         print(f"Harmonic:              {data_pack['harmonic']}")
         print(f"Strip:                 {data_pack['strip']}")
-        print(f"Command:               {data_pack['command']}")
         print(f"Coordinates:           {data_pack['coordinates']}")
         print(f"Exit Slit Gap:         {data_pack['exit_slit_gap']}")
         print(f"XPS Z:                 {data_pack['xps_z']}")
-        print(f"Time Per Map:          {data_pack['time_per_map']}")
-        print(f"Number of Points:      {data_pack.get('number_of_points', 'N/A')}")
+        t_per_img = data_pack.get('time_per_map') or data_pack.get('time_per_image')
+        if t_per_img and str(t_per_img).strip() not in ('N/A', 'None', ''):
+            print(f"Time Per Image:        {t_per_img}")
         print(f"\nMCC Files Found:       {len(data_pack['mcc_files'])}")
         print("\nSDD Files Found:")
         for detector, sdd_dict in data_pack['sdd_files'].items():

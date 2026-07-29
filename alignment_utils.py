@@ -201,6 +201,7 @@ try:
     root.withdraw()
     root.attributes("-topmost", True)
     root.deiconify()
+    root.lift()
     root.update()
     root.focus_force()
     
@@ -298,7 +299,7 @@ messagebox.showwarning = _safe_showwarning
 messagebox.askyesno = _safe_askyesno
 messagebox.askokcancel = _safe_askokcancel
 from matplotlib.backends.backend_agg import FigureCanvasAgg
-from matplotlib.widgets import SpanSelector, Button
+from matplotlib.widgets import SpanSelector, Button, RadioButtons
 import matplotlib.tri as tri
 
 def get_masked_triangulation(x, y, max_edge=None):
@@ -340,6 +341,16 @@ def get_masked_triangulation(x, y, max_edge=None):
         return None
 
 
+
+def format_num_val(val, decimals=2):
+    """Formats numeric values to a fixed number of decimal places, returning 'N/A' for non-numeric or missing values."""
+    if val is None or str(val).strip() in ('N/A', 'None', ''):
+        return 'N/A'
+    try:
+        f_val = float(val)
+        return f"{f_val:.{decimals}f}"
+    except (ValueError, TypeError):
+        return str(val)
 
 _TK_ROOT = None
 def get_tk_root():
@@ -452,6 +463,12 @@ try:
             initialdir={repr(initialdir)},
             filetypes={repr(filetypes)}
         )
+    elif "{func_name}" == "askopenfilenames":
+        path = filedialog.askopenfilenames(
+            title={repr(title)},
+            initialdir={repr(initialdir)},
+            filetypes={repr(filetypes)}
+        )
     elif "{func_name}" == "askdirectory":
         path = filedialog.askdirectory(
             title={repr(title)},
@@ -491,18 +508,64 @@ finally:
             pass
         return safe_filedialog_call_fallback(func, *args, **kwargs)
 
+_GLOBAL_METADATA_MEMORY = {}
+_METADATA_FILE = os.path.join(os.path.expanduser('~'), '.sgm_last_metadata.json')
+
+def load_last_metadata():
+    """Loads the last used research metadata from memory cache or persistent file."""
+    global _GLOBAL_METADATA_MEMORY
+    if _GLOBAL_METADATA_MEMORY:
+        return dict(_GLOBAL_METADATA_MEMORY)
+    
+    try:
+        if os.path.exists(_METADATA_FILE) and os.path.getsize(_METADATA_FILE) > 0:
+            with open(_METADATA_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                if isinstance(data, dict) and data:
+                    _GLOBAL_METADATA_MEMORY = dict(data)
+                    return dict(data)
+    except Exception as e:
+        console_log(f"Warning loading metadata cache: {e}")
+    return {}
+
+def save_last_metadata(data):
+    """Saves the latest research metadata to memory and persistent file atomically."""
+    global _GLOBAL_METADATA_MEMORY
+    if isinstance(data, dict) and data:
+        # Preserve existing valid entries in memory cache if new input is N/A or empty
+        for k, v in data.items():
+            if v and str(v).strip() not in ("N/A", "None", "null", ""):
+                _GLOBAL_METADATA_MEMORY[k] = str(v).strip()
+            elif k in ("Name", "Formula"):
+                _GLOBAL_METADATA_MEMORY[k] = str(v).strip()
+
+        # Atomic file write
+        try:
+            tmp_file = _METADATA_FILE + ".tmp"
+            with open(tmp_file, 'w', encoding='utf-8') as f:
+                json.dump(_GLOBAL_METADATA_MEMORY, f, indent=2)
+            os.replace(tmp_file, _METADATA_FILE)
+        except Exception as e:
+            console_log(f"Warning saving metadata cache: {e}")
+
 def safe_metadata_dialog_call(initial_data=None):
     """
     Safely invokes the MetadataDialog in a separate python subprocess
     to prevent Jupyter thread locks and GUI freezes on Windows.
+    Pre-populates entries with persistent last-used research metadata.
     """
     import subprocess
     import json
     import sys
+    import os
     import tkinter as tk
     
-    if initial_data is None:
-        initial_data = {}
+    # Load persistent last metadata and overlay initial_data (e.g. current scan Name)
+    merged_initial = load_last_metadata()
+    if initial_data:
+        for k, v in initial_data.items():
+            if v and str(v).strip() not in ("N/A", "None", "null", ""):
+                merged_initial[k] = str(v).strip()
         
     script = f"""
 import tkinter as tk
@@ -535,13 +598,14 @@ class MetadataDialog(simpledialog.Dialog):
             tk.Label(master, text=f"{{label_text}}:").grid(row=i, column=0, sticky='w', padx=5, pady=2)
             entry = tk.Entry(master, width=40)
             entry.grid(row=i, column=1, padx=5, pady=2)
-            if self.initial_data.get(key):
-                entry.insert(0, self.initial_data[key])
+            val = self.initial_data.get(key)
+            if val and str(val).strip() not in ("N/A", "None", "null", ""):
+                entry.insert(0, str(val).strip())
             self.entries[key] = entry
         return self.entries["Name"]
 
     def apply(self):
-        self.result = {{key: (entry.get() or "N/A") for key, entry in self.entries.items()}}
+        self.result = {{key: (entry.get().strip() or "N/A") for key, entry in self.entries.items()}}
 
 try:
     root = tk.Tk()
@@ -551,7 +615,7 @@ try:
     root.update()
     root.focus_force()
     
-    initial_data = {repr(initial_data)}
+    initial_data = {repr(merged_initial)}
     d = MetadataDialog(root, "Research Metadata Input", initial_data=initial_data)
     if hasattr(d, 'result') and d.result:
         print(json.dumps({{"result": d.result}}))
@@ -574,7 +638,10 @@ finally:
         if "error" in data:
             console_log(f"safe_metadata_dialog_call subprocess error: {data['error']}")
             return None
-        return data.get("result")
+        res_dict = data.get("result")
+        if res_dict:
+            save_last_metadata(res_dict)
+        return res_dict
     except Exception as e:
         console_log(f"Failed to launch subprocess metadata dialog: {e}. Falling back to in-process.")
         import traceback
@@ -620,17 +687,20 @@ finally:
                     tk.Label(master, text=f"{label_text}:").grid(row=i, column=0, sticky='w', padx=5, pady=2)
                     entry = tk.Entry(master, width=40)
                     entry.grid(row=i, column=1, padx=5, pady=2)
-                    if self.initial_data.get(key):
-                        entry.insert(0, self.initial_data[key])
+                    val = self.initial_data.get(key)
+                    if val and str(val).strip() not in ("N/A", "None", "null", ""):
+                        entry.insert(0, str(val).strip())
                     self.entries[key] = entry
                 return self.entries["Name"]
 
             def apply(self):
-                self.result = {key: (entry.get() or "N/A") for key, entry in self.entries.items()}
+                self.result = {key: (entry.get().strip() or "N/A") for key, entry in self.entries.items()}
 
-        d = LocalMetadataDialog(temp_win, "Research Metadata Input", initial_data=initial_data)
+        d = LocalMetadataDialog(temp_win, "Research Metadata Input", initial_data=merged_initial)
         res = d.result if hasattr(d, 'result') else None
         temp_win.destroy()
+        if res:
+            save_last_metadata(res)
         return res
 
 def get_safe_save_path(save_dir, default_name):
@@ -692,9 +762,10 @@ def apply_spatial_trim(x, y, data, x_trim=0.0, y_trim=0.0):
            
     return x[mask], y[mask], data[mask]
 
-def get_sdd_intensity_map(file_path, x_coords, y_coords, channel_roi, roll_shift=0, x_trim=0.0, y_trim=0.0):
+def get_sdd_intensity_map(file_path, x_coords, y_coords, channel_roi=None, xrf_roi=None, det_name=None, calib_data=None, roll_shift=0, x_trim=0.0, y_trim=0.0):
     """
     Loads raw SDD binary data, applies roll shift and spatial trim, and returns the 2D intensity map.
+    Supports channel_roi=(ch1, ch2) or xrf_roi=(min_eV, max_eV) with optional detector energy calibration.
     """
     if not os.path.exists(file_path):
         return None, None
@@ -713,8 +784,32 @@ def get_sdd_intensity_map(file_path, x_coords, y_coords, channel_roi, roll_shift
         if roll_shift != 0:
             intensity = np.roll(intensity, shift=roll_shift, axis=0)
             
+        # Resolve channel ROI bounds
+        if xrf_roi is not None:
+            min_e, max_e = float(xrf_roi[0]), float(xrf_roi[1])
+            if calib_data and det_name and det_name in calib_data:
+                gain = calib_data[det_name].get('gain', 1.0)
+                offset = calib_data[det_name].get('offset', 0.0)
+                if gain != 1.0 or offset != 0.0:
+                    ch_start = int(max(0, np.floor((min_e - offset) / gain)))
+                    ch_end = int(min(256, np.ceil((max_e - offset) / gain)))
+                else:
+                    ch_start = int(max(0, np.floor(min_e / 10.0)))
+                    ch_end = int(min(256, np.ceil(max_e / 10.0)))
+            else:
+                ch_start = int(max(0, np.floor(min_e / 10.0)))
+                ch_end = int(min(256, np.ceil(max_e / 10.0)))
+        elif channel_roi is not None:
+            ch_start, ch_end = int(channel_roi[0]), int(channel_roi[1])
+        else:
+            ch_start, ch_end = 80, 120
+
+        # Ensure valid range
+        ch_start = max(0, min(255, ch_start))
+        ch_end = max(ch_start + 1, min(256, ch_end))
+
         # Sum ROI
-        roi_sum = np.sum(intensity[:, channel_roi[0]:channel_roi[1]], axis=1)
+        roi_sum = np.sum(intensity[:, ch_start:ch_end], axis=1)
         
         # Apply spatial trim
         trimmed_x, trimmed_y, trimmed_intensity = apply_spatial_trim(
@@ -744,14 +839,38 @@ def auto_align_shift(target_img, ref_img, max_shift=50):
             
     return best_shift, max_corr
 
-def interactive_roll_align(path_pack, channel_roi=(80, 120), max_shift=100, use_color=True):
+def interactive_roll_align(path_pack, channel_roi=None, max_shift=100, use_color=True, xrf_roi=None):
     """
     Creates an interactive widget to adjust roll_shift and spatial trim in a Jupyter Notebook.
     Handles both 'analyze_map' and 'analyze_stack' data packets.
+    Supports channel_roi=(ch1, ch2) or xrf_roi=(min_eV, max_eV).
     """
     if path_pack is None:
         print("Error: path_pack is None. Please check if the analysis function (analyze_stack or analyze_map) succeeded.")
         return
+
+    # Check if channel_roi was passed positionally as an xrf_roi (energy in eV > 255)
+    if channel_roi is not None and xrf_roi is None:
+        if isinstance(channel_roi, (tuple, list)) and len(channel_roi) >= 2:
+            if max(channel_roi) > 255:
+                xrf_roi = channel_roi
+                channel_roi = None
+
+    # Fallback to path_pack if both are None
+    if xrf_roi is None and channel_roi is None:
+        if 'xrf_roi' in path_pack:
+            xrf_roi = path_pack['xrf_roi']
+        elif 'channel_roi' in path_pack:
+            channel_roi = path_pack['channel_roi']
+        else:
+            channel_roi = (80, 120)
+
+    # Load energy calibration data if available
+    try:
+        import sdd_calibration_utils as sdd_calib
+        calib_data = sdd_calib.load_calibration()
+    except Exception:
+        calib_data = None
 
     x = path_pack.get('x', np.array([]))
     y = path_pack.get('y', np.array([]))
@@ -777,8 +896,8 @@ def interactive_roll_align(path_pack, channel_roi=(80, 120), max_shift=100, use_
     shift_slider = widgets.IntSlider(value=0, min=-max_shift, max=max_shift, step=1, description='Roll Shift:', layout=widgets.Layout(width='50%'))
     
     # Spatial Trim Sliders - expanded to allow full scan range
-    x_range = np.max(x) - np.min(x)
-    y_range = np.max(y) - np.min(y)
+    x_range = np.max(x) - np.min(x) if x.size > 0 else 1.0
+    y_range = np.max(y) - np.min(y) if y.size > 0 else 1.0
     x_trim_slider = widgets.FloatSlider(value=0.0, min=0.0, max=x_range*0.99, step=x_range/200, description='X-Trim (mm):', layout=widgets.Layout(width='50%'))
     y_trim_slider = widgets.FloatSlider(value=0.0, min=0.0, max=y_range*0.99, step=y_range/200, description='Y-Trim (mm):', layout=widgets.Layout(width='50%'))
     
@@ -812,11 +931,24 @@ def interactive_roll_align(path_pack, channel_roi=(80, 120), max_shift=100, use_
                 f_path = sdd_files[det]
                 title = f"{det}\nShift: {shift} | Trim: X={xt}, Y={yt}"
                 
-            intensity, coords = get_sdd_intensity_map(f_path, x, y, channel_roi, roll_shift=shift, x_trim=xt, y_trim=yt)
+            intensity, coords = get_sdd_intensity_map(
+                f_path, x, y,
+                channel_roi=channel_roi,
+                xrf_roi=xrf_roi,
+                det_name=det,
+                calib_data=calib_data,
+                roll_shift=shift,
+                x_trim=xt,
+                y_trim=yt
+            )
             
             path_pack['roll_shift'] = shift
             path_pack['x_trim'] = xt
             path_pack['y_trim'] = yt
+            if xrf_roi is not None:
+                path_pack['xrf_roi'] = xrf_roi
+            if channel_roi is not None:
+                path_pack['channel_roi'] = channel_roi
             
             if intensity is not None:
                 # Reuse or create figure
@@ -861,8 +993,8 @@ def interactive_roll_align(path_pack, channel_roi=(80, 120), max_shift=100, use_
                     map_ax.text(0.5, 0.5, f"Plot error: {e}", transform=map_ax.transAxes)
 
                 map_ax.set_title(title, fontsize='small')
-                map_ax.set_xlabel('X')
-                map_ax.set_ylabel('Y')
+                map_ax.set_xlabel('X (mm)')
+                map_ax.set_ylabel('Y (mm)')
                 map_ax.set_aspect('equal')
                 
                 map_roi = path_pack.get('map_roi')
@@ -906,14 +1038,31 @@ def interactive_roll_align(path_pack, channel_roi=(80, 120), max_shift=100, use_
             target_path = sdd_files[det].get(target_en)
             ref_path = sdd_files[det].get(ref_en)
             
-            # Load images with 0 shift for correlation, but KEEP the spatial trim
-            target_data, _ = get_sdd_intensity_map(target_path, x, y, channel_roi, roll_shift=0, x_trim=xt, y_trim=yt)
-            ref_data, _ = get_sdd_intensity_map(ref_path, x, y, channel_roi, roll_shift=0, x_trim=xt, y_trim=yt)
+            target_data, _ = get_sdd_intensity_map(
+                target_path, x, y,
+                channel_roi=channel_roi,
+                xrf_roi=xrf_roi,
+                det_name=det,
+                calib_data=calib_data,
+                roll_shift=0,
+                x_trim=xt,
+                y_trim=yt
+            )
+            ref_data, _ = get_sdd_intensity_map(
+                ref_path, x, y,
+                channel_roi=channel_roi,
+                xrf_roi=xrf_roi,
+                det_name=det,
+                calib_data=calib_data,
+                roll_shift=0,
+                x_trim=xt,
+                y_trim=yt
+            )
             
             if target_data is not None and ref_data is not None:
                 best_s, corr = auto_align_shift(target_data, ref_data, max_shift=max_shift)
                 print(f"Found Optimal Shift: {best_s} (Correlation: {corr:.3f})")
-                shift_slider.value = best_s # Automatically update the slider
+                shift_slider.value = best_s
             else:
                 print("Error loading data for auto-alignment.")
                 
@@ -933,20 +1082,30 @@ def interactive_roll_align(path_pack, channel_roi=(80, 120), max_shift=100, use_
             f_path = sdd_files[det]
             prefix = f"aligned_{det}"
             
-        intensity, coords = get_sdd_intensity_map(f_path, x, y, channel_roi, roll_shift=shift, x_trim=xt, y_trim=yt)
+        intensity, coords = get_sdd_intensity_map(
+            f_path, x, y,
+            channel_roi=channel_roi,
+            xrf_roi=xrf_roi,
+            det_name=det,
+            calib_data=calib_data,
+            roll_shift=shift,
+            x_trim=xt,
+            y_trim=yt
+        )
         
         if intensity is not None:
-             # Find save directory
             h5_path = path_pack.get('h5_file_path')
             save_dir = os.path.abspath(os.path.dirname(h5_path)) if h5_path else os.getcwd()
-            default_name = f"{prefix}_ROI_{channel_roi[0]}-{channel_roi[1]}.png"
+            if xrf_roi is not None:
+                default_name = f"{prefix}_XRF_ROI_{xrf_roi[0]:.1f}-{xrf_roi[1]:.1f}eV.png"
+            else:
+                default_name = f"{prefix}_ROI_{channel_roi[0]}-{channel_roi[1]}.png"
             save_filename = get_safe_save_path(save_dir, default_name)
             
             if not save_filename:
                 print("    [CANCEL] Save cancelled by user.")
                 return
 
-            # ... Save logic ...
             clean_fig = Figure(figsize=(6, 6))
             canvas = FigureCanvasAgg(clean_fig)
             clean_ax = clean_fig.add_subplot(111)
@@ -962,7 +1121,6 @@ def interactive_roll_align(path_pack, channel_roi=(80, 120), max_shift=100, use_
             clean_fig.savefig(save_filename, bbox_inches='tight', pad_inches=0, transparent=True)
             print(f"    -> [SAVE] Image saved to: {save_filename}")
             
-            # Show visible popup
             root_fin = get_tk_root()
             root_fin.attributes("-topmost", True)
             messagebox.showinfo("Save Successful", f"Image saved to:\n{save_filename}", parent=root_fin)
@@ -982,93 +1140,200 @@ def interactive_roll_align(path_pack, channel_roi=(80, 120), max_shift=100, use_
     auto_btn.on_click(run_auto)
     save_btn.on_click(run_save)
 
-    # Layout
     header = widgets.HBox([det_dropdown, en_dropdown]) if is_stack else widgets.HBox([det_dropdown])
     trim_controls = widgets.VBox([x_trim_slider, y_trim_slider])
     align_controls = widgets.HBox([ref_en_dropdown, auto_btn, save_btn]) if is_stack else widgets.HBox([save_btn])
     
     display(widgets.VBox([header, shift_slider, trim_controls, color_toggle, contrast_slider, align_controls, output]))
-    update_plot() # Initial plot
+    update_plot()
 
-def interactive_channel_selector(path_pack, initial_roi=(20, 40)):
+def interactive_channel_selector(path_pack, initial_roi=(20, 40), use_calibration=False, calib_data=None, default_detector='sdd3'):
     """
-    Opens an interactive spectrum plot to select the channel ROI.
+    Opens an interactive XRF spectrum plot to select the channel / energy ROI.
+    Supports displaying calibrated energy (eV) on the x-axis alongside channel numbers.
+    Defaults to displaying SDD3 (or first available detector) with detector switching.
     Returns the selected (start, end) channel tuple.
     """
     if not path_pack:
         print("Error: path_pack is None.")
         return initial_roi
 
-    # 1. Load a representative spectrum
+    # 1. Load available detectors and spectrum data
     rep_e = path_pack.get('representative_energy')
     sdd_files = path_pack.get('sdd_files', {})
     if not sdd_files:
         print("Error: No SDD files found in path_pack.")
         return initial_roi
     
-    # Pick the first detector available
-    det = sorted(sdd_files.keys())[0]
-    f_path = sdd_files[det].get(rep_e) if isinstance(sdd_files[det], dict) else sdd_files[det]
-    
-    if not f_path or not os.path.exists(f_path):
-        # Fallback to any energy if representative is missing
-        if isinstance(sdd_files[det], dict) and sdd_files[det]:
-            rep_e = next(iter(sdd_files[det]))
-            f_path = sdd_files[det][rep_e]
-        else:
-            print(f"Error: Could not find valid data for {det}.")
+    available_dets = sorted(sdd_files.keys())
+    active_det = default_detector if default_detector in available_dets else available_dets[0]
+
+    def load_detector_spectrum(det_name):
+        f_path = sdd_files[det_name].get(rep_e) if isinstance(sdd_files[det_name], dict) else sdd_files[det_name]
+        if not f_path or not os.path.exists(f_path):
+            if isinstance(sdd_files[det_name], dict) and sdd_files[det_name]:
+                alt_e = next(iter(sdd_files[det_name]))
+                f_path = sdd_files[det_name][alt_e]
+            else:
+                return None
+        try:
+            data_1d = np.fromfile(f_path, dtype=np.uint32)
+            num_s = min(len(data_1d) // 256, path_pack.get('x', np.array([])).size)
+            s2d = data_1d[:num_s * 256].reshape((num_s, 256))
+            return np.sum(s2d, axis=0)
+        except Exception:
+            return None
+
+    total_spec = load_detector_spectrum(active_det)
+    if total_spec is None:
+        # Fallback to any detector that loads
+        for fallback_det in available_dets:
+            total_spec = load_detector_spectrum(fallback_det)
+            if total_spec is not None:
+                active_det = fallback_det
+                break
+        if total_spec is None:
+            print("Error: Could not load XRF spectrum for ROI selection.")
             return initial_roi
 
-    try:
-        # Load and sum across pixels for the chosen energy
-        data_1d = np.fromfile(f_path, dtype=np.uint32)
-        num_s = min(len(data_1d) // 256, path_pack.get('x', np.array([])).size)
-        s2d = data_1d[:num_s * 256].reshape((num_s, 256))
-        total_spec = np.sum(s2d, axis=0)
-    except Exception as e:
-        print(f"Error loading spectrum for ROI selection: {e}")
-        return initial_roi
+    # Determine calibration parameters for active detector
+    gain, offset = 1.0, 0.0
+    is_calibrated = False
+    if use_calibration and calib_data and active_det in calib_data:
+        gain = calib_data[active_det].get("gain", 1.0)
+        offset = calib_data[active_det].get("offset", 0.0)
+        is_calibrated = True
+
+    channels = np.arange(256)
+    x_data = (gain * channels + offset) if is_calibrated else channels
 
     # 2. UI Setup
-    fig, ax = plt.subplots(figsize=(10, 4))
-    line, = ax.plot(np.arange(256), total_spec, color='blue', lw=1.5)
-    ax.set_title(f"Channel ROI Selector: {path_pack.get('scan_name')}\n(Drag to select range, click 'Confirm' to finish)", fontsize='medium')
-    ax.set_xlabel("Channel Index")
-    ax.set_ylabel("Total Counts")
+    fig, ax = plt.subplots(figsize=(10, 4.5))
+    plt.subplots_adjust(bottom=0.20, right=0.82)
+
+    line, = ax.plot(x_data, total_spec, color='blue', lw=1.5)
+    
+    scan_name = path_pack.get('scan_name', 'Scan')
+    
+    if is_calibrated:
+        ax.set_xlabel("Calibrated Energy (eV)", fontsize='medium', fontweight='bold')
+        ax.set_title(f"XRF ROI Selector ({active_det.upper()}): {scan_name}\n(Drag to select range, click 'Confirm' to finish)", fontsize='medium')
+    else:
+        ax.set_xlabel("Channel Index", fontsize='medium', fontweight='bold')
+        ax.set_title(f"Channel ROI Selector ({active_det.upper()}): {scan_name}\n(Drag to select range, click 'Confirm' to finish)", fontsize='medium')
+
+    ax.set_ylabel("Total Counts", fontsize='medium', fontweight='bold')
     ax.grid(True, linestyle=':', alpha=0.6)
 
+    # Visual span region setup with SpanSelector
     selected_roi = [initial_roi[0], initial_roi[1]]
-    # Initial visual indicator
-    region = ax.axvspan(selected_roi[0], selected_roi[1], color='red', alpha=0.15)
+    
+    # Calculate span start/end in plot coordinates
+    span_x1 = (gain * selected_roi[0] + offset) if is_calibrated else selected_roi[0]
+    span_x2 = (gain * selected_roi[1] + offset) if is_calibrated else selected_roi[1]
+
+    # Info text box below plot
+    info_text = ax.text(0.02, 0.92, "", transform=ax.transAxes, fontsize=10,
+                        bbox=dict(boxstyle="round,pad=0.3", fc="yellow", alpha=0.8, ec="orange"))
+
+    def update_info_text():
+        ch_s, ch_e = selected_roi[0], selected_roi[1]
+        if is_calibrated:
+            e_s = gain * ch_s + offset
+            e_e = gain * ch_e + offset
+            info_text.set_text(f"ROI: {e_s:.1f} eV to {e_e:.1f} eV  (Ch {ch_s} - {ch_e})")
+        else:
+            info_text.set_text(f"ROI: Channels {ch_s} to {ch_e}")
+
+    update_info_text()
 
     def onselect(xmin, xmax):
-        selected_roi[0] = int(max(0, np.floor(xmin)))
-        selected_roi[1] = int(min(255, np.ceil(xmax)))
-        # Update the visual span manually (Rectangle vertex update)
-        verts = region.get_xy()
-        verts[0:2, 0] = selected_roi[0]
-        verts[2:4, 0] = selected_roi[1]
-        verts[4, 0] = selected_roi[0]
-        region.set_xy(verts)
+        if is_calibrated:
+            # Convert energy bounds back to channel indices
+            ch_a = (xmin - offset) / gain if gain != 0 else xmin
+            ch_b = (xmax - offset) / gain if gain != 0 else xmax
+            ch_start = int(max(0, np.floor(min(ch_a, ch_b))))
+            ch_end = int(min(255, np.ceil(max(ch_a, ch_b))))
+        else:
+            ch_start = int(max(0, np.floor(min(xmin, xmax))))
+            ch_end = int(min(255, np.ceil(max(xmin, xmax))))
+
+        selected_roi[0] = ch_start
+        selected_roi[1] = ch_end
+
+        update_info_text()
         fig.canvas.draw_idle()
 
-    # Keep a reference to SpanSelector so it's not garbage collected
+    # SpanSelector with initial extents pre-loaded (no static axvspan ghost rectangle)
     ax._span = SpanSelector(ax, onselect, 'horizontal', useblit=True,
                             props=dict(alpha=0.3, facecolor='red'), interactive=True)
+    try:
+        ax._span.extents = (span_x1, span_x2)
+    except Exception:
+        pass
 
-    # 3. Confirm Button
+    # 3. Add Detector Switching RadioButtons if multiple detectors exist
+    if len(available_dets) > 1:
+        ax_radio = fig.add_axes([0.84, 0.40, 0.14, 0.35])
+        active_idx = available_dets.index(active_det) if active_det in available_dets else 0
+        radio = RadioButtons(ax_radio, [d.upper() for d in available_dets], active=active_idx)
+        
+        def set_detector(label):
+            nonlocal active_det, gain, offset, is_calibrated, x_data, total_spec
+            active_det = label.lower()
+            new_spec = load_detector_spectrum(active_det)
+            if new_spec is not None:
+                total_spec = new_spec
+                if use_calibration and calib_data and active_det in calib_data:
+                    gain = calib_data[active_det].get("gain", 1.0)
+                    offset = calib_data[active_det].get("offset", 0.0)
+                    is_calibrated = True
+                else:
+                    gain, offset = 1.0, 0.0
+                    is_calibrated = False
+
+                x_data = (gain * channels + offset) if is_calibrated else channels
+                line.set_xdata(x_data)
+                line.set_ydata(total_spec)
+
+                if is_calibrated:
+                    ax.set_xlabel("Calibrated Energy (eV)", fontsize='medium', fontweight='bold')
+                    ax.set_title(f"XRF ROI Selector ({active_det.upper()}): {scan_name}\n(Drag to select range, click 'Confirm' to finish)", fontsize='medium')
+                else:
+                    ax.set_xlabel("Channel Index", fontsize='medium', fontweight='bold')
+                    ax.set_title(f"Channel ROI Selector ({active_det.upper()}): {scan_name}\n(Drag to select range, click 'Confirm' to finish)", fontsize='medium')
+
+                ax.relim()
+                ax.autoscale_view()
+                update_info_text()
+                fig.canvas.draw_idle()
+
+        radio.on_clicked(set_detector)
+        ax._radio = radio # Keep reference
+
+    # 4. Confirm Button
+    confirmed = False
     def confirm(event):
+        nonlocal confirmed
+        confirmed = True
+        btn.label.set_text("✓ Confirmed!")
+        btn.color = 'lime'
+        fig.canvas.draw_idle()
         plt.close(fig)
+        try:
+            fig.canvas.stop_event_loop()
+        except Exception:
+            pass
 
-    ax_btn = fig.add_axes([0.82, 0.015, 0.12, 0.07])
+    ax_btn = fig.add_axes([0.84, 0.15, 0.14, 0.10])
     btn = Button(ax_btn, 'Confirm ROI', color='lightgreen', hovercolor='palegreen')
     btn.on_clicked(confirm)
     ax._btn = btn # Keep reference
 
-    plt.tight_layout()
     plt.show()
 
-    print(f"  [ROI Selector] Final Selection: Channels {selected_roi[0]} to {selected_roi[1]}")
+    e_str = f" ({gain * selected_roi[0] + offset:.1f} eV - {gain * selected_roi[1] + offset:.1f} eV)" if is_calibrated else ""
+    print(f"  [ROI Selector] Final Selection ({active_det.upper()}): Channels {selected_roi[0]} to {selected_roi[1]}{e_str}")
     return (selected_roi[0], selected_roi[1])
 
 def grid_interpolate_map(x, y, z, resolution=200, map_roi=None):

@@ -15,8 +15,15 @@ _GLOBAL_SYNC_OBJ = None
 import tkinter as tk
 from tkinter import messagebox, simpledialog, filedialog
 from analyze_sgm_bsky_data import analyze_sgm_bsky_data
-from alignment_utils import grid_interpolate_map, get_safe_save_path, get_tk_root, get_masked_triangulation, safe_filedialog_call, console_log, safe_metadata_dialog_call
+from alignment_utils import grid_interpolate_map, get_safe_save_path, get_tk_root, get_masked_triangulation, safe_filedialog_call, console_log, safe_metadata_dialog_call, format_num_val
 import sdd_calibration_utils as sdd_calib
+try:
+    from sf import sf, sf_init
+    HAS_SF = True
+    try: sf_init()
+    except Exception as _e_sf: print(f"  [SF Init Warning] {_e_sf}")
+except ImportError:
+    HAS_SF = False
 import mplcursors
 from matplotlib.widgets import RectangleSelector, Button, PolygonSelector, Slider, SpanSelector, CheckButtons
 from matplotlib.path import Path
@@ -141,6 +148,35 @@ MCC_NAMES = {
 # --- GUI Helpers ---
 # Removed local get_safe_save_path - now imported from alignment_utils
 
+def format_norm_title(main_title, scan_name, roi_label, i0_src):
+    """
+    Formats plot titles for normalized spectra into clean, 2-line small-print text
+    so that long I0 normalization details never overlap or obscure the plots.
+    """
+    if scan_name:
+        if roi_label:
+            line1 = f"{main_title} ({roi_label}): {scan_name}"
+        else:
+            line1 = f"{main_title}: {scan_name}"
+    else:
+        if roi_label:
+            line1 = f"{main_title} ({roi_label})"
+        else:
+            line1 = f"{main_title}"
+            
+    i0_str = f"Normalized by: {i0_src}" if i0_src else ""
+    
+    # If the I0 string is very long, break long clauses cleanly across lines
+    if len(i0_str) > 60 and " (Divided by OD:" in i0_str:
+        i0_str = i0_str.replace(" (Divided by OD:", "\n  OD: ")
+    elif len(i0_str) > 60 and " (Smoothed" in i0_str:
+        i0_str = i0_str.replace(" (Smoothed", "\n  (Smoothed")
+        
+    if i0_str:
+        return f"{line1}\n({i0_str})"
+    return line1
+
+
 class MetadataDialog(simpledialog.Dialog):
     def __init__(self, parent, title, initial_data=None):
         self.initial_data = initial_data or {}
@@ -177,8 +213,21 @@ class MetadataDialog(simpledialog.Dialog):
 class ExternalI0PreviewDialog(tk.Toplevel):
     def __init__(self, parent, dataframe, default_e_col, default_i_col):
         super().__init__(parent)
-        self.title("External I0 Selection")
-        self.df = dataframe
+        self.title("External I0 Selection & Processing")
+        self.df = dataframe.copy()
+        
+        # Ensure mcc1 column is clearly displayed as 'mcc1 (Au Mesh)'
+        renamed_cols = {}
+        for c in self.df.columns:
+            if str(c).lower() == 'mcc1':
+                renamed_cols[c] = 'mcc1 (Au Mesh)'
+        if renamed_cols:
+            self.df = self.df.rename(columns=renamed_cols)
+            if default_i_col in renamed_cols:
+                default_i_col = renamed_cols[default_i_col]
+            if default_e_col in renamed_cols:
+                default_e_col = renamed_cols[default_e_col]
+
         self.result = None
         
         self.protocol("WM_DELETE_WINDOW", self.on_cancel)
@@ -187,25 +236,32 @@ class ExternalI0PreviewDialog(tk.Toplevel):
         self.i0_calib_enabled = tk.BooleanVar(value=False)
         self.i0_energy_shift = tk.DoubleVar(value=0.0)
         
+        # Optical Density (SF) variables
+        self.do_od_divide = tk.BooleanVar(value=False)
+        self.od_compound = tk.StringVar(value="BN")
+        self.od_density = tk.DoubleVar(value=2.1)
+        self.od_thickness = tk.DoubleVar(value=0.1)
+        self.do_autoscale = tk.BooleanVar(value=True)
+        
         # UI Setup
         ctrl_frame = tk.Frame(self)
         ctrl_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=10)
         
         columns = list(self.df.columns)
         
-        tk.Label(ctrl_frame, text="Energy Column (X):").grid(row=0, column=0, padx=5, pady=5)
+        tk.Label(ctrl_frame, text="Energy Column (X):").grid(row=0, column=0, padx=5, pady=5, sticky='w')
         self.cb_e = ttk.Combobox(ctrl_frame, values=columns, state="readonly", width=30)
         if default_e_col in columns: self.cb_e.set(default_e_col)
-        self.cb_e.grid(row=0, column=1, padx=5, pady=5)
+        self.cb_e.grid(row=0, column=1, padx=5, pady=5, sticky='w')
         self.cb_e.bind("<<ComboboxSelected>>", self.update_plot)
         
-        tk.Label(ctrl_frame, text="Intensity Column (Y):").grid(row=1, column=0, padx=5, pady=5)
+        tk.Label(ctrl_frame, text="Intensity Column (Y):").grid(row=1, column=0, padx=5, pady=5, sticky='w')
         self.cb_i = ttk.Combobox(ctrl_frame, values=columns, state="readonly", width=30)
         if default_i_col in columns: self.cb_i.set(default_i_col)
-        self.cb_i.grid(row=1, column=1, padx=5, pady=5)
+        self.cb_i.grid(row=1, column=1, padx=5, pady=5, sticky='w')
         self.cb_i.bind("<<ComboboxSelected>>", self.update_plot)
         
-        # New Smoothing UI
+        # Smoothing UI
         smooth_frame = tk.LabelFrame(ctrl_frame, text="Smoothing (Savitzky-Golay)")
         smooth_frame.grid(row=2, column=0, columnspan=2, padx=5, pady=5, sticky="ew")
         
@@ -219,7 +275,7 @@ class ExternalI0PreviewDialog(tk.Toplevel):
         self.spin_window.grid(row=0, column=2, padx=5, pady=5)
         self.spin_window.bind("<Return>", self.update_plot)
         
-        # New Energy Calibration UI (External I0 Only)
+        # Energy Calibration UI (External I0 Only)
         calib_frame = tk.LabelFrame(ctrl_frame, text="I0 Energy Calibration")
         calib_frame.grid(row=3, column=0, columnspan=2, padx=5, pady=5, sticky="ew")
         
@@ -232,16 +288,46 @@ class ExternalI0PreviewDialog(tk.Toplevel):
         self.ent_calib.bind("<Return>", self.update_plot)
         self.ent_calib.bind("<FocusOut>", self.update_plot)
         
-        btn_frame = tk.Frame(ctrl_frame)
-        btn_frame.grid(row=0, column=2, rowspan=3, padx=20)
+        # Optical Density (SF) Correction UI
+        od_frame = tk.LabelFrame(ctrl_frame, text="Compound Optical Density (SF) Correction")
+        od_frame.grid(row=4, column=0, columnspan=2, padx=5, pady=5, sticky="ew")
         
-        tk.Button(btn_frame, text="Apply", command=self.on_apply, width=15, bg='lightgreen').pack(pady=2)
-        tk.Button(btn_frame, text="Cancel", command=self.on_cancel, width=15, bg='lightcoral').pack(pady=2)
+        self.chk_od = tk.Checkbutton(od_frame, text="Divide I0 by Optical Density (OD)", variable=self.do_od_divide, command=self.update_plot, font=('TkDefaultFont', 9, 'bold'))
+        self.chk_od.grid(row=0, column=0, columnspan=4, padx=5, pady=2, sticky="w")
+        
+        tk.Label(od_frame, text="Compound:").grid(row=1, column=0, padx=5, pady=2, sticky="w")
+        self.ent_compound = ttk.Entry(od_frame, textvariable=self.od_compound, width=10)
+        self.ent_compound.grid(row=1, column=1, padx=5, pady=2, sticky="w")
+        self.ent_compound.bind("<Return>", self.update_plot)
+        self.ent_compound.bind("<FocusOut>", self.update_plot)
+        
+        tk.Label(od_frame, text="Density (g/cm³):").grid(row=1, column=2, padx=5, pady=2, sticky="w")
+        self.ent_density = ttk.Entry(od_frame, textvariable=self.od_density, width=8)
+        self.ent_density.grid(row=1, column=3, padx=5, pady=2, sticky="w")
+        self.ent_density.bind("<Return>", self.update_plot)
+        self.ent_density.bind("<FocusOut>", self.update_plot)
+        
+        tk.Label(od_frame, text="Thickness (µm):").grid(row=2, column=0, padx=5, pady=2, sticky="w")
+        self.ent_thickness = ttk.Entry(od_frame, textvariable=self.od_thickness, width=10)
+        self.ent_thickness.grid(row=2, column=1, padx=5, pady=2, sticky="w")
+        self.ent_thickness.bind("<Return>", self.update_plot)
+        self.ent_thickness.bind("<FocusOut>", self.update_plot)
+
+        self.chk_autoscale = tk.Checkbutton(od_frame, text="Auto-scale modified I0 magnitude to match starting I0", variable=self.do_autoscale, command=self.update_plot)
+        self.chk_autoscale.grid(row=2, column=2, columnspan=2, padx=5, pady=2, sticky="w")
+
+        # Status / Error Label
+        self.lbl_status = tk.Label(ctrl_frame, text="", fg="red", font=('TkDefaultFont', 9, 'italic'))
+        self.lbl_status.grid(row=5, column=0, columnspan=2, padx=5, pady=2, sticky="w")
+
+        btn_frame = tk.Frame(ctrl_frame)
+        btn_frame.grid(row=0, column=2, rowspan=5, padx=20, sticky="n")
+        
+        tk.Button(btn_frame, text="Apply", command=self.on_apply, width=15, bg='lightgreen').pack(pady=4)
+        tk.Button(btn_frame, text="Cancel", command=self.on_cancel, width=15, bg='lightcoral').pack(pady=4)
         
         # Plot Setup
-        self.fig = Figure(figsize=(6, 4))
-        self.ax = self.fig.add_subplot(111)
-        
+        self.fig = Figure(figsize=(7, 5))
         self.canvas = FigureCanvasTkAgg(self.fig, master=self)
         self.canvas.draw()
         self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
@@ -253,21 +339,22 @@ class ExternalI0PreviewDialog(tk.Toplevel):
         self.update_plot()
         
     def update_plot(self, event=None):
+        self.lbl_status.config(text="")
         e_col = self.cb_e.get()
         i_col = self.cb_i.get()
         
-        self.ax.clear()
+        self.fig.clear()
         
         if e_col and i_col:
             x = self.df[e_col].values
             y = self.df[i_col].values
             
             idx = np.argsort(x)
-            x_sorted = x[idx]
-            y_sorted = y[idx]
+            x_sorted = np.array(x[idx], dtype=float)
+            y_sorted = np.array(y[idx], dtype=float)
             
             self.x_final = x_sorted
-            self.y_final = y_sorted
+            y_proc = np.copy(y_sorted)
             
             if self.do_smooth.get():
                 try:
@@ -276,39 +363,116 @@ class ExternalI0PreviewDialog(tk.Toplevel):
                     if w < 3: w = 3
                     
                     if len(y_sorted) >= w:
-                        y_smooth = savgol_filter(y_sorted, window_length=w, polyorder=2)
-                        self.ax.plot(x_sorted, y_sorted, color='gray', alpha=0.5, label='Raw')
-                        self.ax.plot(x_sorted, y_smooth, 'b.-', label=f'Smoothed (w={w})')
-                        self.ax.legend()
-                        self.y_final = y_smooth
-                    else:
-                        self.ax.plot(x_sorted, y_sorted, 'b.-')
+                        y_proc = savgol_filter(y_sorted, window_length=w, polyorder=2)
                 except Exception as e:
-                    print(f"Smoothing error: {e}")
-                    self.ax.plot(x_sorted, y_sorted, 'b.-')
-            else:
-                self.ax.plot(x_sorted, y_sorted, 'b.-')
+                    self.lbl_status.config(text=f"Smoothing error: {e}")
+
+            od_vals = None
+            od_error = None
+            compound_str = self.od_compound.get().strip()
+            
+            if self.do_od_divide.get():
+                if not HAS_SF:
+                    self.lbl_status.config(text="Warning: sf.py module or Henke database not available.")
+                elif compound_str:
+                    try:
+                        d_val = float(self.od_density.get())
+                        t_val = float(self.od_thickness.get())
+                        # Calculate Optical Density using sf module
+                        od_raw = sf(compound_str, x_sorted, result_type='od', density=d_val, thickness=t_val)
+                        if od_raw is not None:
+                            od_vals = np.array(od_raw, dtype=float)
+                            od_vals_safe = np.maximum(od_vals, 1e-12)
+                            y_od_div = y_proc / od_vals_safe
+                            
+                            if self.do_autoscale.get():
+                                mean_orig = np.nanmean(y_proc)
+                                mean_div = np.nanmean(y_od_div)
+                                if mean_div != 0 and not np.isnan(mean_div):
+                                    scale_factor = mean_orig / mean_div
+                                    y_od_div = y_od_div * scale_factor
+                            y_proc = y_od_div
+                        else:
+                            od_error = f"Invalid compound formula '{compound_str}'"
+                    except Exception as ex:
+                        od_error = f"OD calculation error: {ex}"
+                        
+            if od_error:
+                self.lbl_status.config(text=od_error)
                 
-            self.ax.set_xlabel(e_col)
-            self.ax.set_ylabel(i_col)
-            self.ax.set_title(f"Preview: {i_col} vs {e_col}")
-            self.ax.grid(True)
+            self.y_final = y_proc
+
+            # Layout subplots
+            if self.do_od_divide.get() and od_vals is not None:
+                gs = self.fig.add_gridspec(2, 1, height_ratios=[1.5, 1], hspace=0.15)
+                ax_top = self.fig.add_subplot(gs[0, 0])
+                ax_bot = self.fig.add_subplot(gs[1, 0], sharex=ax_top)
+                
+                # Top Subplot: Original vs OD-Modified I0
+                ax_top.plot(x_sorted, y_sorted, color='gray', alpha=0.5, label='Raw I0')
+                if self.do_smooth.get():
+                    ax_top.plot(x_sorted, y_proc, 'b.-', label='Smoothed & OD-Divided I0', linewidth=1.5)
+                else:
+                    ax_top.plot(x_sorted, y_proc, 'b.-', label='OD-Divided I0', linewidth=1.5)
+                    
+                if self.i0_calib_enabled.get():
+                    try:
+                        shift = float(self.i0_energy_shift.get())
+                        ax_top.plot(x_sorted + shift, y_proc, 'r--', alpha=0.7, label=f'Shifted ({shift:+.2f} eV)')
+                    except: pass
+                    
+                ax_top.set_ylabel(i_col)
+                ax_top.set_title(f"I0 Preview: {i_col} (OD Divided by {compound_str})")
+                ax_top.legend(loc='upper right', fontsize=8)
+                ax_top.grid(True, linestyle='--', alpha=0.6)
+                plt.setp(ax_top.get_xticklabels(), visible=False)
+                
+                # Bottom Subplot: Optical Density curve
+                ax_bot.plot(x_sorted, od_vals, color='#2ca02c', linewidth=1.8, label=f"OD ({compound_str})")
+                ax_bot.set_xlabel(f"{e_col} (eV)")
+                ax_bot.set_ylabel("Optical Density")
+                ax_bot.legend(loc='upper right', fontsize=8)
+                ax_bot.grid(True, linestyle='--', alpha=0.6)
+            else:
+                ax = self.fig.add_subplot(111)
+                if self.do_smooth.get():
+                    ax.plot(x_sorted, y_sorted, color='gray', alpha=0.5, label='Raw')
+                    ax.plot(x_sorted, y_proc, 'b.-', label=f'Smoothed (w={self.spin_window.get()})')
+                    ax.legend()
+                else:
+                    ax.plot(x_sorted, y_proc, 'b.-')
+                    
+                ax.set_xlabel(e_col)
+                ax.set_ylabel(i_col)
+                ax.set_title(f"Preview: {i_col} vs {e_col}")
+                ax.grid(True, linestyle='--', alpha=0.6)
+                
+                if self.i0_calib_enabled.get():
+                    try:
+                        shift = float(self.i0_energy_shift.get())
+                        ax.plot(x_sorted + shift, y_proc, 'r--', alpha=0.7, label=f'Shifted ({shift:+.2f} eV)')
+                        ax.legend()
+                        ax.set_title(f"Preview: {i_col} vs {e_col} (Shift: {shift:+.2f} eV)")
+                    except: pass
             
-            if self.i0_calib_enabled.get():
-                try:
-                    shift = float(self.i0_energy_shift.get())
-                    self.ax.plot(x_sorted + shift, y_sorted, 'r--', alpha=0.7, label=f'Shifted ({shift:+.2f} eV)')
-                    self.ax.legend()
-                    self.ax.set_title(f"Preview: {i_col} vs {e_col} (Shift: {shift:+.2f} eV)")
-                except: pass
-            
-        self.fig.tight_layout()
+        try:
+            self.fig.tight_layout()
+        except Exception:
+            self.fig.subplots_adjust(top=0.92, bottom=0.12, left=0.12, right=0.95, hspace=0.25)
         self.canvas.draw()
         
     def on_apply(self):
         smoothed_str = f" (Smoothed w={self.spin_window.get()})" if self.do_smooth.get() else ""
         shift_str = f" (Energy Shift: {self.i0_energy_shift.get():+.2f} eV)" if self.i0_calib_enabled.get() else ""
-        self.result = (self.cb_e.get(), self.cb_i.get(), self.x_final, self.y_final, smoothed_str + shift_str, self.i0_calib_enabled.get(), self.i0_energy_shift.get())
+        od_str = ""
+        if self.do_od_divide.get():
+            c_str = self.od_compound.get().strip()
+            d_str = self.od_density.get()
+            t_str = self.od_thickness.get()
+            scale_str = " auto-scaled" if self.do_autoscale.get() else ""
+            od_str = f" (Divided by OD: {c_str}, d={d_str}g/cc, t={t_str}um{scale_str})"
+            
+        self.result = (self.cb_e.get(), self.cb_i.get(), self.x_final, self.y_final, smoothed_str + shift_str + od_str, self.i0_calib_enabled.get(), self.i0_energy_shift.get())
         try: self.grab_release()
         except: pass
         self.withdraw()
@@ -468,7 +632,7 @@ def apply_deconvolution_to_map(x, y, z, fwhm_um, num_iter=20, deconv_type='lucy'
 # --- Core Dashboard State & Synchronization ---
 
 class Synchronizer:
-    def __init__(self, all_energies, representative_energy, map_roi=None, use_color=True, use_full_metadata=False, calibrated_energies=None):
+    def __init__(self, all_energies, representative_energy, map_roi=None, use_color=True, use_full_metadata=False, calibrated_energies=None, channel_roi=(0, 255), xrf_roi=None):
         self.all_energies = all_energies
         self.calibrated_energies = calibrated_energies if calibrated_energies is not None else all_energies
         self.energy_idx = self._find_nearest_idx(representative_energy)
@@ -478,7 +642,8 @@ class Synchronizer:
         self.dashboards = []
         self.summary_dash = None
         self.is_syncing = False
-        self.channel_roi = (0, 255)
+        self.channel_roi = channel_roi
+        self.xrf_roi = xrf_roi
         self.contrast_percentiles = (0.0, 100.0)
         self.use_log = False 
         self.use_log_spec = False # New: Log scale for spectra
@@ -493,18 +658,21 @@ class Synchronizer:
         self.ipfy_mode = False
         # SDD Energy Calibration
         self.sdd_calib_data = sdd_calib.load_calibration()
-        self.use_sdd_calib = False
+        self.use_sdd_calib = True if (xrf_roi is not None and self.sdd_calib_data) else False
         
-        # Initialize energy_roi dynamically based on first detector calibration and channel_roi
-        self.energy_roi = (1470.0, 1500.0) # Fallback
-        if self.sdd_calib_data:
-            first_det = next(iter(self.sdd_calib_data.keys()), None)
-            if first_det:
-                gain = self.sdd_calib_data[first_det].get('gain', 1.0)
-                offset = self.sdd_calib_data[first_det].get('offset', 0.0)
-                e1 = sdd_calib.channel_to_energy(self.channel_roi[0], gain, offset)
-                e2 = sdd_calib.channel_to_energy(self.channel_roi[1], gain, offset)
-                self.energy_roi = (float(min(e1, e2)), float(max(e1, e2)))
+        # Initialize energy_roi dynamically based on xrf_roi or first detector calibration and channel_roi
+        if xrf_roi is not None:
+            self.energy_roi = (float(min(xrf_roi)), float(max(xrf_roi)))
+        else:
+            self.energy_roi = (1470.0, 1500.0) # Fallback
+            if self.sdd_calib_data:
+                first_det = next(iter(self.sdd_calib_data.keys()), None)
+                if first_det:
+                    gain = self.sdd_calib_data[first_det].get('gain', 1.0)
+                    offset = self.sdd_calib_data[first_det].get('offset', 0.0)
+                    e1 = sdd_calib.channel_to_energy(self.channel_roi[0], gain, offset)
+                    e2 = sdd_calib.channel_to_energy(self.channel_roi[1], gain, offset)
+                    self.energy_roi = (float(min(e1, e2)), float(max(e1, e2)))
                 
         # Deconvolution Settings
         self.use_deconv = False
@@ -1247,6 +1415,8 @@ class DashboardRow:
         title_name = (SDD_NAMES.get(det_id, self.name) if det_id else 
                      (MCC_NAMES.get(int(self.name.replace('mcc','')), self.name) if self.is_mcc else self.name))
         self.ax[0].set_title(f"{title_name} @ {self.rep_e:.2f} eV", fontsize='small')
+        self.ax[0].set_xlabel("X (mm)")
+        self.ax[0].set_ylabel("Y (mm)")
         
         m_avg = self.ctx['avg_maps'][self.name] / len(self.sync.all_energies)
         m_avg_plot = m_avg[tm]
@@ -1276,6 +1446,8 @@ class DashboardRow:
             self.ax[1].set_ylim(np.min(y_data), np.max(y_data))
             
         self.ax[1].set_title(f"Stack Average", fontsize='small')
+        self.ax[1].set_xlabel("X (mm)")
+        self.ax[1].set_ylabel("Y (mm)")
         
         p_rect = plt.Rectangle((self.current_roi[0], self.current_roi[2]), self.current_roi[1]-self.current_roi[0], 
                              self.current_roi[3]-self.current_roi[2], lw=1.5, ec='r', fc='none', ls='--', zorder=100)
@@ -1321,6 +1493,7 @@ class DashboardRow:
         else:
             x_axis = np.arange(256) * 10.0
             self.ax[2].set_xlabel("Energy (eV)")
+        self.ax[2].set_ylabel("PFY Counts")
 
         # Calculate initial spectrum for the ROI
         if np.any(m_roi):
@@ -1499,15 +1672,20 @@ class SummaryDashboard:
                 roi_ch = self.ctx.get('channel_roi', (0, 255))
                 roi_label = f"Ch{roi_ch[0]}-{roi_ch[1]}"
             i0_src = self.ctx.get('i0_source', 'mcc1')
-            if self.sync.i0_calib_enabled and "Internal" not in i0_src:
+            if self.sync.i0_calib_enabled and "Internal" not in i0_src and "Energy Shift:" not in i0_src:
                 i0_src += f" (Energy Shift: {self.sync.i0_energy_shift:+.2f} eV)"
-            title_str = f"Normalized Fluorescence Spectra ({roi_label}): {self.ctx['scan_name']} (by {i0_src})"
+            
+            title_sdd = format_norm_title("Normalized Fluorescence Spectra", self.ctx['scan_name'], roi_label, i0_src)
+            title_mcc = format_norm_title("Normalized I0 and TEY Spectra", self.ctx['scan_name'], None, i0_src)
             try:
                 # Handle both 1D and 2D axis arrays
-                if self.ax.ndim == 2 and self.ax.shape == (2, 2): target_ax = self.ax[1, 0]
-                elif self.ax.ndim == 2: target_ax = self.ax[2, 0]
-                else: target_ax = self.ax[2]
-                target_ax.set_title(title_str)
+                if self.ax.ndim == 2 and self.ax.shape == (2, 2):
+                    self.ax[1, 0].set_title(title_sdd, fontsize=8.5, pad=6)
+                    self.ax[1, 1].set_title(title_mcc, fontsize=8.5, pad=6)
+                elif self.ax.ndim == 2:
+                    self.ax[2, 0].set_title(title_sdd, fontsize=8.5, pad=6)
+                else:
+                    self.ax[2].set_title(title_sdd, fontsize=8.5, pad=6)
             except Exception as e:
                 print(f"  [Title Update Error] {e}")
 
@@ -1542,12 +1720,18 @@ class SummaryDashboard:
         
         self.fig.canvas.draw_idle()
 
-    def get_metadata(self):
-        if self.sync.full_metadata and self.sync.user_metadata is None:
-            res = safe_metadata_dialog_call(initial_data={"Name": self.ctx['scan_name']})
-            if res:
-                self.sync.user_metadata = res
+    def edit_metadata_call(self, event=None):
+        """Opens metadata dialog pre-filled with last/current metadata for editing."""
+        init_d = dict(self.sync.user_metadata) if self.sync.user_metadata else {"Name": self.ctx['scan_name']}
+        res = safe_metadata_dialog_call(initial_data=init_d)
+        if res:
+            self.sync.user_metadata = res
         return self.sync.user_metadata or {}
+
+    def get_metadata(self):
+        if self.sync.full_metadata:
+            return self.edit_metadata_call()
+        return {}
 
     def save_summary_csv(self, event):
         console_log("\n[BUTTON CLICK] 'Save XANES Spectra' clicked!")
@@ -1632,8 +1816,8 @@ class SummaryDashboard:
                         f"# Formula: {meta.get('Formula', 'N/A')}",
                         f"# Authors: {meta.get('Authors', 'N/A')}",
                         f"# Affiliation: {meta.get('Affiliation', 'N/A')}",
-                        f"# Facility: CLS",
-                        f"# Beamline: SGM",
+                        f"# Facility: Canadian Light Source (CLS)",
+                        f"# Beamline: Spherical Grating Monochromator (SGM) (11ID-1)",
                         f"# Mono: Spherical Grating Monochromator",
                         f"# Website: https://sgm.lightsource.ca",
                         f"# Element: {meta.get('Element', 'N/A')}",
@@ -1647,25 +1831,40 @@ class SummaryDashboard:
                         "#"
                     ]
                 
+                if self.sync.use_sdd_calib:
+                    calib_info = sdd_calib.load_calibration()
+                    meta_calib = calib_info.get("_metadata", {}) if calib_info else {}
+                    scan_used = meta_calib.get("scan_used", "N/A")
+                    edges_used = meta_calib.get("edges_used", "N/A")
+                    if isinstance(edges_used, list):
+                        edges_used = ", ".join(edges_used)
+                    calib_str = f"Active (Scan: {scan_used}, Edges: {edges_used})"
+                else:
+                    calib_str = "Disabled"
+
                 rows += [
                     f"# Scan Name: {self.ctx['scan_name']}",
+                    f"# Scan Type: {self.ctx['path_pack'].get('scan_type', 'N/A')}",
                     f"# Project: {self.ctx['project_name']}",
                     f"# Date: {self.ctx['path_pack'].get('date', 'N/A')}",
                     f"# Number of Images: {len(self.sync.all_energies)}",
                     f"# Energy Regions: {self.ctx['path_pack'].get('Energy Regions', 'N/A')}",
-                    f"# Grid: {self.ctx['path_pack'].get('nx', 'N/A')} x {self.ctx['path_pack'].get('ny', 'N/A')} (Total: {len(self.ctx['x_coords'])})",
+                    f"# Grid Dimensions: {self.ctx['path_pack'].get('nx', 'N/A')} x {self.ctx['path_pack'].get('ny', 'N/A')} ({len(self.ctx['x_coords'])} points)",
                     f"# Grating: {self.ctx['path_pack'].get('grating', 'N/A')}",
                     f"# Harmonic: {self.ctx['path_pack'].get('harmonic', 'N/A')}",
                     f"# Strip: {self.ctx['path_pack'].get('strip', 'N/A')}",
                     f"# Polarization: {self.ctx['path_pack'].get('polarization', 'N/A')}",
-                    f"# Exit Slit Gap: {self.ctx['path_pack'].get('exit_slit_gap', 'N/A')}",
-                    f"# XPS Z: {self.ctx['path_pack'].get('xps_z', 'N/A')}",
-                    f"# Time Per Map: {self.ctx['path_pack'].get('time_per_map', 'N/A')}",
-                    f"# Number of Points: {self.ctx['path_pack'].get('number_of_points', 'N/A')}",
+                    f"# Exit Slit Gap: {format_num_val(self.ctx['path_pack'].get('exit_slit_gap'))}",
+                    f"# XPS Z: {format_num_val(self.ctx['path_pack'].get('xps_z'))}",
+                ]
+                t_per_img = self.ctx['path_pack'].get('time_per_map') or self.ctx['path_pack'].get('time_per_image')
+                if t_per_img and str(t_per_img).strip() not in ('N/A', 'None', ''):
+                    rows.append(f"# Time Per Image: {t_per_img}")
+                rows += [
                     f"# ROI Selection: {mode_str}",
                     f"# {'Energy ROI' if self.sync.use_sdd_calib else 'Channels'}: {roi_str}",
                     f"# Normalization: {i0_source}",
-                    f"# SDD Calibration: {'ACTIVE' if self.sync.use_sdd_calib else 'DISABLED'}",
+                    f"# SDD Calibration: {calib_str}",
                     "#"
                 ]
                 
@@ -1684,13 +1883,22 @@ class SummaryDashboard:
                     rows.append(f"# Column {c_idx}: NORM_{label} (by {i0_source})"); c_idx += 1
                 rows.append(f"# Column {c_idx}: NORM_Average_SDD"); c_idx += 1
                 
+                has_ext_i0 = (self.ctx.get('ext_i0_values') is not None)
+                if has_ext_i0:
+                    ext_i0_vals = self.ctx['ext_i0_values']
+
                 if self.ctx['mcc_channels']:
                     for ch in self.ctx['mcc_channels']:
                         label = MCC_NAMES.get(ch, f"mcc{ch}")
                         rows.append(f"# Column {c_idx}: RAW_{label}"); c_idx += 1
+                        if ch == 1 and has_ext_i0:
+                            rows.append(f"# Column {c_idx}: RAW_External_I0 (from {i0_source})"); c_idx += 1
                     for ch in self.ctx['mcc_channels']:
                         label = MCC_NAMES.get(ch, f"mcc{ch}")
                         rows.append(f"# Column {c_idx}: NORM_{label} (by {i0_source})"); c_idx += 1
+                elif has_ext_i0:
+                    rows.append(f"# Column {c_idx}: RAW_External_I0 (from {i0_source})"); c_idx += 1
+
                 rows.append("#")
                 for i, energy in enumerate(self.sync.all_energies):
                     row_data = [f"{self.ctx['calibrated_energies'][i]:.2f}", f"{energy:.2f}"]
@@ -1702,8 +1910,13 @@ class SummaryDashboard:
                     row_data.append(f"{norm_avg[i]:.6f}")
                     # MCC Columns
                     if self.ctx['mcc_channels']:
-                        for ch in self.ctx['mcc_channels']: row_data.append(f"{current_mcc[f'mcc{ch}'][i]:.6f}")
+                        for ch in self.ctx['mcc_channels']:
+                            row_data.append(f"{current_mcc[f'mcc{ch}'][i]:.6f}")
+                            if ch == 1 and has_ext_i0:
+                                row_data.append(f"{ext_i0_vals[i]:.6f}")
                         for ch in self.ctx['mcc_channels']: row_data.append(f"{normalized_mcc[f'mcc{ch}'][i]:.6f}")
+                    elif has_ext_i0:
+                        row_data.append(f"{ext_i0_vals[i]:.6f}")
                     rows.append(",".join(row_data))
                 console_log(f"  Writing {len(rows)} rows to CSV...")
                 save_csv_idl(save_path, rows)
@@ -1748,13 +1961,29 @@ class SummaryDashboard:
                         if np.any(m): consolidated_specs[det] += np.sum(s2d[m], axis=0)
                     except: continue
 
+            roi_ch = self.ctx.get('channel_roi', (0, 255))
+            roi_ch_str = f"Ch{roi_ch[0]}-{roi_ch[1]}"
             if self.sync.use_sdd_calib:
                 roi_str = f"{self.sync.energy_roi[0]:.1f}-{self.sync.energy_roi[1]:.1f}eV"
+                sdd_roi_str = f"# SDD ROI Energy: {self.sync.energy_roi[0]:.1f}-{self.sync.energy_roi[1]:.1f} eV ({roi_ch_str})"
             else:
-                roi_str = f"Ch{self.ctx['channel_roi'][0]}-{self.ctx['channel_roi'][1]}"
+                roi_str = roi_ch_str
+                sdd_roi_str = f"# SDD ROI Channels: {roi_ch_str}"
             mode_str = "Poly" if mode=='poly' else "Rect"
             default_name = f"{self.ctx['scan_name']}_Consolidated_{mode_str}_ROI_{roi_str}_XRF.csv"
             
+            # Determine calibration parameters for energy axis
+            if self.sync.use_sdd_calib:
+                calib_data = self.sync.sdd_calib_data if hasattr(self.sync, 'sdd_calib_data') and self.sync.sdd_calib_data else sdd_calib.load_calibration()
+                ref_det = 'sdd3' if 'sdd3' in calib_data else ('sdd1' if 'sdd1' in calib_data else (next((k for k in calib_data.keys() if k != '_metadata'), None) if calib_data else None))
+                if ref_det and ref_det in calib_data:
+                    ref_gain = calib_data[ref_det].get('gain', 1.0)
+                    ref_offset = calib_data[ref_det].get('offset', 0.0)
+                else:
+                    ref_gain, ref_offset = 10.0, 0.0
+            else:
+                ref_gain, ref_offset = 10.0, 0.0
+
             console_log(f"  Calling safe_filedialog_call: default={default_name}")
             save_path = safe_filedialog_call(
                 filedialog.asksaveasfilename,
@@ -1773,33 +2002,53 @@ class SummaryDashboard:
                     rows += [
                         f"# Name: {meta.get('Name', 'N/A')}", f"# Formula: {meta.get('Formula', 'N/A')}",
                         f"# Authors: {meta.get('Authors', 'N/A')}", f"# Affiliation: {meta.get('Affiliation', 'N/A')}",
-                        f"# Facility: CLS", f"# Beamline: SGM", f"# Element: {meta.get('Element', 'N/A')}", f"# Edge: {meta.get('Edge', 'N/A')}", "#"
+                        f"# Facility: Canadian Light Source (CLS)", f"# Beamline: Spherical Grating Monochromator (SGM) (11ID-1)", f"# Element: {meta.get('Element', 'N/A')}", f"# Edge: {meta.get('Edge', 'N/A')}", "#"
                     ]
-
+                
                 rows += [
-                    f"# Scan Name: {self.ctx['scan_name']}", f"# Project: {self.ctx['project_name']}",
-                    f"# Date: {self.ctx['path_pack'].get('date', 'N/A')}", f"# Number of Images: {len(self.sync.all_energies)}",
+                    f"# Scan Name: {self.ctx['scan_name']}",
+                    f"# Scan Type: {self.ctx['path_pack'].get('scan_type', 'N/A')}",
+                    f"# Project: {self.ctx['project_name']}",
+                    f"# Date: {self.ctx['path_pack'].get('date', 'N/A')}",
+                    f"# Number of Images: {len(self.sync.all_energies)}",
                     f"# Energy Regions: {self.ctx['path_pack'].get('Energy Regions', 'N/A')}",
-                    f"# Grid: {self.ctx['path_pack'].get('nx', 'N/A')} x {self.ctx['path_pack'].get('ny', 'N/A')} (Total: {len(self.ctx['x_coords'])})",
-                    f"# Grating: {self.ctx['path_pack'].get('grating', 'N/A')}", f"# Harmonic: {self.ctx['path_pack'].get('harmonic', 'N/A')}",
-                    f"# Strip: {self.ctx['path_pack'].get('strip', 'N/A')}", f"# Polarization: {self.ctx['path_pack'].get('polarization', 'N/A')}",
-                    f"# Exit Slit Gap: {self.ctx['path_pack'].get('exit_slit_gap', 'N/A')}", f"# XPS Z: {self.ctx['path_pack'].get('xps_z', 'N/A')}",
-                    f"# Time Per Map: {self.ctx['path_pack'].get('time_per_map', 'N/A')}",
-                    f"# Number of Points: {self.ctx['path_pack'].get('number_of_points', 'N/A')}",
-                    f"# ROI Selection: {mode_str}", f"# SDD ROI Channels: {roi_ch_str}",
+                    f"# Grid Dimensions: {self.ctx['path_pack'].get('nx', 'N/A')} x {self.ctx['path_pack'].get('ny', 'N/A')} ({len(self.ctx['x_coords'])} points)",
+                    f"# Grating: {self.ctx['path_pack'].get('grating', 'N/A')}",
+                    f"# Harmonic: {self.ctx['path_pack'].get('harmonic', 'N/A')}",
+                    f"# Strip: {self.ctx['path_pack'].get('strip', 'N/A')}",
+                    f"# Polarization: {self.ctx['path_pack'].get('polarization', 'N/A')}",
+                    f"# Exit Slit Gap: {format_num_val(self.ctx['path_pack'].get('exit_slit_gap'))}",
+                    f"# XPS Z: {format_num_val(self.ctx['path_pack'].get('xps_z'))}",
+                ]
+                t_per_img = self.ctx['path_pack'].get('time_per_map') or self.ctx['path_pack'].get('time_per_image')
+                if t_per_img and str(t_per_img).strip() not in ('N/A', 'None', ''):
+                    rows.append(f"# Time Per Image: {t_per_img}")
+                rows += [
+                    f"# ROI Selection: {mode_str}",
+                    sdd_roi_str,
                     f"# Image Energy: {self.sync.all_energies[self.sync.energy_idx]:.2f} eV",
                     f"# Selection Coordinates: {roi if mode=='rect' else poly}", "#"
                 ]
                 rows.append("#")
-                rows.append("# Column 1: Channel")
-                c_idx = 2
+                rows.append("# Column 1: Calibrated Energy (eV)")
+                rows.append("# Column 2: Channel")
+                c_idx = 3
                 for det in self.ctx['detector_names']:
                     rows.append(f"# Column {c_idx}: {det}"); c_idx += 1
+                rows.append(f"# Column {c_idx}: Average_SDD")
                 rows.append("#")
-                rows.append(",".join(["Channel"] + self.ctx['detector_names']))
+                
+                header_cols = ["Energy_eV", "Channel"] + list(self.ctx['detector_names']) + ["Average_SDD"]
+                rows.append(",".join(header_cols))
+                
                 for i in range(256):
-                    row_data = [str(i)]
-                    for det in self.ctx['detector_names']: row_data.append(f"{consolidated_specs[det][i]:.2f}")
+                    e_val = sdd_calib.channel_to_energy(i, ref_gain, ref_offset)
+                    det_counts = [consolidated_specs[det][i] for det in self.ctx['detector_names']]
+                    avg_count = np.mean(det_counts) if det_counts else 0.0
+                    row_data = [f"{e_val:.2f}", str(i)]
+                    for count in det_counts:
+                        row_data.append(f"{count:.2f}")
+                    row_data.append(f"{avg_count:.2f}")
                     rows.append(",".join(row_data))
                 console_log(f"  Writing XRD spectra to {save_path}...")
                 save_csv_idl(save_path, rows)
@@ -1884,7 +2133,7 @@ class SummaryDashboard:
 
     def save_pymca_stack_call(self, event):
         """Callback for saving ROI-summed PyMca stack (3D)."""
-        console_log("\n[BUTTON CLICK] 'Save XANES Spectra for PCA/CA' clicked!")
+        console_log("\n[BUTTON CLICK] 'Save Normalized XANES Spectra for PCA/CA' clicked!")
         try:
             from save_pymca_stack_h5 import save_pymca_stack_h5
             # Use current state
@@ -2056,7 +2305,12 @@ class SummaryDashboard:
             
             self.avg_line_norm, = ax_norm_sdd.plot(self.ctx['calibrated_energies'], np.nanmean(norm_avg_init, axis=0), 'k--', lw=2, label='Normalized Average')
             i0_src = self.ctx.get('i0_source', 'mcc1')
-            ax_norm_sdd.set_title(f"Normalized Fluorescence Spectra (Ch{self.sync.channel_roi[0]}-{self.sync.channel_roi[1]}): {self.ctx['scan_name']} (by {i0_src})")
+            if self.sync.i0_calib_enabled and "Internal" not in i0_src and "Energy Shift:" not in i0_src:
+                i0_src += f" (Energy Shift: {self.sync.i0_energy_shift:+.2f} eV)"
+            
+            roi_str = f"{self.sync.energy_roi[0]:.1f}-{self.sync.energy_roi[1]:.1f} eV" if self.sync.use_sdd_calib else f"Ch{self.sync.channel_roi[0]}-{self.sync.channel_roi[1]}"
+            title_norm_sdd = format_norm_title("Normalized Fluorescence Spectra", self.ctx['scan_name'], roi_str, i0_src)
+            ax_norm_sdd.set_title(title_norm_sdd, fontsize=8.5, pad=6)
             ax_norm_sdd.legend(fontsize='xx-small')
             ax_norm_sdd.set_xlabel("Energy (eV)"); ax_norm_sdd.set_ylabel("Normalized Intensity")
 
@@ -2070,18 +2324,24 @@ class SummaryDashboard:
                     label = MCC_NAMES.get(ch, f'mcc{ch}')
                     l, = ax_norm_mcc.plot(self.ctx['calibrated_energies'], norm_mcc, m_fmt, label=f"Normalized {label}")
                     self.mcc_lines_norm[ch] = l
-            i0_src = self.ctx.get('i0_source', 'mcc1')
-            ax_norm_mcc.set_title(f"Normalized I0 and TEY Spectra (by {i0_src})"); ax_norm_mcc.legend(fontsize='xx-small')
+            title_norm_mcc = format_norm_title("Normalized I0 and TEY Spectra", self.ctx['scan_name'], None, i0_src)
+            ax_norm_mcc.set_title(title_norm_mcc, fontsize=8.5, pad=6); ax_norm_mcc.legend(fontsize='xx-small')
             ax_norm_mcc.set_xlabel("Energy (eV)"); ax_norm_mcc.set_ylabel("Normalized Intensity")
         
         # Bottom row buttons - Adjusted positions to avoid overlapping x-axis labels
-        ax_chk = self.fig.add_axes([0.02, chk_y, 0.40, 0.03])
+        ax_chk = self.fig.add_axes([0.02, chk_y, 0.35, 0.03])
         self.chk_meta = CheckButtons(ax_chk, ["Add Sample Specific Information to File Header"], [self.sync.full_metadata])
         for text in self.chk_meta.labels:
             text.set_fontsize(7)
         def toggle_meta(label):
             self.sync.full_metadata = not self.sync.full_metadata
+            if self.sync.full_metadata:
+                self.edit_metadata_call()
         self.chk_meta.on_clicked(toggle_meta)
+
+        ax_edit_meta = self.fig.add_axes([0.38, chk_y, 0.10, 0.03])
+        self.btn_edit_meta = Button(ax_edit_meta, 'Edit Metadata', color='lightgreen', hovercolor='palegreen')
+        self.btn_edit_meta.on_clicked(self.edit_metadata_call); self.btn_edit_meta.label.set_fontsize(7)
 
         ax_save_xanes = self.fig.add_axes([0.02, btn_y, 0.06, btn_h])
         self.btn_save_xanes = Button(ax_save_xanes, 'Save XANES\nSpectra', color='yellow', hovercolor='khaki')
@@ -2106,7 +2366,7 @@ class SummaryDashboard:
         self.btn_save_imgs.on_clicked(self.save_all_images); self.btn_save_imgs.label.set_fontsize(7)
 
         ax_save_pm3d = self.fig.add_axes([0.46, btn_y, 0.14, btn_h])
-        self.btn_save_pm3d = Button(ax_save_pm3d, 'Save XANES Spectra\nfor PCA/CA', color='yellow', hovercolor='khaki')
+        self.btn_save_pm3d = Button(ax_save_pm3d, 'Save Normalized XANES\nSpectra for PCA/CA', color='yellow', hovercolor='khaki')
         self.btn_save_pm3d.on_clicked(self.save_pymca_stack_call); self.btn_save_pm3d.label.set_fontsize(7)
 
         ax_save_pm4d = self.fig.add_axes([0.61, btn_y, 0.24, btn_h])
@@ -2204,7 +2464,7 @@ def read_csv_with_comments(filepath):
 
 # --- Main Entry Point ---
 
-def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 256), roll_shift=0, as_scatter_plot: bool = False, map_roi=None, contrast=None, show_markers: bool = True, output_csv: bool = False, energy_shift=0.0, mcc_channels=None, mcc_to_map=None, x_trim=0.0, y_trim=0.0, save_images: bool = False, fixed_roi: bool = False, use_color: bool = True, use_full_metadata: bool = False):
+def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 256), xrf_roi=None, roll_shift=0, as_scatter_plot: bool = False, map_roi=None, contrast=None, show_markers: bool = True, output_csv: bool = False, energy_shift=0.0, mcc_channels=None, mcc_to_map=None, x_trim=0.0, y_trim=0.0, save_images: bool = False, fixed_roi: bool = False, use_color: bool = True, use_full_metadata: bool = False):
     """
     Beautiful Stack Dashboard (Refactored for Fresh Starts).
     """
@@ -2250,6 +2510,18 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
         x_coords_raw, y_coords_raw = path_pack.get('x', np.array([])), path_pack.get('y', np.array([]))
         detector_names = sorted(path_pack['sdd_files'].keys())
         calibrated_energies = all_energies + energy_shift
+        
+        # Resolve xrf_roi (energy in eV) vs channel_roi (detector channels)
+        calib_data_tmp = sdd_calib.load_calibration()
+        if xrf_roi is not None:
+            xrf_roi = (float(min(xrf_roi)), float(max(xrf_roi)))
+            if calib_data_tmp and detector_names:
+                first_det = detector_names[0]
+                ch1, ch2 = sdd_calib.get_calibrated_bounds(xrf_roi[0], xrf_roi[1], first_det, calib_data_tmp)
+                channel_roi = (ch1, ch2)
+            print(f"  [ROI Init] Specified xrf_roi: {xrf_roi[0]:.1f}-{xrf_roi[1]:.1f} eV (derived channel_roi: {channel_roi})")
+        else:
+            print(f"  [ROI Init] Specified channel_roi: {channel_roi}")
         
         # 2.5 Determine actual data point count and ensure coordinate lengths match
         # Check first available detector/energy to find the real number of scanned points
@@ -2436,15 +2708,15 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                 # Ensure matching lengths for DataFrame creation
                 mcc1_vals = mcc_data['mcc1']
                 min_len = min(len(calibrated_energies), len(mcc1_vals))
-                int_df = pd.DataFrame({'Energy': calibrated_energies[:min_len], 'mcc1': mcc1_vals[:min_len]})
-                dialog = ExternalI0PreviewDialog(root_i0, int_df, 'Energy', 'mcc1')
-                dialog.title("Internal I0 Preview")
+                int_df = pd.DataFrame({'Energy': calibrated_energies[:min_len], 'mcc1 (Au Mesh)': mcc1_vals[:min_len]})
+                dialog = ExternalI0PreviewDialog(root_i0, int_df, 'Energy', 'mcc1 (Au Mesh)')
+                dialog.title("Internal I0 (Au Mesh) Preview")
                 dialog.mainloop()
                 
                 if dialog.result:
                     selected_e_col, selected_i_col, x_sorted, y_sorted, extra_str, cal_en, cal_val = dialog.result
                     ext_i0_values = np.interp(calibrated_energies, x_sorted, y_sorted)
-                    i0_source = f"Internal: mcc1{extra_str}"
+                    i0_source = f"Internal: mcc1 (Au Mesh){extra_str}"
                     # Note: Energy shift NOT applied to internal I0 as per user request
                     path_pack['i0_calib_enabled'] = False
                     path_pack['i0_energy_shift'] = 0.0
@@ -2454,10 +2726,11 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
         # Save selection to path_pack for downstream modules (e.g. save_pymca_stack_h5, PCA, clustering)
         path_pack['ext_i0_values'] = ext_i0_values
         path_pack['i0_source'] = i0_source
+        path_pack['channel_roi'] = channel_roi
+        path_pack['xrf_roi'] = xrf_roi
 
         # 3. Class Instantiation (Fresh State)
-        sync = Synchronizer(all_energies, representative_energy, map_roi, use_color=use_color, use_full_metadata=use_full_metadata, calibrated_energies=calibrated_energies)
-        sync.channel_roi = channel_roi # Set initial range from command line
+        sync = Synchronizer(all_energies, representative_energy, map_roi, use_color=use_color, use_full_metadata=use_full_metadata, calibrated_energies=calibrated_energies, channel_roi=channel_roi, xrf_roi=xrf_roi)
         
         # Load initial calibration state from path_pack if set by dialog
         sync.i0_calib_enabled = path_pack.get('i0_calib_enabled', False)
@@ -2467,7 +2740,7 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
             'path_pack': path_pack, 'x_coords': x_coords, 'y_coords': y_coords,
             'x_trim': x_trim, 'y_trim': y_trim, 'save_dir': save_dir,
             'scan_name': scan_name, 'project_name': path_pack.get('project', 'N/A'),
-            'channel_roi': channel_roi, 'detector_names': detector_names,
+            'channel_roi': channel_roi, 'xrf_roi': xrf_roi, 'detector_names': detector_names,
             'avg_maps': avg_maps, 'stack_maps': stack_maps, 'roll_shift': roll_shift,
             'calibrated_energies': calibrated_energies, 'summary_data': summary_data,
             'avg_dependence': avg_dependence, 'mcc_channels': mcc_channels, 
@@ -2721,6 +2994,7 @@ if __name__ == '__main__':
     parser.add_argument("--energy", type=float, help="Rep energy (defaults to middle of stack)")
     parser.add_argument("--roi_s", type=int, default=0)
     parser.add_argument("--roi_e", type=int, default=255)
+    parser.add_argument("--xrf_roi", type=float, nargs=2, help="Emission energy ROI in eV (min_eV max_eV)")
     parser.add_argument("--roll_shift", type=int, default=0)
     parser.add_argument("--x_trim", type=float, default=0.0)
     parser.add_argument("--map_roi", type=float, nargs=4, required=True)
@@ -2731,4 +3005,4 @@ if __name__ == '__main__':
     pp = analyze_sgm_bsky_data(args.h5)
     if pp:
         pp['h5_dir'] = os.path.dirname(args.h5)
-        plot_sgm_bsky_data(pp, args.energy, (args.roi_s, args.roi_e), roll_shift=args.roll_shift, x_trim=args.x_trim, map_roi=args.map_roi, save_images=args.save_images, use_full_metadata=args.full_metadata)
+        plot_sgm_bsky_data(pp, args.energy, channel_roi=(args.roi_s, args.roi_e), xrf_roi=args.xrf_roi, roll_shift=args.roll_shift, x_trim=args.x_trim, map_roi=args.map_roi, save_images=args.save_images, use_full_metadata=args.full_metadata)

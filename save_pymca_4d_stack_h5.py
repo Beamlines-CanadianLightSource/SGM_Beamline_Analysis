@@ -5,9 +5,9 @@ import os
 import tkinter as tk
 from tkinter import messagebox, filedialog
 from analyze_sgm_bsky_data import analyze_sgm_bsky_data
-from alignment_utils import safe_filedialog_call
+from alignment_utils import safe_filedialog_call, format_num_val
 
-def save_pymca_4d_stack_h5(path_pack, output_path=None, normalize=True, channel_roi=None):
+def save_pymca_4d_stack_h5(path_pack, output_path=None, normalize=True, channel_roi=None, xrf_roi=None):
     """
     Converts an entire analyzed stack into a single 4D PyMca-compatible HDF5 file.
     
@@ -58,6 +58,11 @@ def save_pymca_4d_stack_h5(path_pack, output_path=None, normalize=True, channel_
     n_channels = 256
     
     # ROI and Alignment
+    if xrf_roi is not None:
+        path_pack['xrf_roi'] = xrf_roi
+        path_pack['energy_roi'] = xrf_roi
+        path_pack['use_sdd_calib'] = True
+
     if channel_roi is None:
         channel_roi = path_pack.get('channel_roi', (0, 255))
         print(f"    -> Inherited channel_roi from context: {channel_roi}")
@@ -65,10 +70,11 @@ def save_pymca_4d_stack_h5(path_pack, output_path=None, normalize=True, channel_
         print(f"    -> Using provided channel_roi: {channel_roi}")
     
     use_sdd_calib = path_pack.get('use_sdd_calib', False)
-    energy_roi = path_pack.get('energy_roi', None)
+    energy_roi = path_pack.get('energy_roi', xrf_roi)
     sdd_calib_data = path_pack.get('sdd_calib_data', None)
-    if use_sdd_calib:
-        print(f"    -> SDD Calibration is ACTIVE for 3D XANES preview. Energy ROI: {energy_roi}")
+    if energy_roi is not None:
+        use_sdd_calib = True
+        print(f"    -> SDD Calibration is ACTIVE for 3D XANES preview. Energy ROI (xrf_roi): {energy_roi}")
         
     roll_shift = path_pack.get('roll_shift', 0)
     x_trim = path_pack.get('x_trim', 0.0)
@@ -205,16 +211,22 @@ def save_pymca_4d_stack_h5(path_pack, output_path=None, normalize=True, channel_
             except Exception:
                 pass
 
-            meta_keys = ['scan_name', 'project', 'date', 'grating', 'harmonic', 'strip', 
-                         'polarization', 'exit_slit_gap', 'command', 'coordinates', 'xps_z', 
-                         'time_per_map', 'number_of_points']
+            meta_keys = ['scan_name', 'scan_type', 'project', 'date', 'beamline', 'grating', 'harmonic', 'strip', 
+                         'polarization', 'exit_slit_gap', 'coordinates', 'xps_z', 
+                         'time_per_map']
             for key in meta_keys:
                 if key in path_pack:
                     val = path_pack[key]
-                    if val is None: val = 'N/A'
+                    if val is None or str(val).strip() in ('N/A', 'None', ''):
+                        continue
+                    if key in ('exit_slit_gap', 'xps_z'):
+                        val = format_num_val(val)
                     meta_group.attrs[key] = str(val)
             
             # Add processing metadata
+            meta_group.attrs['facility'] = "Canadian Light Source (CLS)"
+            if 'beamline' not in meta_group.attrs or meta_group.attrs['beamline'] in ('N/A', 'None', '', 'SGM'):
+                meta_group.attrs['beamline'] = "Spherical Grating Monochromator (SGM) (11ID-1)"
             meta_group.attrs['Energy Regions'] = energy_regions
             meta_group.attrs['i0_source'] = i0_source
             meta_group.attrs['nx'] = nx
