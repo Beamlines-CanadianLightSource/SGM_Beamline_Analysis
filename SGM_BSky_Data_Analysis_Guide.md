@@ -148,10 +148,10 @@ run_calibration()
   $$\text{Offset} = |\min(-N(E))| + 500 = \max(N(E)) + 500$$
   $$\text{IPFY}(E) = -N(E) + \text{Offset}$$
   This transforms inverse fluorescence dips into positive absorption-like XANES peaks with a 500-unit baseline offset above zero, making them directly ready for PCA, K-Means clustering, and speciation.
-- **CSV Export in IPFY Mode:** Clicking **"Save XANES Spectra"** while IPFY Mode is active exports the inverted and baseline-shifted IPFY normalized spectra into the `NORM_IPFY_sdd1`, `NORM_IPFY_sdd2`, `NORM_IPFY_sdd3`, `NORM_IPFY_sdd4`, `NORM_IPFY_Average_SDD`, and `NORM_IPFY_sample_tey` columns.
+- **CSV Export & TEY Behavior:** Clicking **"Save XANES Spectra"** while IPFY Mode is active exports the inverted and baseline-shifted IPFY normalized fluorescence spectra into `NORM_IPFY_sdd1` through `NORM_IPFY_Average_SDD`. Total Electron Yield (TEY / `mcc4`) is already a direct upright absorption spectrum, so it is preserved as standard $I_0$-normalized ($\text{TEY} / I_0$) without inversion to overlay accurately with the IPFY spectra.
 - **Header Metadata Transparency:** The saved CSV header includes complete IPFY mathematical details:
   - `# IPFY Mode: Active`
-  - `# IPFY Math Operation: Normalized_IPFY = (-1 * (RAW / I0)) + Offset`
+  - `# IPFY Math Operation: Normalized_IPFY_SDD = (-1 * (RAW / I0)) + Offset`
   - `# IPFY Baseline Formula: Offset = abs(min(-1 * (RAW / I0))) + 500`
   - `# IPFY Detector Offsets: sdd1: +<offset1>, sdd2: +<offset2>, sdd3: +<offset3>, sdd4: +<offset4>`
 

@@ -1652,14 +1652,10 @@ class SummaryDashboard:
                 print(f"  [Summary] Error in Norm Avg: {e}")
             
             try:
-                # 4. Update Normalized MCC Lines (MCC / MCC1)
+                # 4. Update Normalized MCC Lines (MCC / MCC1 / TEY)
                 for ch, line in self.mcc_lines_norm.items():
                     if line:
                         norm_mcc = mcc_summaries_raw[ch] / i0_safe
-                        if getattr(self.sync, 'ipfy_mode', False) and ch == 4: # TEY
-                             norm_mcc = -norm_mcc
-                             offset = np.abs(np.min(norm_mcc)) + 500
-                             norm_mcc += offset
                         norm_mcc = np.nan_to_num(norm_mcc)
                         line.set_ydata(norm_mcc)
             except Exception as e:
@@ -1798,14 +1794,8 @@ class SummaryDashboard:
             
             # Prepare Normalized MCC Data
             normalized_mcc = {}
-            mcc4_offset = None
             for mcc_key, data in current_mcc.items():
-                norm_mcc_val = np.array(data) / i0_safe
-                if ipfy_active and mcc_key == 'mcc4':
-                    inv_mcc = -norm_mcc_val
-                    mcc4_offset = float(np.abs(np.min(inv_mcc)) + 500)
-                    norm_mcc_val = inv_mcc + mcc4_offset
-                normalized_mcc[mcc_key] = norm_mcc_val
+                normalized_mcc[mcc_key] = np.array(data) / i0_safe
 
             raw_avg = np.nanmean([current_summary[det] for det in self.ctx['detector_names']], axis=0)
 
@@ -1893,12 +1883,10 @@ class SummaryDashboard:
                     offsets_str = ", ".join([f"{det}: +{ipfy_offsets.get(det, 0.0):.2f}" for det in self.ctx['detector_names']])
                     rows += [
                         f"# IPFY Mode: Active",
-                        f"# IPFY Math Operation: Normalized_IPFY = (-1 * (RAW / I0)) + Offset",
+                        f"# IPFY Math Operation: Normalized_IPFY_SDD = (-1 * (RAW / I0)) + Offset",
                         f"# IPFY Baseline Formula: Offset = abs(min(-1 * (RAW / I0))) + 500",
                         f"# IPFY Detector Offsets: {offsets_str}",
                     ]
-                    if mcc4_offset is not None:
-                        rows.append(f"# IPFY TEY (mcc4) Baseline Offset: +{mcc4_offset:.2f}")
                 else:
                     rows.append("# IPFY Mode: Disabled")
 
@@ -1939,10 +1927,7 @@ class SummaryDashboard:
                             rows.append(f"# Column {c_idx}: RAW_External_I0 (from {i0_source})"); c_idx += 1
                     for ch in self.ctx['mcc_channels']:
                         label = MCC_NAMES.get(ch, f"mcc{ch}")
-                        if ipfy_active and ch == 4:
-                            rows.append(f"# Column {c_idx}: NORM_IPFY_{label} (Inverted TEY by {i0_source} + {mcc4_offset:.2f})"); c_idx += 1
-                        else:
-                            rows.append(f"# Column {c_idx}: NORM_{label} (by {i0_source})"); c_idx += 1
+                        rows.append(f"# Column {c_idx}: NORM_{label} (by {i0_source})"); c_idx += 1
                 elif has_ext_i0:
                     rows.append(f"# Column {c_idx}: RAW_External_I0 (from {i0_source})"); c_idx += 1
 
