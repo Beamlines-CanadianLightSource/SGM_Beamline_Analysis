@@ -129,6 +129,8 @@ def save_csv_with_header(csv_path, df, scan_info, full_meta=None):
             "#"
         ]
     
+    nx = scan_info.get('nx', 'N/A')
+    ny = scan_info.get('ny', 'N/A')
     pts_str = f" ({nx * ny} points)" if isinstance(nx, (int, float, np.number)) and isinstance(ny, (int, float, np.number)) else ""
     grid_str = f"{nx} x {ny}{pts_str}" if nx != 'N/A' else 'N/A'
 

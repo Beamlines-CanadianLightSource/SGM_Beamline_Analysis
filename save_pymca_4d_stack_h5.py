@@ -182,6 +182,10 @@ def save_pymca_4d_stack_h5(path_pack, output_path=None, normalize=True, channel_
             xrf_meas.attrs['x_indices'] = np.array([1], dtype=np.int32)
             xrf_meas.attrs['channels_indices'] = np.array([2], dtype=np.int32)
             xrf_meas.attrs['i0_source'] = i0_source
+            xrf_meas.attrs['nx'] = int(nx)
+            xrf_meas.attrs['ny'] = int(ny)
+            xrf_meas.attrs['rows'] = int(ny)
+            xrf_meas.attrs['cols'] = int(nx)
             xrf_meas.create_dataset('y', data=y_axis)
             xrf_meas.create_dataset('x', data=x_axis)
             xrf_meas.create_dataset('channels', data=chan_axis)
@@ -196,6 +200,10 @@ def save_pymca_4d_stack_h5(path_pack, output_path=None, normalize=True, channel_
             xanes_meas.attrs['x_indices'] = np.array([1], dtype=np.int32)
             xanes_meas.attrs['energy_indices'] = np.array([2], dtype=np.int32)
             xanes_meas.attrs['i0_source'] = i0_source
+            xanes_meas.attrs['nx'] = int(nx)
+            xanes_meas.attrs['ny'] = int(ny)
+            xanes_meas.attrs['rows'] = int(ny)
+            xanes_meas.attrs['cols'] = int(nx)
             xanes_meas.create_dataset('y', data=y_axis)
             xanes_meas.create_dataset('x', data=x_axis)
             xanes_meas.create_dataset('energy', data=final_energies)
@@ -231,6 +239,8 @@ def save_pymca_4d_stack_h5(path_pack, output_path=None, normalize=True, channel_
             meta_group.attrs['i0_source'] = i0_source
             meta_group.attrs['nx'] = nx
             meta_group.attrs['ny'] = ny
+            meta_group.attrs['rows'] = int(ny)
+            meta_group.attrs['cols'] = int(nx)
             meta_group.attrs['normalized'] = "Yes" if normalize else "No"
             meta_group.attrs['roll_shift'] = roll_shift
             meta_group.attrs['x_trim'] = x_trim
@@ -245,6 +255,10 @@ def save_pymca_4d_stack_h5(path_pack, output_path=None, normalize=True, channel_
             full_meas.attrs['energy_indices'] = np.array([2], dtype=np.int32)
             full_meas.attrs['channels_indices'] = np.array([3], dtype=np.int32)
             full_meas.attrs['i0_source'] = i0_source
+            full_meas.attrs['nx'] = int(nx)
+            full_meas.attrs['ny'] = int(ny)
+            full_meas.attrs['rows'] = int(ny)
+            full_meas.attrs['cols'] = int(nx)
             full_meas.create_dataset('y', data=y_axis)
             full_meas.create_dataset('x', data=x_axis)
             full_meas.create_dataset('energy', data=final_energies)
