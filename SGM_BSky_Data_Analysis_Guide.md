@@ -103,7 +103,7 @@ run_calibration()
 - **Summary Dashboard:** At the bottom, a global overview plots the extracted XANES spectra (Energy vs Intensity) for the selected spatial ROI across all detectors.
 
 **How to Use the Interactive Features:**
-1. **Navigating Energy:** Use the slider at the bottom of the dashboard to scan through the energy stack. The "Energy Map" (left panels) will update in real-time.
+1. **Navigating Energy:** Use the slider at the top or bottom of the dashboard to scan through the energy stack. The "Energy Map" (left panels) will update in real-time across all detector rows (`sdd1`, `sdd2`, `sdd3`, `sdd4`, `mcc4`).
 2. **Spatial ROI Selection (Map to Spectrum):** 
    - Click and drag a rectangle on any map (left or middle panels) to select a spatial Region of Interest (ROI). 
    - Alternatively, click the "Switch to Polygon" button at the bottom to draw custom freehand shapes.
@@ -116,8 +116,13 @@ run_calibration()
 5. **Synchronization:** Everything is synced! Drawing an ROI on `sdd1` will automatically apply the exact same ROI to `sdd2`, `sdd3`, and `sdd4`.
    - *Result:* High-resolution images are ready to be pasted directly into PowerPoint or other documents.
 
-6. **Exporting Processed Data:**
-   - The Summary Dashboard at the bottom contains several yellow action buttons for saving your results:
+6. **Exporting Processed Data & Interactive File-Exists Prompt:**
+   - The Summary Dashboard contains several yellow action buttons for saving your results.
+   - **Interactive File-Exists Dialog (`get_safe_save_path`):** When saving images (PNG & TIFF) to the `Images/` folder or exporting summary CSV files, if a file with the default name already exists, an interactive pop-up dialog appears:
+     > *`'<filename>' already exists in the folder. Please enter a suffix to append (e.g., '_v2', '_new'), or leave blank to overwrite:`*
+     - **Leave blank:** Overwrites the existing file.
+     - **Enter a suffix (e.g., `_v2`):** Appends the suffix and saves as a new version without overwriting.
+     - **Click Cancel:** Cancels export without altering any existing files.
    - **Save Normalized XANES Spectra for PCA/CA:** (Formerly "Save PyMca Stack"). This exports a compact **3D HDF5 stack** (`_PCA-CA.h5`) where the spectrum is reduced to a single intensity value (from your ROI) per pixel. This is the format required for **PCA and Clustering** analysis.
    - **Save XRF Spectra for Elemental Analysis using PyMca:** (Formerly "Save 4D PyMca Stack"). This exports a massive **4D HDF5 hypercube** (`_Elemental_PyMca.h5`) containing the full raw spectrum for every pixel. Use this for **elemental peak fitting** in PyMca.
    - **Save XRD/XANES Spectra:** Exports your currently extracted 1D spectra (Intensity vs Energy) to a CSV file.

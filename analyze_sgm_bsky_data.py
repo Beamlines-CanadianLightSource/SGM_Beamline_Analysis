@@ -192,9 +192,9 @@ def analyze_sgm_bsky_data(file_path=None, verbose=True):
             
         return "N/A"
 
-    # Extract scan_name from direct parent as fallback
+    # Extract scan_name from filename stem as initial fallback
     try:
-        data_pack['scan_name'] = os.path.basename(os.path.dirname(file_path))
+        data_pack['scan_name'] = os.path.splitext(os.path.basename(file_path))[0]
     except Exception:
         pass
 
@@ -223,7 +223,8 @@ def analyze_sgm_bsky_data(file_path=None, verbose=True):
         search_groups = [
             f, f.get('scan_metadata'), f.get('stack_metadata'),
             f.get('entry'), f.get('entry/measurement'), f.get('entry/xanes_measurement'),
-            f.get('map_data'), f.get('initial_motor_positions/all_beamline_motors_snapshot')
+            f.get('map_data'), f.get('initial_motor_positions/all_beamline_motors_snapshot'),
+            f.get('stitching_metadata')
         ]
         
         for grp in search_groups:
@@ -244,6 +245,9 @@ def analyze_sgm_bsky_data(file_path=None, verbose=True):
                 if data_pack['number_of_points'] == 'N/A': data_pack['number_of_points'] = attrs.get('number_of_points', attrs.get('num_points', 'N/A'))
                 if data_pack['scan_name'] == 'N/A' and 'scan_name' in attrs: data_pack['scan_name'] = attrs['scan_name']
 
+        if 'stitching_metadata' in f and 'stitched_tag' in f['stitching_metadata'].attrs:
+            data_pack['scan_name'] = f"Stitched_{f['stitching_metadata'].attrs['stitched_tag']}"
+
         for k in data_pack:
             if isinstance(data_pack[k], (bytes, np.bytes_)):
                 data_pack[k] = data_pack[k].decode('utf-8')
@@ -254,27 +258,41 @@ def analyze_sgm_bsky_data(file_path=None, verbose=True):
         metadata_energy = -1.0
         for grp in search_groups:
             if grp is not None and hasattr(grp, 'attrs') and 'energy' in grp.attrs:
-                metadata_energy = float(grp.attrs['energy'])
-                break
+                try:
+                    metadata_energy = float(grp.attrs['energy'])
+                    break
+                except (ValueError, TypeError):
+                    pass
         
-        if 'map_data/energy' in f:
+        if 'map_data/energy' in f and len(f['map_data/energy']) > 0:
             # Round energies to 2 decimal places immediately upon extraction
             data_pack['energies'] = np.round(f['map_data/energy'][:], 2)
         elif metadata_energy != -1.0:
             data_pack['energies'] = np.array([np.round(metadata_energy, 2)])
         
-        # Final fallback: Try to extract energy from the filename (e.g. ..._0.00eV.h5) if still missing or -1.0
+        # Final fallback: Try to extract energy from the filename or parent dir (e.g. ..._1195.00eV.h5 or 1195eV_Maps) if still missing or -1.0
         if len(data_pack.get('energies', [])) == 0 or (len(data_pack['energies']) == 1 and data_pack['energies'][0] == -1.0):
             fname = os.path.basename(file_path)
-            match = re.search(r'_(\d+\.\d+)eV', fname)
-            if not match:
-                match = re.search(r'_(\d+)eV', fname)
-                
+            match = re.search(r'_(\d+\.\d+)eV', fname) or re.search(r'_(\d+)eV', fname)
+            
+            extracted_energy = None
             if match:
                 extracted_energy = float(match.group(1))
+            else:
+                # Try parent directory name (e.g. 1195eV_Maps or 1195_00eV)
+                parent_dir = os.path.basename(os.path.dirname(os.path.abspath(file_path)))
+                p_match = re.search(r'(\d+\.\d+)eV', parent_dir) or re.search(r'(\d+)eV', parent_dir)
+                if p_match:
+                    extracted_energy = float(p_match.group(1))
+                else:
+                    p_match2 = re.search(r'(\d+)_(\d+)eV', parent_dir)
+                    if p_match2:
+                        extracted_energy = float(f"{p_match2.group(1)}.{p_match2.group(2)}")
+                        
+            if extracted_energy is not None:
                 data_pack['energies'] = np.array([np.round(extracted_energy, 2)])
                 if verbose:
-                    print(f"  [Fallback] Extracted energy {extracted_energy:.2f} eV from filename.")
+                    print(f"  [Fallback] Extracted energy {extracted_energy:.2f} eV from filename/directory.")
             elif len(data_pack['energies']) == 0:
                 print("Warning: Energy data not found in HDF5 file or filename.", file=sys.stderr)
                 return data_pack
@@ -298,13 +316,17 @@ def analyze_sgm_bsky_data(file_path=None, verbose=True):
         subdirs = [d for d in os.listdir(stack_dir) if os.path.isdir(os.path.join(stack_dir, d))]
         
         dir_energy_map = {}
-        
         for d in subdirs:
+            # Match subdirectories ending in _1195_00eV or _1195eV
             match = re.search(r'_(\d+)_(\d+)eV$', d)
             if match:
                 try:
                     energy_val = float(f"{match.group(1)}.{match.group(2)}")
-                    dir_energy_map[energy_val] = os.path.join(stack_dir, d)
+                    # Prefer subdirectory matching current scan_name prefix
+                    if data_pack['scan_name'] != 'N/A' and d.startswith(data_pack['scan_name']):
+                        dir_energy_map[energy_val] = os.path.join(stack_dir, d)
+                    elif energy_val not in dir_energy_map:
+                        dir_energy_map[energy_val] = os.path.join(stack_dir, d)
                 except ValueError:
                     continue
 

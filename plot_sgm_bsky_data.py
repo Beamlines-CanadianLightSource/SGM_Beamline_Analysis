@@ -1,5 +1,5 @@
 import numpy as np
-print("\n[VERSION] Dashboard Engine v2.5 (ROI FIXED)\n")
+print("\n[VERSION] Dashboard Engine v2.7 (GLOBAL SYNCED SLIDERS)\n")
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 import sys
@@ -117,14 +117,36 @@ def _on_dashboard_click(event):
 
 # --- CRITICAL STABILITY PATCH ---
 # Fixes AttributeError: 'NoneType' object has no attribute 'xdata' 
-# occurring in some Matplotlib versions during interactive events in Jupyter.
+# occurring in Matplotlib during interactive events when _prev_event is None.
+import copy
 import matplotlib.widgets as mwidgets
 if hasattr(mwidgets, '_SelectorWidget'):
-    _orig_get_data = mwidgets._SelectorWidget._get_data
-    def _safe_get_data(self, event):
-        if event is None: return None, None
-        return _orig_get_data(self, event)
-    mwidgets._SelectorWidget._get_data = _safe_get_data
+    _orig_clean_event = mwidgets._SelectorWidget._clean_event
+    def _safe_clean_event(self, event):
+        if event is None:
+            return None
+        if getattr(event, 'xdata', None) is None:
+            prev = getattr(self, '_prev_event', None)
+            if prev is not None:
+                event = prev
+            else:
+                return event
+        else:
+            try:
+                event = copy.copy(event)
+            except Exception:
+                pass
+        try:
+            xdata, ydata = self._get_data(event)
+            if event is not None:
+                event.xdata = xdata
+                event.ydata = ydata
+                self._prev_event = event
+        except Exception:
+            pass
+        return event
+
+    mwidgets._SelectorWidget._clean_event = _safe_clean_event
 # --------------------------------
 
 # Increase the figure limit to avoid warnings in notebooks with many plots
@@ -684,11 +706,25 @@ class Synchronizer:
         if value is None or len(self.all_energies) == 0: return 0
         return np.argmin(np.abs(self.all_energies - value))
 
+    def update_energy_sliders(self, new_idx):
+        if getattr(self, '_updating_sliders', False): return
+        self._updating_sliders = True
+        try:
+            val = int(new_idx)
+            for s in getattr(self, 'energy_sliders', []):
+                if s.value != val:
+                    s.value = val
+            for l in getattr(self, 'energy_labels', []):
+                l.description = f"{self.calibrated_energies[val]:.2f} eV"
+        finally:
+            self._updating_sliders = False
+
     def broadcast_energy(self, new_idx):
         if self.is_syncing: return
         self.is_syncing = True
         try:
             self.energy_idx = int(new_idx)
+            self.update_energy_sliders(self.energy_idx)
             print(f"  [Energy Select] Switching all plots to {self.calibrated_energies[self.energy_idx]:.2f} eV...")
             for d in self.dashboards:
                 try:
@@ -1134,8 +1170,11 @@ class DashboardRow:
         if self.sc_avg and not self.is_mcc:
             try:
                 # Calculate average by dividing sum by number of energies
-                num_en = len(self.sync.all_energies)
-                avg_data = self.ctx['avg_maps'][self.name][tm] / num_en
+                num_en = max(len(self.sync.all_energies), 1)
+                avg_map_raw = self.ctx['avg_maps'].get(self.name)
+                if avg_map_raw is None:
+                    avg_map_raw = np.zeros(self.ctx['x_coords'].size, dtype=np.float32)
+                avg_data = avg_map_raw[tm] / num_en
                 if self.sync.use_deconv:
                     avg_data = apply_deconvolution_to_map(
                         self.ctx['x_coords'][:len(avg_data)][tm],
@@ -1298,79 +1337,93 @@ class DashboardRow:
 
         self.fig.canvas.draw_idle()
 
-    def export_images(self):
-        """Manually save the current Energy Map and the Average Map with current contrast settings."""
+    def export_images(self, output_dir=None):
+        """Manually save the current Energy Map and the Average Map in PNG and TIFF formats."""
         from matplotlib.colors import LogNorm, Normalize
         cmap = 'viridis' if self.sync.use_color else 'gray'
-        m_rep = np.sum(self.s2d_rep[:, self.ctx['channel_roi'][0]:self.ctx['channel_roi'][1]], axis=1)
+        if self.is_mcc:
+            m_rep = self.s2d_rep
+        else:
+            m_rep = np.sum(self.s2d_rep[:, self.ctx['channel_roi'][0]:self.ctx['channel_roi'][1]], axis=1)
+            
         tm = get_dynamic_mask(self.ctx['x_coords'][:len(m_rep)], self.ctx['y_coords'][:len(m_rep)], self.ctx['x_trim'], self.ctx['y_trim'])
         
+        target_dir = output_dir if output_dir else os.path.join(self.ctx['save_dir'], "Images")
+        os.makedirs(target_dir, exist_ok=True)
+
         # Calculate global contrast limits for export
         p_low, p_high = self.sync.contrast_percentiles
 
         # Export Energy Map
-        default_name_en = f"{self.ctx['scan_name']}_{self.name}_{self.rep_e:.2f}eV.png"
-        path_en = safe_filedialog_call(
-            filedialog.asksaveasfilename,
-            title="Save Energy Map",
-            initialdir=self.ctx['save_dir'],
-            initialfile=default_name_en,
-            defaultextension=".png",
-            filetypes=[("PNG files", "*.png"), ("All files", "*.*")]
-        )
-        if path_en:
-            data_en = m_rep[tm]
-            vmin = np.nanpercentile(data_en, p_low) if len(data_en) > 0 else 0
-            vmax = np.nanpercentile(data_en, p_high) if len(data_en) > 0 else 1
-            if vmin == vmax: vmax = vmin + 1.0
+        base_name_en = f"{self.ctx['scan_name']}_{self.name}_{self.rep_e:.2f}eV"
+        path_en_png = get_safe_save_path(target_dir, f"{base_name_en}.png")
+        if not path_en_png:
+            print(f"    ! Export cancelled for {base_name_en}", flush=True)
+            return
+        base_png_no_ext, _ = os.path.splitext(path_en_png)
+        path_en_tif = f"{base_png_no_ext}.tiff"
+        
+        data_en = m_rep[tm]
+        vmin = np.nanpercentile(data_en, p_low) if len(data_en) > 0 else 0
+        vmax = np.nanpercentile(data_en, p_high) if len(data_en) > 0 else 1
+        if vmin == vmax: vmax = vmin + 1.0
 
-            if self.sync.use_log:
-                vmin = max(vmin, np.nanmin(data_en[data_en > 0]) if np.any(data_en > 0) else 1.0)
-                norm = LogNorm(vmin=vmin, vmax=vmax, clip=True)
-            else:
-                norm = Normalize(vmin=vmin, vmax=vmax, clip=True)
+        if self.sync.use_log:
+            vmin = max(vmin, np.nanmin(data_en[data_en > 0]) if np.any(data_en > 0) else 1.0)
+            norm = LogNorm(vmin=vmin, vmax=vmax, clip=True)
+        else:
+            norm = Normalize(vmin=vmin, vmax=vmax, clip=True)
 
-            fig_en = Figure(figsize=(6,6))
-            canvas_en = FigureCanvasAgg(fig_en)
-            ax_en = fig_en.add_subplot(111)
-            ax_en.tripcolor(self.ctx['x_coords'][:len(m_rep)][tm], self.ctx['y_coords'][:len(m_rep)][tm], m_rep[tm], 
-                             shading='gouraud', edgecolors='none', rasterized=True, cmap=cmap, norm=norm)
-            ax_en.set_aspect('equal'); ax_en.axis('off')
-            fig_en.savefig(path_en, bbox_inches='tight', pad_inches=0, transparent=True)
-            print(f"    -> [SAVE] Energy Map: {path_en}", flush=True)
+        fig_en = Figure(figsize=(6,6))
+        canvas_en = FigureCanvasAgg(fig_en)
+        ax_en = fig_en.add_subplot(111)
+        ax_en.tripcolor(self.ctx['x_coords'][:len(m_rep)][tm], self.ctx['y_coords'][:len(m_rep)][tm], m_rep[tm], 
+                         shading='gouraud', edgecolors='none', rasterized=True, cmap=cmap, norm=norm)
+        ax_en.set_aspect('equal'); ax_en.axis('off')
+        fig_en.savefig(path_en_png, bbox_inches='tight', pad_inches=0, transparent=True)
+        try:
+            fig_en.savefig(path_en_tif, bbox_inches='tight', pad_inches=0, transparent=True)
+        except Exception as e:
+            print(f"    ! Warning saving TIFF {path_en_tif}: {e}")
+        print(f"    -> [SAVE] Energy Map: {path_en_png} & {path_en_tif}", flush=True)
 
         # Export Average Map
-        default_name_avg = f"{self.ctx['scan_name']}_{self.name}_StackAverage.png"
-        path_avg = safe_filedialog_call(
-            filedialog.asksaveasfilename,
-            title="Save Average Map",
-            initialdir=self.ctx['save_dir'],
-            initialfile=default_name_avg,
-            defaultextension=".png",
-            filetypes=[("PNG files", "*.png"), ("All files", "*.*")]
-        )
-        if path_avg:
-            num_en = len(self.sync.all_energies)
-            m_avg = self.ctx['avg_maps'][self.name] / num_en
-            data_avg = m_avg[tm]
-            vmin = np.nanpercentile(data_avg, p_low) if len(data_avg) > 0 else 0
-            vmax = np.nanpercentile(data_avg, p_high) if len(data_avg) > 0 else 1
-            if vmin == vmax: vmax = vmin + 1.0
+        base_name_avg = f"{self.ctx['scan_name']}_{self.name}_StackAverage"
+        path_avg_png = get_safe_save_path(target_dir, f"{base_name_avg}.png")
+        if not path_avg_png:
+            print(f"    ! Export cancelled for {base_name_avg}", flush=True)
+            return
+        base_avg_no_ext, _ = os.path.splitext(path_avg_png)
+        path_avg_tif = f"{base_avg_no_ext}.tiff"
+        
+        num_en = max(len(self.sync.all_energies), 1)
+        avg_map_raw = self.ctx['avg_maps'].get(self.name)
+        if avg_map_raw is None:
+            avg_map_raw = np.zeros(self.ctx['x_coords'].size, dtype=np.float32)
+        m_avg = avg_map_raw / num_en
+        data_avg = m_avg[tm]
+        vmin = np.nanpercentile(data_avg, p_low) if len(data_avg) > 0 else 0
+        vmax = np.nanpercentile(data_avg, p_high) if len(data_avg) > 0 else 1
+        if vmin == vmax: vmax = vmin + 1.0
 
-            if self.sync.use_log:
-                vmin = max(vmin, np.nanmin(data_avg[data_avg > 0]) if np.any(data_avg > 0) else 1.0)
-                norm = LogNorm(vmin=vmin, vmax=vmax, clip=True)
-            else:
-                norm = Normalize(vmin=vmin, vmax=vmax, clip=True)
+        if self.sync.use_log:
+            vmin = max(vmin, np.nanmin(data_avg[data_avg > 0]) if np.any(data_avg > 0) else 1.0)
+            norm = LogNorm(vmin=vmin, vmax=vmax, clip=True)
+        else:
+            norm = Normalize(vmin=vmin, vmax=vmax, clip=True)
 
-            fig_avg = Figure(figsize=(6,6))
-            canvas_avg = FigureCanvasAgg(fig_avg)
-            ax_avg = fig_avg.add_subplot(111)
-            ax_avg.tripcolor(self.ctx['x_coords'][:len(m_avg)][tm], self.ctx['y_coords'][:len(m_avg)][tm], m_avg[tm], 
-                             shading='gouraud', edgecolors='none', rasterized=True, cmap=cmap, norm=norm)
-            ax_avg.set_aspect('equal'); ax_avg.axis('off')
-            fig_avg.savefig(path_avg, bbox_inches='tight', pad_inches=0, transparent=True)
-            print(f"    -> [SAVE] Average Map: {path_avg}", flush=True)
+        fig_avg = Figure(figsize=(6,6))
+        canvas_avg = FigureCanvasAgg(fig_avg)
+        ax_avg = fig_avg.add_subplot(111)
+        ax_avg.tripcolor(self.ctx['x_coords'][:len(m_avg)][tm], self.ctx['y_coords'][:len(m_avg)][tm], m_avg[tm], 
+                         shading='gouraud', edgecolors='none', rasterized=True, cmap=cmap, norm=norm)
+        ax_avg.set_aspect('equal'); ax_avg.axis('off')
+        fig_avg.savefig(path_avg_png, bbox_inches='tight', pad_inches=0, transparent=True)
+        try:
+            fig_avg.savefig(path_avg_tif, bbox_inches='tight', pad_inches=0, transparent=True)
+        except Exception as e:
+            print(f"    ! Warning saving TIFF {path_avg_tif}: {e}")
+        print(f"    -> [SAVE] Average Map: {path_avg_png} & {path_avg_tif}", flush=True)
 
     def plot(self):
         # Use a unique but persistent figure ID for each detector
@@ -1418,7 +1471,11 @@ class DashboardRow:
         self.ax[0].set_xlabel("X (mm)")
         self.ax[0].set_ylabel("Y (mm)")
         
-        m_avg = self.ctx['avg_maps'][self.name] / len(self.sync.all_energies)
+        num_en = max(len(self.sync.all_energies), 1)
+        avg_map_raw = self.ctx['avg_maps'].get(self.name)
+        if avg_map_raw is None:
+            avg_map_raw = np.zeros(self.ctx['x_coords'].size, dtype=np.float32)
+        m_avg = avg_map_raw / num_en
         m_avg_plot = m_avg[tm]
         if self.sync.use_deconv and not self.is_mcc:
             m_avg_plot = apply_deconvolution_to_map(
@@ -1790,14 +1847,20 @@ class SummaryDashboard:
                 else:
                     normalized_summary[det] = norm_raw
 
-            norm_avg = np.nanmean([normalized_summary[det] for det in self.ctx['detector_names']], axis=0)
-            
+            if self.ctx['detector_names'] and normalized_summary:
+                norm_avg = np.nanmean([normalized_summary[det] for det in self.ctx['detector_names']], axis=0)
+                raw_avg = np.nanmean([current_summary[det] for det in self.ctx['detector_names']], axis=0)
+            else:
+                norm_avg = np.zeros(len(self.sync.all_energies))
+                raw_avg = np.zeros(len(self.sync.all_energies))
+
             # Prepare Normalized MCC Data
             normalized_mcc = {}
             for mcc_key, data in current_mcc.items():
-                normalized_mcc[mcc_key] = np.array(data) / i0_safe
-
-            raw_avg = np.nanmean([current_summary[det] for det in self.ctx['detector_names']], axis=0)
+                if len(data) > 0:
+                    normalized_mcc[mcc_key] = np.array(data) / i0_safe
+                else:
+                    normalized_mcc[mcc_key] = np.zeros(len(self.sync.all_energies))
 
             if self.sync.use_sdd_calib:
                 roi_str = f"{self.sync.energy_roi[0]:.1f}-{self.sync.energy_roi[1]:.1f}eV"
@@ -1807,16 +1870,23 @@ class SummaryDashboard:
             mode_str = "Poly" if mode=='poly' else "Rect"
             default_name = f"{self.ctx['scan_name']}_{mode_str}_{roi_str}_summary.csv"
             
-            console_log(f"  Calling safe_filedialog_call: default={default_name}")
-            save_path = safe_filedialog_call(
-                filedialog.asksaveasfilename,
-                title=f"Save {mode_str} XANES Spectra",
-                initialdir=self.ctx['save_dir'],
-                initialfile=default_name,
-                defaultextension=".csv",
-                filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
-            )
-            console_log(f"  safe_filedialog_call returned: {save_path}")
+            if event is not None:
+                console_log(f"  Calling safe_filedialog_call: default={default_name}")
+                save_path = safe_filedialog_call(
+                    filedialog.asksaveasfilename,
+                    title=f"Save {mode_str} XANES Spectra",
+                    initialdir=self.ctx['save_dir'],
+                    initialfile=default_name,
+                    defaultextension=".csv",
+                    filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+                )
+                console_log(f"  safe_filedialog_call returned: {save_path}")
+            else:
+                save_path = os.path.join(self.ctx['save_dir'], default_name)
+            
+            if not save_path:
+                save_path = os.path.join(self.ctx['save_dir'], default_name)
+                console_log(f"  [Fallback] Saving directly to starting folder: {save_path}")
             
             if save_path:
                 meta = self.get_metadata()
@@ -2098,33 +2168,20 @@ class SummaryDashboard:
             except:
                 pass
 
-    def save_all_images(self, event):
+    def save_all_images(self, event=None):
         console_log("\n[BUTTON CLICK] 'Save All Images' clicked!")
         try:
             total = len(self.sync.dashboards)
-            save_dir_abs = os.path.abspath(self.ctx['save_dir'])
-            
-            # 1. Path Selection Popup
-            console_log("  Calling safe_filedialog_call for directory...")
-            new_dir = safe_filedialog_call(
-                filedialog.askdirectory,
-                title="Select Directory to Save All Images",
-                initialdir=save_dir_abs
-            )
-            console_log(f"  safe_filedialog_call returned: {new_dir}")
-            
-            if not new_dir: 
-                console_log("  Directory selection cancelled.")
-                return
-                
-            save_dir_abs = os.path.abspath(new_dir)
+            target_dir = os.path.join(self.ctx['save_dir'], "Images")
+            os.makedirs(target_dir, exist_ok=True)
+            save_dir_abs = os.path.abspath(target_dir)
 
             # 2. Update Status via Widget (Safe for Jupyter)
             if self.sync.status_widget:
                 self.sync.status_widget.value = f"EXPORT START: 0/{total} processed..."
             
             plt.ioff() # Temporary disable interactive display
-            console_log(f"\n--- [EXPORT START] Saving High-Quality PNGs for {total} Detectors ---")
+            console_log(f"\n--- [EXPORT START] Saving High-Quality PNG and TIFF Images for {total} Detectors ---")
             console_log(f"Target Directory: {save_dir_abs}")
             
             for i, d in enumerate(self.sync.dashboards):
@@ -2136,7 +2193,7 @@ class SummaryDashboard:
                 
                 console_log(f"  {msg}")
                 try:
-                    d.export_images()
+                    d.export_images(output_dir=target_dir)
                 except Exception as e:
                     console_log(f"    ! Error exporting {d.name}: {e}")
             
@@ -2148,7 +2205,7 @@ class SummaryDashboard:
             # Safe Tkinter MessageBox
             root_msg = get_tk_root()
             root_msg.attributes("-topmost", True)
-            messagebox.showinfo("Export Complete", f"Successfully exported all maps to:\n{save_dir_abs}", parent=root_msg)
+            messagebox.showinfo("Export Complete", f"Successfully exported all maps (PNG & TIFF) to:\n{save_dir_abs}", parent=root_msg)
             
             if self.sync.status_widget:
                 self.sync.status_widget.value = f"EXPORT COMPLETE: All {total} maps saved to {save_dir_abs}"
@@ -2333,9 +2390,13 @@ class SummaryDashboard:
                 norm_data = self.ctx['summary_data'][det] / i0_init
                 l, = ax_norm_sdd.plot(self.ctx['calibrated_energies'], norm_data, fmt, label=f"Normalized {label}", alpha=0.7)
                 self.det_lines_norm[det] = l
-                norm_avg_init.append(norm_data)
-            
-            self.avg_line_norm, = ax_norm_sdd.plot(self.ctx['calibrated_energies'], np.nanmean(norm_avg_init, axis=0), 'k--', lw=2, label='Normalized Average')
+            if norm_avg_init:
+                avg_norm_init_plot = np.nanmean(norm_avg_init, axis=0)
+                avg_norm_init_plot = np.nan_to_num(avg_norm_init_plot)
+            else:
+                avg_norm_init_plot = np.zeros(len(self.ctx['calibrated_energies']))
+                
+            self.avg_line_norm, = ax_norm_sdd.plot(self.ctx['calibrated_energies'], avg_norm_init_plot, 'k--', lw=2, label='Normalized Average')
             i0_src = self.ctx.get('i0_source', 'mcc1')
             if self.sync.i0_calib_enabled and "Internal" not in i0_src and "Energy Shift:" not in i0_src:
                 i0_src += f" (Energy Shift: {self.sync.i0_energy_shift:+.2f} eV)"
@@ -2517,8 +2578,14 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
         plt.ioff()
         
         # 1. Path Setup
-        h5_path = path_pack.get('h5_file_path') or path_pack.get('h5_dir')
-        save_dir = os.path.dirname(os.path.abspath(h5_path)) if h5_path and os.path.isfile(h5_path) else (os.path.abspath(h5_path) if h5_path and os.path.isdir(h5_path) else os.getcwd())
+        save_dir = path_pack.get('save_dir')
+        if not save_dir:
+            h5_path = path_pack.get('h5_file_path') or path_pack.get('h5_dir')
+            if h5_path:
+                abs_h5 = os.path.abspath(h5_path)
+                save_dir = os.path.dirname(abs_h5) if os.path.isfile(abs_h5) or not os.path.isdir(abs_h5) else abs_h5
+            else:
+                save_dir = os.getcwd()
         scan_name = path_pack.get('scan_name', 'sdd_stack')
         
         # Override alignment params if present in path_pack (e.g. from interactive_roll_align)
@@ -2602,10 +2669,22 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
         else:
             print("  [SDD Calibration] No calibration metadata found.")
 
+        # Auto-detect MCC channels if not passed explicitly
+        if mcc_channels is None and path_pack.get('mcc_files'):
+            mcc_channels = [1, 4]
+
+        if mcc_to_map is None:
+            if not detector_names and mcc_channels:
+                mcc_to_map = list(mcc_channels)
+            elif mcc_channels and 4 in mcc_channels:
+                mcc_to_map = [4]
+            else:
+                mcc_to_map = []
+
         summary_data = {det: [] for det in detector_names}
         avg_maps = {det: None for det in detector_names} 
         stack_maps = {det: np.full((len(all_energies), x_coords.size), 0.0, dtype=np.float32) for det in detector_names}
-        
+
         # mcc_channels are for the spectrum; mcc_to_map are for spatial images
         all_mccs = sorted(list(set((mcc_channels or []) + (mcc_to_map or []))))
         mcc_maps = {f'mcc{ch}': np.full((len(all_energies), x_coords.size), 0.0, dtype=np.float32) for ch in all_mccs}
@@ -2634,26 +2713,34 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                     stack_maps[det_name][e_idx, :num_s] = inten
                 except: summary_data[det_name].append(np.nan)
             
-            if mcc_channels:
+            if all_mccs:
                 mf = path_pack['mcc_files'].get(energy)
-                current_mcc_vals = {ch: 0.0 for ch in mcc_channels}
+                current_mcc_vals = {ch: 0.0 for ch in (mcc_channels or [])}
                 if mf and os.path.exists(mf):
                     try:
                         # Robustly read CSV/TSV without skipping the header if it contains column names
                         df = pd.read_csv(mf) if mf.endswith('.csv') else pd.read_table(mf)
                         
                         # Clean column names (handle headers starting with # and remove whitespace)
-                        df.columns = [c.replace('#', '').strip() for c in df.columns]
+                        df.columns = [str(c).replace('#', '').strip() for c in df.columns]
                         
                         num_pts = min(len(df), x_coords.size, y_coords.size)
                         m_mcc = get_dynamic_mask(x_coords[:num_pts], y_coords[:num_pts], x_trim, y_trim, roi=map_roi)
                         
-                        for ch in mcc_channels:
-                            # Try multiple variants for MCC column names
+                        for ch in all_mccs:
+                            # Try multiple variants for MCC column names (case-insensitive & fuzzy)
                             col = None
-                            for variant in [f'ch{ch}', f'mcc{ch}', str(ch)]:
-                                if variant in df.columns:
-                                    col = variant
+                            ch_str = str(ch).lower()
+                            for c in df.columns:
+                                c_lower = c.lower()
+                                if c_lower in [f'ch{ch_str}', f'mcc{ch_str}', f'ch_{ch_str}', f'mcc_{ch_str}', ch_str]:
+                                    col = c
+                                    break
+                                if ch == 1 and c_lower in ['i0', 'aumesh', 'i0_aumesh', 'au_mesh', 'mesh', 'scaler1_ch1']:
+                                    col = c
+                                    break
+                                if ch == 2 and c_lower in ['tey', 'sample', 'tey_sample', 'scaler1_ch2']:
+                                    col = c
                                     break
                             
                             if col is not None:
@@ -2666,8 +2753,9 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                                     if avg_maps[f'mcc{ch}'] is None: avg_maps[f'mcc{ch}'] = col_data[:pts].copy()
                                     else: avg_maps[f'mcc{ch}'] += col_data[:pts]
 
-                                val = df[col].values[:num_pts][m_mcc].mean() if np.any(m_mcc) else 0.0
-                                current_mcc_vals[ch] = 0.0 if np.isnan(val) else val
+                                if mcc_channels and ch in mcc_channels:
+                                    val = df[col].values[:num_pts][m_mcc].mean() if np.any(m_mcc) else 0.0
+                                    current_mcc_vals[ch] = 0.0 if np.isnan(val) else val
                             else:
                                 if energy == all_energies[0]: # Only warn once
                                     print(f"  [Warning] MCC channel {ch} not found in {os.path.basename(mf)}. Available: {list(df.columns)}")
@@ -2675,12 +2763,29 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                         print(f"  [Error] Failed to load MCC file {mf}: {e}")
                 
                 # Commit values once per energy step to prevent double-appends or mismatches
-                for ch in mcc_channels:
-                    mcc_data[f'mcc{ch}'].append(current_mcc_vals[ch])
+                if mcc_channels:
+                    for ch in mcc_channels:
+                        mcc_data[f'mcc{ch}'].append(current_mcc_vals.get(ch, 0.0))
 
-            
-        if detector_names and any(summary_data[det] for det in detector_names):
-            avg_dependence = np.nanmean([summary_data[det] for det in detector_names], axis=0)
+        # Ensure all avg_maps entries are non-None arrays
+        for k in list(avg_maps.keys()):
+            if avg_maps[k] is None:
+                avg_maps[k] = np.zeros(x_coords.size, dtype=np.float32)
+
+        has_valid_summary = False
+        if detector_names:
+            for det in detector_names:
+                vals = summary_data[det]
+                if len(vals) > 0 and not np.all(np.isnan(vals)):
+                    has_valid_summary = True
+                    break
+
+        if has_valid_summary:
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=RuntimeWarning)
+                avg_dependence = np.nanmean([summary_data[det] for det in detector_names], axis=0)
+                avg_dependence = np.nan_to_num(avg_dependence)
         else:
             avg_dependence = np.zeros(len(all_energies))
 
@@ -2697,6 +2802,9 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
         use_ext = not use_internal
         
         ext_i0_values = None
+        context_ext_i0_df = None
+        context_ext_i0_cols = None
+        context_ext_i0_raw_xy = None
         i0_source = "mcc1" if (mcc_channels and 1 in mcc_channels) else "None (Raw Only)"
         
         if use_ext:
@@ -2798,6 +2906,11 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
         summary = SummaryDashboard(sync, context); summary.plot()
         sync.summary_dash = summary
         
+        if save_images:
+            summary.save_all_images()
+        if output_csv:
+            summary.save_summary_csv(None)
+        
         # Register in global scope
         _GLOBAL_SUMMARY_DASH = summary
         _GLOBAL_SYNC_OBJ = sync
@@ -2817,27 +2930,54 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
 
         controls = widgets.HBox([sync.status_widget, btn_refresh, ipfy_chk])
 
-        # 9. Decoupled Energy Slider (moved to just before images)
-        energy_slider = widgets.IntSlider(
-            value=sync.energy_idx,
-            min=0,
-            max=len(all_energies) - 1,
-            step=1,
-            description='Select Image Energy for Display:',
-            layout=widgets.Layout(width='800px'),
-            style={'description_width': 'initial', 'handle_color': 'yellow'}
-        )
-        
-        # Use a Button-styled label to add some color feedback
-        energy_label = widgets.Button(description=f"{sync.calibrated_energies[sync.energy_idx]:.2f} eV", 
-                                    button_style='warning', layout=widgets.Layout(width='120px'))
-        
-        def on_energy_change(change):
-            new_idx = change['new']
-            energy_label.description = f"{sync.calibrated_energies[new_idx]:.2f} eV"
-            sync.broadcast_energy(new_idx)
+        # 9. Decoupled & Synced Energy Sliders
+        all_energy_sliders = []
+        all_energy_labels = []
+        sync.energy_sliders = all_energy_sliders
+        sync.energy_labels = all_energy_labels
+        _updating_energy_sliders = False
+
+        def create_energy_slider_bar(description='Select Image Energy for Display:'):
+            sld = widgets.IntSlider(
+                value=sync.energy_idx,
+                min=0,
+                max=len(all_energies) - 1,
+                step=1,
+                description=description,
+                continuous_update=False,
+                layout=widgets.Layout(width='750px'),
+                style={'description_width': 'initial', 'handle_color': 'yellow'}
+            )
+            lbl = widgets.Button(
+                description=f"{sync.calibrated_energies[sync.energy_idx]:.2f} eV", 
+                button_style='warning', 
+                layout=widgets.Layout(width='120px')
+            )
             
-        energy_slider.observe(on_energy_change, names='value')
+            all_energy_sliders.append(sld)
+            all_energy_labels.append(lbl)
+            
+            def _on_sld_change(change):
+                nonlocal _updating_energy_sliders
+                if _updating_energy_sliders:
+                    return
+                new_idx = change['new']
+                _updating_energy_sliders = True
+                try:
+                    for s in all_energy_sliders:
+                        if s.value != new_idx:
+                            s.value = new_idx
+                    for l in all_energy_labels:
+                        l.description = f"{sync.calibrated_energies[new_idx]:.2f} eV"
+                    if sync.energy_idx != new_idx:
+                        sync.broadcast_energy(new_idx)
+                finally:
+                    _updating_energy_sliders = False
+                    
+            sld.observe(_on_sld_change, names='value')
+            return widgets.HBox([sld, lbl], layout=widgets.Layout(align_items='center', margin='2px 0px'))
+
+        top_energy_bar = create_energy_slider_bar('Select Image Energy for Display:')
         
         # 10. Global Contrast Slider
         contrast_slider = widgets.FloatRangeSlider(
@@ -2893,7 +3033,7 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
         roi_end_input.observe(on_roi_input_change, names='value')
 
         energy_controls = widgets.VBox([
-            widgets.HBox([energy_slider, energy_label]),
+            top_energy_bar,
             widgets.HBox([contrast_slider, log_toggle, log_spec_toggle]),
             widgets.HBox([
                 widgets.Label("Calibration Toggles:", layout=widgets.Layout(width='200px')),
@@ -2983,7 +3123,7 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
 
         if in_jupyter:
             summary_canvases = []
-            map_canvases = []
+            map_row_widgets = []
             
             # Place summary dashboard first so it appears above the maps
             if sync.summary_dash:
@@ -2994,17 +3134,21 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
             for d in sync.dashboards:
                 try: d.fig.canvas.layout.min_width = '1450px'
                 except: pass
-                map_canvases.append(d.fig.canvas)
+                map_row_widgets.append(d.fig.canvas)
             
             # Separate scrollable boxes for independent horizontal scrolling
             summary_scroll_box = widgets.VBox(summary_canvases, layout=widgets.Layout(width='100%', overflow_x='auto'))
-            map_scroll_box = widgets.VBox(map_canvases, layout=widgets.Layout(width='100%', overflow_x='auto'))
-            
+            map_scroll_box = widgets.VBox(map_row_widgets, layout=widgets.Layout(width='100%', overflow_x='auto'))
+
+            # Create a bottom energy slider bar as well for convenience when scrolled to the end
+            bottom_energy_bar = create_energy_slider_bar('Select Image Energy for Display (Bottom):')
+
             # RE-ORDERED DISPLAY as requested
             display(controls)             # 1. REFRESH button / ROI engine
             display(summary_scroll_box)   # 2. XANES spectra
-            display(energy_controls)      # 3. Energy selector
-            display(map_scroll_box)       # 4. Images
+            display(energy_controls)      # 3. Top Energy selector & controls
+            display(map_scroll_box)       # 4. Images with per-row energy sliders
+            display(bottom_energy_bar)    # 5. Bottom Energy selector
         else:
             plt.show()  # Trigger display in CLI
 
