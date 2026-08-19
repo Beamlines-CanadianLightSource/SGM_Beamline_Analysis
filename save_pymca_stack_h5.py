@@ -541,14 +541,35 @@ def save_pymca_stack_h5(path_pack, output_path=None, channel_roi=None, xrf_roi=N
             sum_ds.attrs['interpretation'] = 'spectrum'
             sum_ds.attrs['long_name'] = "Sum of All Detectors"
 
-            # Calculate and Save the Average
+            # Calculate and Save the Average (All Detectors)
             avg_stack = sum_stack / max(1, len(detector_names))
             avg_ds = measurement.create_dataset('average', data=avg_stack, compression="gzip")
             avg_ds.attrs['interpretation'] = 'spectrum'
-            avg_ds.attrs['long_name'] = "Average of Detectors"
+            avg_ds.attrs['long_name'] = "Average of All Detectors"
+
+            # Calculate and Save Selected Average (Selected Detectors)
+            selected_dets = path_pack.get('selected_detectors')
+            if selected_dets and isinstance(selected_dets, (list, tuple, set)):
+                selected_dets = [d for d in selected_dets if d in detector_stacks]
+            else:
+                selected_dets = list(detector_names)
+
+            if not selected_dets:
+                selected_dets = list(detector_names)
+
+            selected_sum_stack = np.zeros((ny, nx, num_energies), dtype=np.float32)
+            for det_name in selected_dets:
+                selected_sum_stack += detector_stacks[det_name]
+            
+            selected_avg_stack = selected_sum_stack / len(selected_dets)
+            sel_avg_ds = measurement.create_dataset('selected_average', data=selected_avg_stack, compression="gzip")
+            sel_avg_ds.attrs['interpretation'] = 'spectrum'
+            sel_avg_ds.attrs['long_name'] = f"Average of Selected Detectors ({','.join(selected_dets)})"
+            
+            measurement.attrs['selected_detectors'] = str(','.join(selected_dets))
 
         print(f"\nSuccessfully saved PyMca-compatible HDF5 stack (multi-detector) to: {final_save_path}")
-        print(f"Datasets: {', '.join(detector_names)}, sum, average")
+        print(f"Datasets: {', '.join(detector_names)}, sum, average, selected_average ({','.join(selected_dets)})")
         print(f"Default Signal: average")
         return final_save_path
         

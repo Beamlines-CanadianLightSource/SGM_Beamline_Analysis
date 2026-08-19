@@ -137,6 +137,15 @@ run_calibration()
    - **Exact Calibration Mode:** Checking the box switches the scale from the approximate 10 eV/channel mapping to the **exact calibration parameters** calculated for each specific detector.
    - **ROI Inputs & Sync:** The **Spectral ROI Limits** input fields at the bottom are always labeled as `ROI Start (eV)` / `ROI End (eV)`. When exact calibration is enabled, selecting a region on any plot or typing an energy range defines physical energy boundaries. ROI selection perfectly synchronizes across all detectors by **Energy (eV)** rather than raw channels. This ensures that selecting an element's characteristic emission peak (e.g., Al-K at ~1486.7 eV) is accurate for all four SDDs, even if they have slight hardware offset differences.
 
+9. **Selective SDD Averaging for Noisy/Bad Detectors:**
+   - **Interactive Checkboxes:** Located at the bottom right of the Summary Dashboard controls panel (`[x] Average sdd1  [x] Average sdd2  [x] Average sdd3  [x] Average sdd4`), you can uncheck specific detectors if they are noisy, saturated, or physically damaged.
+   - **Dual Average Curves:** The Summary Dashboard continuously displays both:
+     - **All-Detector Average (`Average_SDD`)**: Solid black line (`k-`) averaging all 4 detectors.
+     - **Selected Average (`Selected_Average_SDD`)**: Dashed red line (`r--`) averaging only the active/checked detectors (e.g., `sdd1+sdd2+sdd4`).
+   - **Data Export & Metadata Transparency:**
+     - **CSV Files:** All exported CSV summary files contain header lines detailing active and excluded detectors (`# Active SDD Selection for Selected Average: sdd1+sdd2+sdd4`, `# Excluded SDD Detectors: sdd3`), and include both `RAW_Average_SDD` / `RAW_Selected_Average_SDD` and `NORM_Average_SDD` / `NORM_Selected_Average_SDD` columns.
+     - **3D HDF5 Stacks (`_PCA-CA.h5`):** The stack exporter automatically generates both `entry/measurement/average` (all detectors) and `entry/measurement/selected_average` (selected detectors) with metadata attributes (`selected_detectors = 'sdd1,sdd2,sdd4'`).
+
 **I0 Normalization, Smoothing & OD Division:**
 - At the beginning of plotting, you will be prompted to select the normalization source:
   - **Internal I0 (`mcc1`):** Uses the Au mesh reference current collected during your scan.
@@ -220,8 +229,8 @@ run_calibration()
 > - **Automatic HDF5 File Redirection:** If an `_Elemental_PyMca.h5` 4D hypercube file path is selected by mistake, `resolve_pca_h5_path` automatically detects it and redirects to the corresponding 3D XANES stack (`_PCA-CA.h5`).
 
 **Multi-Detector "Run All" Mode:**
-- You can process individual datasets (like `average`) or you can tell the script to run **all** datasets at once (`sdd1`, `sdd2`, `sdd3`, `sdd4`, and `average`).
-- Running them all at once automatically generates comparative, side-by-side grids (one for eigenimages, one for eigenvectors) so you can easily spot detector-specific artifacts or verify consistency across all SDDs. All figure titles display $I_0$ normalization metadata (e.g. `[Normalized: Yes (I0 Source: Internal (mcc1 / Au Mesh))]`).
+- You can process individual datasets (like `average`) or tell the script to run **all** datasets at once (`sdd1`, `sdd2`, `sdd3`, `sdd4`, `average`, and `selected_average` if present in the stack file).
+- Running them all at once automatically generates comparative, side-by-side grids (one for eigenimages, one for eigenvectors) so you can easily spot detector-specific artifacts or verify consistency across all SDDs and custom detector averages. All figure titles display $I_0$ normalization metadata (e.g. `[Normalized: Yes (I0 Source: Internal (mcc1 / Au Mesh))]`).
 - *Note: To maintain high visibility in Jupyter, these large comparative grids are rendered with a built-in horizontal scrollbar, preventing them from overflowing or shrinking too small.*
 
 ### 5. `cluster_xanes_analysis.py`
@@ -229,16 +238,26 @@ run_calibration()
 **How it works:**
 - You specify the number of clusters ($k$).
 - The algorithm assigns each valid pixel to a cluster, producing a spatial map of distinct "zones" or species.
-- It then computes the average XANES spectrum for all pixels within each cluster.
-- Saves the cluster maps and extracted spectra to CSVs, PNG previews, and back into the HDF5 file.
+- It then computes both the **Mean** (averaged XANES spectrum) and **Sum** (total integrated signal) for all pixels within each cluster.
+- Saves the cluster maps and extracted spectra to CSVs, PNG previews, and back into the HDF5 file under `entry/pca_results/<dataset>/clustering`.
 - All exported CSV headers (`*_cluster_spectra_summary.csv` and `*_all_detectors_cluster_sums.csv`) and figure suptitles document $I_0$ normalization details (e.g., `# Normalized: Yes (I0 Source: Internal (mcc1 / Au Mesh))`).
 - Automatically redirects `_Elemental_PyMca.h5` inputs to `_PCA-CA.h5`.
 
+**Clustering Options & Parameters:**
+- **`n_clusters` ($k$):** Set the number of K-Means clusters (default: `4`).
+- **`dataset_name`:** Target dataset (`'average'`, `'sdd1'`, `'sdd2'`, `'sdd3'`, `'sdd4'`, or `'mcc4'` for TEY). Passing `'all'` clusters all detectors simultaneously.
+- **`--waterfall` / `apply_waterfall`:** Applies vertical waterfall offsets between cluster-averaged spectra plots for clear visual inspection without overlapping curves.
+- **`--offset` / `waterfall_offset`:** Custom numeric offset value between waterfall-plotted spectra.
+- **`--energy-min` & `--energy-max` / `energy_range`:** Bounds for zooming into specific energy ranges on the spectrum plot (in eV).
+- **`--no-individual` / `show_individual_plots`:** Option to suppress individual per-detector plots during a multi-detector run.
+- **IPFY Mode Support:** Automatically detects Inverse Partial Fluorescence Yield (`ipfy_mode`) metadata in the HDF5 file and saves both raw and baseline-shifted/inverted (peaks-up) spectra.
+- **Total Electron Yield (TEY / `mcc4`) Support:** Fully supports surface-sensitive Total Electron Yield data by setting `dataset_name='mcc4'`.
+
 **Multi-Detector "Run All" Mode:**
-- Just like the PCA analysis, you can cluster all SDD detectors and the `average` simultaneously.
+- Just like the PCA analysis, you can cluster all SDD detectors, `average`, and `selected_average` (if present in the stack file) simultaneously.
 - This outputs a comparative grid of cluster maps and a grid of the extracted cluster XANES spectra. It is extremely useful for validating that the chemical zones detected are real sample features and not just anomalies occurring on a single detector.
 - *Note: Similar to PCA, these multi-detector outputs are rendered as horizontally scrollable figures within Jupyter Notebooks.*
-- **Cluster Sums:** In multi-detector mode, the tool also calculates and saves the **Sum** of all spectra in each cluster (in addition to the Mean), providing the total integrated signal per detector.
+- **Cluster Sums:** In multi-detector mode, the tool calculates and saves the **Sum** of all spectra in each cluster (in addition to the Mean) across all detectors into a master CSV (`*_all_detectors_cluster_sums.csv`).
 
 **Metadata & CSV Export:**
 - All clustering CSV exports include a standard header with beamline metadata and $I_0$ normalization details (`# Normalized: Yes (I0 Source: Internal (mcc1 / Au Mesh))`).
@@ -249,8 +268,8 @@ run_calibration()
 **Purpose:** A powerful interactive dashboard that lets you review the K-Means clustering results, combine similar clusters, and extract a single, high signal-to-noise XANES spectrum.
 **User Interaction (GUI):**
 - The dashboard displays the Cluster Map on the left and the Merged Spectrum on the right. Both display physical units (`X (mm)`, `Y (mm)`) and $I_0$ normalization metadata.
-- **Detector Dropdown:** Switch between `sdd1`, `sdd2`, `sdd3`, `sdd4`, or `average` to see how clustering performed across different detectors.
-- **Checkboxes:** Check or uncheck clusters ($C1, C2, C3...$) to see their combined average spectrum update in real-time. The map will also mask out unselected clusters so you can verify exactly which spatial regions are contributing to your spectrum.
+- **Detector Dropdown:** Switch between `sdd1`, `sdd2`, `sdd3`, `sdd4`, `average`, or `selected_average` to see how clustering performed across different detectors or custom detector combinations.
+- **Interactive Checkboxes ($C1, C2, C3\dots$):** Check or uncheck clusters to see their combined average spectrum update in real-time. The map will also mask out unselected clusters so you can verify exactly which spatial regions are contributing to your spectrum.
 - **Normalization Info:** Displays $I_0$ normalization source details (e.g. `Data Normalized: Yes (I0 Source: Internal (mcc1 / Au Mesh))`) in the UI header and saved CSV headers.
 - **Save Button:** Click "Save Merged Spectrum" to export the live spectrum to a CSV file (includes beamline metadata and normalization info in the file header).
 - **Auto-Redirection:** Automatically resolves `_Elemental_PyMca.h5` paths to `_PCA-CA.h5`.

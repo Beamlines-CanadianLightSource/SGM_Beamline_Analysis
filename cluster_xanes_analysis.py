@@ -181,7 +181,8 @@ def save_csv_with_header(csv_path, df, scan_info, full_meta=None):
 
 from pca_xanes_analysis import resolve_pca_h5_path
 
-def cluster_xanes_analysis(h5_path, dataset_name='average', n_clusters=4, show_plot=True, return_dict=False, use_full_metadata=False, metadata=None):
+def cluster_xanes_analysis(h5_path, dataset_name='average', n_clusters=4, show_plot=True, return_dict=False, use_full_metadata=False, metadata=None,
+                           apply_waterfall=False, waterfall_offset=None, energy_range=None, figsize=(11, 5)):
     """
     Performs K-Means clustering on the PCA scores and extracts averaged XANES spectra for each cluster.
     """
@@ -313,7 +314,8 @@ def cluster_xanes_analysis(h5_path, dataset_name='average', n_clusters=4, show_p
 
         if show_plot:
             # For plotting and interactive use, we use the PFY (peaks up) version
-            plot_results(x_axis, y_axis, energy, cluster_map, cluster_spectra_pfy, dataset_name, output_dir, scan_name, i0_info=i0_info)
+            plot_results(x_axis, y_axis, energy, cluster_map, cluster_spectra_pfy, dataset_name, output_dir, scan_name, i0_info=i0_info,
+                         apply_waterfall=apply_waterfall, waterfall_offset=waterfall_offset, energy_range=energy_range, figsize=figsize)
         
         results = {
             'dataset': dataset_name,
@@ -332,9 +334,11 @@ def cluster_xanes_analysis(h5_path, dataset_name='average', n_clusters=4, show_p
         print(f"An error occurred during clustering on {dataset_name}: {e}")
         return None
 
-def run_clustering_all_detectors(h5_path, n_clusters=4, use_full_metadata=False, metadata=None):
+def run_clustering_all_detectors(h5_path, n_clusters=4, use_full_metadata=False, metadata=None,
+                                 show_individual_plots=True, apply_waterfall=False, waterfall_offset=None,
+                                 energy_range=None, figsize=(11, 5)):
     """
-    Performs K-Means clustering on sdd1-4 and average, then plots comparison.
+    Performs K-Means clustering on sdd1-4 and average, then plots individual and comparison results.
     """
     h5_path = resolve_pca_h5_path(h5_path)
     scan_info = get_h5_metadata(h5_path)
@@ -347,10 +351,26 @@ def run_clustering_all_detectors(h5_path, n_clusters=4, use_full_metadata=False,
     print(f"Data Normalization: {i0_info}")
     
     datasets = ['sdd1', 'sdd2', 'sdd3', 'sdd4', 'average']
+    try:
+        with h5py.File(h5_path, 'r') as f:
+            for grp in ['entry/measurement', 'measurement', 'entry']:
+                if grp in f and 'selected_average' in f[grp]:
+                    datasets.append('selected_average')
+                    print(f"  [Notice] Found 'selected_average' dataset in HDF5 stack. Including in Clustering analysis.")
+                    break
+    except Exception as _e_sel:
+        pass
+
     all_results = []
     
     for ds in datasets:
-        res = cluster_xanes_analysis(h5_path, dataset_name=ds, n_clusters=n_clusters, show_plot=False, return_dict=True, use_full_metadata=use_full_metadata, metadata=metadata)
+        res = cluster_xanes_analysis(
+            h5_path, dataset_name=ds, n_clusters=n_clusters,
+            show_plot=show_individual_plots, return_dict=True,
+            use_full_metadata=use_full_metadata, metadata=metadata,
+            apply_waterfall=apply_waterfall, waterfall_offset=waterfall_offset,
+            energy_range=energy_range, figsize=figsize
+        )
         if res:
             all_results.append(res)
             
@@ -358,9 +378,11 @@ def run_clustering_all_detectors(h5_path, n_clusters=4, use_full_metadata=False,
         print("Error: No datasets were successfully clustered.")
         return
 
-    plot_multi_cluster_results(all_results, h5_path, i0_info=i0_info)
+    plot_multi_cluster_results(all_results, h5_path, i0_info=i0_info,
+                               apply_waterfall=apply_waterfall, waterfall_offset=waterfall_offset,
+                               energy_range=energy_range)
     
-    # NEW: Save combined cluster sums for each detector
+    # Save combined cluster sums for each detector
     save_combined_cluster_sums(all_results, h5_path, use_full_metadata=use_full_metadata, metadata=metadata)
     
     return h5_path
@@ -392,7 +414,7 @@ def _display_scrollable_figure(fig):
         print(f"Warning: Could not display scrollable figure: {e}")
     return False
 
-def plot_multi_cluster_results(all_results, h5_path, i0_info=None):
+def plot_multi_cluster_results(all_results, h5_path, i0_info=None, apply_waterfall=False, waterfall_offset=None, energy_range=None, figsize=None):
     """
     Plots cluster maps and spectra for all detectors side-by-side.
     """
@@ -413,8 +435,9 @@ def plot_multi_cluster_results(all_results, h5_path, i0_info=None):
     output_dir = os.path.dirname(h5_path)
     
     # --- Figure 1: Cluster Maps ---
-    fig_map, axes_map = plt.subplots(1, n_det, figsize=(2.8*n_det, 3.5), squeeze=False)
-    fig_map.suptitle(f"Multi-Detector Cluster Maps: {scan_name}\n[Normalized: {i0_info}]", fontsize=15)
+    map_figsize = (3.2*n_det, 4.0) if figsize is None else (figsize[0], figsize[1]*0.8)
+    fig_map, axes_map = plt.subplots(1, n_det, figsize=map_figsize, squeeze=False)
+    fig_map.suptitle(f"Multi-Detector Cluster Maps: {scan_name}\n[Normalized: {i0_info}]", fontsize=14, fontweight='semibold')
     try:
         cmap = plt.colormaps['tab10'].resampled(n_clusters)
     except (AttributeError, KeyError):
@@ -424,33 +447,49 @@ def plot_multi_cluster_results(all_results, h5_path, i0_info=None):
         ax = axes_map[0, i]
         masked_map = np.ma.masked_where(res['cluster_map'] == -1, res['cluster_map'])
         ax.imshow(masked_map, extent=[x_axis[0], x_axis[-1], y_axis[-1], y_axis[0]], cmap=cmap, interpolation='nearest')
-        ax.set_title(f"{res['dataset']}")
+        ax.set_title(f"{res['dataset']}", fontweight='semibold')
         ax.set_xlabel("X (mm)")
         if i == 0: ax.set_ylabel("Y (mm)")
 
     plt.tight_layout(rect=[0, 0, 1, 0.90])
     map_plot_path = os.path.join(output_dir, f"{scan_name}_cluster_comparison_maps.png")
-    plt.savefig(map_plot_path, dpi=150)
+    plt.savefig(map_plot_path, dpi=150, bbox_inches='tight')
 
     # --- Figure 2: Cluster Spectra ---
-    fig_spec, axes_spec = plt.subplots(1, n_det, figsize=(2.8*n_det, 3.5), squeeze=False)
-    fig_spec.suptitle(f"Multi-Detector Cluster Spectra: {scan_name}\n[Normalized: {i0_info}]", fontsize=15)
+    spec_figsize = (3.8*n_det, 5.5) if figsize is None else figsize
+    fig_spec, axes_spec = plt.subplots(1, n_det, figsize=spec_figsize, squeeze=False)
+    fig_spec.suptitle(f"Multi-Detector Cluster Spectra: {scan_name}\n[Normalized: {i0_info}]", fontsize=14, fontweight='semibold')
     
     for i, res in enumerate(all_results):
         ax = axes_spec[0, i]
         spectra = res['cluster_spectra']
+
+        if apply_waterfall:
+            if waterfall_offset is None or waterfall_offset <= 0:
+                spec_range = np.nanmax(spectra) - np.nanmin(spectra)
+                offset_step = spec_range * 0.4 if spec_range > 0 else 1.0
+            else:
+                offset_step = waterfall_offset
+        else:
+            offset_step = 0.0
+
         for k in range(n_clusters):
-            ax.plot(energy, spectra[k, :], color=cmap(k), linewidth=1.5, label=f"C{k+1}")
-        ax.set_title(f"{res['dataset']}")
+            y_val = spectra[k, :] + (k * offset_step)
+            lbl = f"C{k+1}" + (f" (+{k*offset_step:.1f})" if apply_waterfall and k > 0 else "")
+            ax.plot(energy, y_val, color=cmap(k), linewidth=1.5, label=lbl)
+
+        ax.set_title(f"{res['dataset']}", fontweight='semibold')
         ax.set_xlabel("Energy (eV)")
-        if i == 0: ax.set_ylabel("Intensity")
-        ax.grid(True, alpha=0.3)
+        if i == 0: ax.set_ylabel("Intensity" + (" (Waterfall Offset)" if apply_waterfall else ""))
+        ax.grid(True, alpha=0.4, linestyle='--')
+        if energy_range is not None and len(energy_range) == 2:
+            ax.set_xlim(energy_range[0], energy_range[1])
         if i == n_det - 1:
-            ax.legend(loc='upper right', fontsize='x-small')
+            ax.legend(loc='upper right', fontsize='x-small', frameon=True)
 
     plt.tight_layout(rect=[0, 0, 1, 0.90])
     spec_plot_path = os.path.join(output_dir, f"{scan_name}_cluster_comparison_spectra.png")
-    plt.savefig(spec_plot_path, dpi=150)
+    plt.savefig(spec_plot_path, dpi=150, bbox_inches='tight')
     
     print(f"\nMulti-detector clustering plots saved to:\n  -> {map_plot_path}\n  -> {spec_plot_path}")
     
@@ -493,7 +532,8 @@ def save_combined_cluster_sums(all_results, h5_path, use_full_metadata=False, me
     
     print(f"    -> Combined cluster sums saved to: {csv_path}")
 
-def plot_results(x_coords, y_coords, energy, cluster_map, spectra, dataset_name, output_dir, scan_name, i0_info=None):
+def plot_results(x_coords, y_coords, energy, cluster_map, spectra, dataset_name, output_dir, scan_name, i0_info=None,
+                 apply_waterfall=False, waterfall_offset=None, energy_range=None, figsize=(11, 5)):
     """
     Plots the cluster map and the averaged XANES spectra for a single dataset.
     """
@@ -501,9 +541,9 @@ def plot_results(x_coords, y_coords, energy, cluster_map, spectra, dataset_name,
         i0_info = "Yes"
 
     n_clusters = spectra.shape[0]
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4.5))
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
 
-    fig.suptitle(f"K-Means Cluster Analysis: {dataset_name}\n[Normalized: {i0_info}]", fontsize=15)
+    fig.suptitle(f"K-Means Cluster Analysis: {dataset_name}\n[Normalized: {i0_info}]", fontsize=14, fontweight='semibold')
 
     try:
         cmap = plt.colormaps['tab10'].resampled(n_clusters)
@@ -518,37 +558,70 @@ def plot_results(x_coords, y_coords, energy, cluster_map, spectra, dataset_name,
     cbar.ax.set_yticklabels([f"{i+1}" for i in range(n_clusters)])
     cbar.set_label('Cluster ID')
     
-    ax1.set_title(f"Cluster Map (k={n_clusters})")
+    ax1.set_title(f"Cluster Map ({dataset_name}, k={n_clusters})", fontsize=11, fontweight='semibold')
     ax1.set_xlabel("X (mm)")
     ax1.set_ylabel("Y (mm)")
 
+    # Calculate Waterfall offset if requested
+    if apply_waterfall:
+        if waterfall_offset is None or waterfall_offset <= 0:
+            spec_range = np.nanmax(spectra) - np.nanmin(spectra)
+            offset_step = spec_range * 0.4 if spec_range > 0 else 1.0
+        else:
+            offset_step = waterfall_offset
+    else:
+        offset_step = 0.0
+
     for i in range(n_clusters):
-        ax2.plot(energy, spectra[i, :], color=cmap(i), linewidth=2, label=f"Cluster {i+1}")
+        y_val = spectra[i, :] + (i * offset_step)
+        lbl = f"Cluster {i+1}" + (f" (+{i*offset_step:.2f})" if apply_waterfall and i > 0 else "")
+        ax2.plot(energy, y_val, color=cmap(i), linewidth=1.8, label=lbl)
 
-    ax2.set_title("Cluster-Averaged XANES Spectra")
+    ax2.set_title(f"Cluster-Averaged XANES Spectra ({dataset_name})", fontsize=11, fontweight='semibold')
     ax2.set_xlabel("Energy (eV)")
-    ax2.set_ylabel("Normalized Intensity")
-    ax2.grid(True, linestyle='--', alpha=0.7)
-    ax2.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize='small')
+    ax2.set_ylabel("Intensity" + (" (Waterfall Offset)" if apply_waterfall else ""))
+    ax2.grid(True, linestyle='--', alpha=0.6)
+    
+    if energy_range is not None and len(energy_range) == 2:
+        ax2.set_xlim(energy_range[0], energy_range[1])
 
-    plt.tight_layout(rect=[0, 0, 0.85, 0.95])
+    ax2.legend(loc='center left', bbox_to_anchor=(1.02, 0.5), fontsize='small', frameon=True)
+
+    plt.tight_layout(rect=[0, 0, 0.88, 0.94])
     
     plot_path = os.path.join(output_dir, f"{scan_name}_{dataset_name}_cluster_preview.png")
-    plt.savefig(plot_path, dpi=150)
+    plt.savefig(plot_path, dpi=150, bbox_inches='tight')
     print(f"    -> Preview plot saved to: {plot_path}")
     plt.show()
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python cluster_xanes_analysis.py [h5_file_path] [dataset_name] [n_clusters]")
-        print("Example: python cluster_xanes_analysis.py my_stack.h5 average 4")
-        print("To run for all detectors: python cluster_xanes_analysis.py my_stack.h5 all 4")
+    import argparse
+    parser = argparse.ArgumentParser(description="Perform K-Means clustering on PCA XANES stack scan data.")
+    parser.add_argument("h5_file_path", help="Path to the HDF5 file.")
+    parser.add_argument("dataset_name", nargs="?", default="all", help="Dataset name ('average', 'sdd1'..'sdd4', or 'all'). Default is 'all'.")
+    parser.add_argument("n_clusters", nargs="?", type=int, default=4, help="Number of clusters for K-Means.")
+    parser.add_argument("--waterfall", action="store_true", help="Apply vertical waterfall offset between cluster spectra.")
+    parser.add_argument("--offset", type=float, default=None, help="Custom waterfall offset value.")
+    parser.add_argument("--energy-min", type=float, default=None, help="Minimum energy bound for zooming plot.")
+    parser.add_argument("--energy-max", type=float, default=None, help="Maximum energy bound for zooming plot.")
+    parser.add_argument("--no-individual", action="store_true", help="Suppress individual per-detector plots in multi-detector run.")
+    
+    args = parser.parse_args()
+    
+    energy_range = None
+    if args.energy_min is not None and args.energy_max is not None:
+        energy_range = (args.energy_min, args.energy_max)
+
+    if args.dataset_name.lower() == 'all':
+        run_clustering_all_detectors(
+            args.h5_file_path, n_clusters=args.n_clusters,
+            show_individual_plots=not args.no_individual,
+            apply_waterfall=args.waterfall, waterfall_offset=args.offset,
+            energy_range=energy_range
+        )
     else:
-        h5_file = sys.argv[1]
-        ds_name = sys.argv[2] if len(sys.argv) > 2 else 'average'
-        k = int(sys.argv[3]) if len(sys.argv) > 3 else 4
-        
-        if ds_name.lower() == 'all':
-            run_clustering_all_detectors(h5_file, n_clusters=k)
-        else:
-            cluster_xanes_analysis(h5_file, ds_name, k)
+        cluster_xanes_analysis(
+            args.h5_file_path, dataset_name=args.dataset_name, n_clusters=args.n_clusters,
+            apply_waterfall=args.waterfall, waterfall_offset=args.offset,
+            energy_range=energy_range
+        )

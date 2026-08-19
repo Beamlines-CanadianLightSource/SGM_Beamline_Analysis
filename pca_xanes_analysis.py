@@ -239,6 +239,16 @@ def run_pca_all_detectors(h5_path, n_components=3):
     print(f"Data Normalization: {i0_info}")
     
     detectors = ['sdd1', 'sdd2', 'sdd3', 'sdd4', 'average']
+    try:
+        with h5py.File(h5_path, 'r') as f:
+            for grp in ['entry/measurement', 'measurement', 'entry']:
+                if grp in f and 'selected_average' in f[grp]:
+                    detectors.append('selected_average')
+                    print(f"  [Notice] Found 'selected_average' dataset in HDF5 stack. Including in PCA analysis.")
+                    break
+    except Exception as _e_sel:
+        pass
+
     all_results = []
     
     for det in detectors:

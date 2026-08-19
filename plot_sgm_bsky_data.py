@@ -701,6 +701,18 @@ class Synchronizer:
         self.deconv_type = 'lucy'
         self.deconv_fwhm_um = 10.0
         self.deconv_iterations = 20
+        # SDD Selection for Averaging
+        self.selected_detectors = None
+
+    def broadcast_selected_detectors(self, selected_list):
+        """Updates the list of SDDs included in the Selected Average."""
+        self.selected_detectors = list(selected_list)
+        sd = self.summary_dash or _GLOBAL_SUMMARY_DASH
+        if sd and 'path_pack' in sd.ctx:
+            sd.ctx['path_pack']['selected_detectors'] = list(selected_list)
+        print(f"  [SDD Selection] Active for selected average: {self.selected_detectors}")
+        if sd:
+            sd.update_plots(self.current_roi, self.current_poly, self.mode)
 
     def _find_nearest_idx(self, value):
         if value is None or len(self.all_energies) == 0: return 0
@@ -1593,6 +1605,9 @@ class SummaryDashboard:
         self.det_lines_norm = {}
         self.avg_line_raw = None
         self.avg_line_norm = None
+        self.selected_avg_line_raw = None
+        self.selected_avg_line_norm = None
+        self.chk_sdd = None
         self.btn_toggle = None
         self.slider_energy = None
         self.mcc_lines_raw = {}
@@ -1647,13 +1662,36 @@ class SummaryDashboard:
         except Exception as e:
             print(f"  [Summary] Error in Raw Lines: {e}")
         
-        # Calculate new average from fresh sums
+        # Active SDD selection for Selected Average
+        selected_dets = getattr(self.sync, 'selected_detectors', None)
+        if selected_dets is None:
+            selected_dets = list(self.ctx['detector_names'])
+            self.sync.selected_detectors = selected_dets
+
+        # Calculate new averages from fresh sums
         if raw_summaries:
-            raw_avg = np.nanmean(list(raw_summaries.values()), axis=0)
-            raw_avg = np.nan_to_num(raw_avg)
+            raw_avg_all = np.nanmean(list(raw_summaries.values()), axis=0)
+            raw_avg_all = np.nan_to_num(raw_avg_all)
             if self.avg_line_raw:
-                self.avg_line_raw.set_ydata(raw_avg)
-        
+                self.avg_line_raw.set_ydata(raw_avg_all)
+
+            raw_sel_list = [raw_summaries[d] for d in selected_dets if d in raw_summaries]
+            if raw_sel_list:
+                raw_avg_sel = np.nanmean(raw_sel_list, axis=0)
+                raw_avg_sel = np.nan_to_num(raw_avg_sel)
+            else:
+                raw_avg_sel = raw_avg_all
+
+            if hasattr(self, 'selected_avg_line_raw') and self.selected_avg_line_raw is not None:
+                self.selected_avg_line_raw.set_ydata(raw_avg_sel)
+                sel_label = f"Selected Avg ({'+'.join(selected_dets)})"
+                self.selected_avg_line_raw.set_label(sel_label)
+                if hasattr(self, 'ax') and self.ax is not None and len(self.ax) > 0:
+                    try:
+                        ax_raw = self.ax[0, 0] if (hasattr(self.ax, 'ndim') and self.ax.ndim == 2) else self.ax[0]
+                        ax_raw.legend(fontsize='xx-small')
+                    except Exception: pass
+
         # 2. Update MCC Lines (Mean)
         mcc_summaries_raw = {}
         mcc1_data = None
@@ -1683,7 +1721,7 @@ class SummaryDashboard:
 
         if active_i0 is not None:
             i0_safe = np.where(active_i0 <= 0, 1.0, active_i0)
-            norm_summaries = []
+            norm_summaries_dict = {}
             try:
                 for det, line in self.det_lines_norm.items():
                     if line is None: continue
@@ -1696,15 +1734,33 @@ class SummaryDashboard:
                         norm_data += offset
                     norm_data = np.nan_to_num(norm_data)
                     line.set_ydata(norm_data)
-                    norm_summaries.append(norm_data)
+                    norm_summaries_dict[det] = norm_data
             except Exception as e:
                 print(f"  [Summary] Error in Norm Lines: {e}")
             
             try:
-                if self.avg_line_norm and norm_summaries:
-                    avg_norm = np.nanmean(norm_summaries, axis=0)
-                    avg_norm = np.nan_to_num(avg_norm)
-                    self.avg_line_norm.set_ydata(avg_norm)
+                if norm_summaries_dict:
+                    norm_avg_all = np.nanmean(list(norm_summaries_dict.values()), axis=0)
+                    norm_avg_all = np.nan_to_num(norm_avg_all)
+                    if self.avg_line_norm:
+                        self.avg_line_norm.set_ydata(norm_avg_all)
+
+                    norm_sel_list = [norm_summaries_dict[d] for d in selected_dets if d in norm_summaries_dict]
+                    if norm_sel_list:
+                        norm_avg_sel = np.nanmean(norm_sel_list, axis=0)
+                        norm_avg_sel = np.nan_to_num(norm_avg_sel)
+                    else:
+                        norm_avg_sel = norm_avg_all
+
+                    if hasattr(self, 'selected_avg_line_norm') and self.selected_avg_line_norm is not None:
+                        self.selected_avg_line_norm.set_ydata(norm_avg_sel)
+                        sel_label = f"Selected Avg ({'+'.join(selected_dets)})"
+                        self.selected_avg_line_norm.set_label(sel_label)
+                        if hasattr(self, 'ax') and self.ax is not None and len(self.ax) > 0:
+                            try:
+                                ax_norm = self.ax[1, 0] if (hasattr(self.ax, 'ndim') and self.ax.ndim == 2) else self.ax[1]
+                                ax_norm.legend(fontsize='xx-small')
+                            except Exception: pass
             except Exception as e:
                 print(f"  [Summary] Error in Norm Avg: {e}")
             
@@ -1847,12 +1903,24 @@ class SummaryDashboard:
                 else:
                     normalized_summary[det] = norm_raw
 
+            selected_dets = getattr(self.sync, 'selected_detectors', list(self.ctx['detector_names']))
+            if not selected_dets:
+                selected_dets = list(self.ctx['detector_names'])
+            excluded_dets = [d for d in self.ctx['detector_names'] if d not in selected_dets]
+
             if self.ctx['detector_names'] and normalized_summary:
                 norm_avg = np.nanmean([normalized_summary[det] for det in self.ctx['detector_names']], axis=0)
+                norm_sel_list = [normalized_summary[det] for det in selected_dets if det in normalized_summary]
+                norm_avg_sel = np.nanmean(norm_sel_list, axis=0) if norm_sel_list else norm_avg
+
                 raw_avg = np.nanmean([current_summary[det] for det in self.ctx['detector_names']], axis=0)
+                raw_sel_list = [current_summary[det] for det in selected_dets if det in current_summary]
+                raw_avg_sel = np.nanmean(raw_sel_list, axis=0) if raw_sel_list else raw_avg
             else:
                 norm_avg = np.zeros(len(self.sync.all_energies))
+                norm_avg_sel = np.zeros(len(self.sync.all_energies))
                 raw_avg = np.zeros(len(self.sync.all_energies))
+                raw_avg_sel = np.zeros(len(self.sync.all_energies))
 
             # Prepare Normalized MCC Data
             normalized_mcc = {}
@@ -1924,6 +1992,9 @@ class SummaryDashboard:
                 else:
                     calib_str = "Disabled"
 
+                sel_str = "+".join(selected_dets) if selected_dets else "None"
+                excl_str = "+".join(excluded_dets) if excluded_dets else "None"
+
                 rows += [
                     f"# Scan Name: {self.ctx['scan_name']}",
                     f"# Scan Type: {self.ctx['path_pack'].get('scan_type', 'N/A')}",
@@ -1947,6 +2018,8 @@ class SummaryDashboard:
                     f"# {'Energy ROI' if self.sync.use_sdd_calib else 'Channels'}: {roi_str}",
                     f"# Normalization: {i0_source}",
                     f"# SDD Calibration: {calib_str}",
+                    f"# Active SDD Selection for Selected Average: {sel_str}",
+                    f"# Excluded SDD Detectors: {excl_str}",
                 ]
                 
                 if ipfy_active:
@@ -1969,7 +2042,8 @@ class SummaryDashboard:
                 for det in self.ctx['detector_names']:
                     label = SDD_NAMES.get(int(det.replace('sdd','')), det) if 'sdd' in det else det
                     rows.append(f"# Column {c_idx}: RAW_{label}"); c_idx += 1
-                rows.append(f"# Column {c_idx}: RAW_Average_SDD"); c_idx += 1
+                rows.append(f"# Column {c_idx}: RAW_Average_SDD (All)"); c_idx += 1
+                rows.append(f"# Column {c_idx}: RAW_Selected_Average_SDD ({sel_str})"); c_idx += 1
                 
                 # List Normalized Columns
                 for det in self.ctx['detector_names']:
@@ -1981,9 +2055,11 @@ class SummaryDashboard:
                         rows.append(f"# Column {c_idx}: NORM_{label} (by {i0_source})"); c_idx += 1
                 
                 if ipfy_active:
-                    rows.append(f"# Column {c_idx}: NORM_IPFY_Average_SDD"); c_idx += 1
+                    rows.append(f"# Column {c_idx}: NORM_IPFY_Average_SDD (All)"); c_idx += 1
+                    rows.append(f"# Column {c_idx}: NORM_IPFY_Selected_Average_SDD ({sel_str})"); c_idx += 1
                 else:
-                    rows.append(f"# Column {c_idx}: NORM_Average_SDD"); c_idx += 1
+                    rows.append(f"# Column {c_idx}: NORM_Average_SDD (All)"); c_idx += 1
+                    rows.append(f"# Column {c_idx}: NORM_Selected_Average_SDD ({sel_str})"); c_idx += 1
                 
                 has_ext_i0 = (self.ctx.get('ext_i0_values') is not None)
                 if has_ext_i0:
@@ -2007,9 +2083,11 @@ class SummaryDashboard:
                     # Raw Columns
                     for det in self.ctx['detector_names']: row_data.append(f"{current_summary[det][i]:.2f}")
                     row_data.append(f"{raw_avg[i]:.2f}")
+                    row_data.append(f"{raw_avg_sel[i]:.2f}")
                     # Normalized Columns
                     for det in self.ctx['detector_names']: row_data.append(f"{normalized_summary[det][i]:.6f}")
                     row_data.append(f"{norm_avg[i]:.6f}")
+                    row_data.append(f"{norm_avg_sel[i]:.6f}")
                     # MCC Columns
                     if self.ctx['mcc_channels']:
                         for ch in self.ctx['mcc_channels']:
@@ -2125,11 +2203,21 @@ class SummaryDashboard:
                 t_per_img = self.ctx['path_pack'].get('time_per_map') or self.ctx['path_pack'].get('time_per_image')
                 if t_per_img and str(t_per_img).strip() not in ('N/A', 'None', ''):
                     rows.append(f"# Time Per Image: {t_per_img}")
+                selected_dets = getattr(self.sync, 'selected_detectors', list(self.ctx['detector_names']))
+                if not selected_dets:
+                    selected_dets = list(self.ctx['detector_names'])
+                excluded_dets = [d for d in self.ctx['detector_names'] if d not in selected_dets]
+                sel_str = "+".join(selected_dets) if selected_dets else "None"
+                excl_str = "+".join(excluded_dets) if excluded_dets else "None"
+
                 rows += [
                     f"# ROI Selection: {mode_str}",
                     sdd_roi_str,
                     f"# Image Energy: {self.sync.all_energies[self.sync.energy_idx]:.2f} eV",
-                    f"# Selection Coordinates: {roi if mode=='rect' else poly}", "#"
+                    f"# Selection Coordinates: {roi if mode=='rect' else poly}",
+                    f"# Active SDD Selection for Selected Average: {sel_str}",
+                    f"# Excluded SDD Detectors: {excl_str}",
+                    "#"
                 ]
                 rows.append("#")
                 rows.append("# Column 1: Calibrated Energy (eV)")
@@ -2137,20 +2225,25 @@ class SummaryDashboard:
                 c_idx = 3
                 for det in self.ctx['detector_names']:
                     rows.append(f"# Column {c_idx}: {det}"); c_idx += 1
-                rows.append(f"# Column {c_idx}: Average_SDD")
+                rows.append(f"# Column {c_idx}: Average_SDD (All)"); c_idx += 1
+                rows.append(f"# Column {c_idx}: Selected_Average_SDD ({sel_str})"); c_idx += 1
                 rows.append("#")
                 
-                header_cols = ["Energy_eV", "Channel"] + list(self.ctx['detector_names']) + ["Average_SDD"]
+                header_cols = ["Energy_eV", "Channel"] + list(self.ctx['detector_names']) + ["Average_SDD", "Selected_Average_SDD"]
                 rows.append(",".join(header_cols))
                 
                 for i in range(256):
                     e_val = sdd_calib.channel_to_energy(i, ref_gain, ref_offset)
                     det_counts = [consolidated_specs[det][i] for det in self.ctx['detector_names']]
                     avg_count = np.mean(det_counts) if det_counts else 0.0
+                    sel_counts = [consolidated_specs[det][i] for det in selected_dets if det in consolidated_specs]
+                    sel_avg_count = np.mean(sel_counts) if sel_counts else avg_count
+
                     row_data = [f"{e_val:.2f}", str(i)]
                     for count in det_counts:
                         row_data.append(f"{count:.2f}")
                     row_data.append(f"{avg_count:.2f}")
+                    row_data.append(f"{sel_avg_count:.2f}")
                     rows.append(",".join(row_data))
                 console_log(f"  Writing XRD spectra to {save_path}...")
                 save_csv_idl(save_path, rows)
@@ -2360,7 +2453,8 @@ class SummaryDashboard:
                 label = SDD_NAMES.get(det_id, det) if det_id else det
                 l, = ax_raw_sdd.plot(self.ctx['calibrated_energies'], self.ctx['summary_data'][det], fmt, label=f"Raw {label}", alpha=0.7)
                 self.det_lines_raw[det] = l
-            self.avg_line_raw, = ax_raw_sdd.plot(self.ctx['calibrated_energies'], self.ctx['avg_dependence'], 'k--', lw=2, label='Raw Average')
+            self.avg_line_raw, = ax_raw_sdd.plot(self.ctx['calibrated_energies'], self.ctx['avg_dependence'], 'k-', lw=2, label='All Average')
+            self.selected_avg_line_raw, = ax_raw_sdd.plot(self.ctx['calibrated_energies'], self.ctx['avg_dependence'], 'r--', lw=2, label='Selected Average')
             ax_raw_sdd.set_title(f"Raw Fluorescence Spectra: {self.ctx['scan_name']}"); ax_raw_sdd.legend(fontsize='xx-small')
             ax_raw_sdd.set_xlabel("Energy (eV)"); ax_raw_sdd.set_ylabel("Raw Counts")
 
@@ -2390,13 +2484,15 @@ class SummaryDashboard:
                 norm_data = self.ctx['summary_data'][det] / i0_init
                 l, = ax_norm_sdd.plot(self.ctx['calibrated_energies'], norm_data, fmt, label=f"Normalized {label}", alpha=0.7)
                 self.det_lines_norm[det] = l
+                norm_avg_init.append(norm_data)
             if norm_avg_init:
                 avg_norm_init_plot = np.nanmean(norm_avg_init, axis=0)
                 avg_norm_init_plot = np.nan_to_num(avg_norm_init_plot)
             else:
                 avg_norm_init_plot = np.zeros(len(self.ctx['calibrated_energies']))
                 
-            self.avg_line_norm, = ax_norm_sdd.plot(self.ctx['calibrated_energies'], avg_norm_init_plot, 'k--', lw=2, label='Normalized Average')
+            self.avg_line_norm, = ax_norm_sdd.plot(self.ctx['calibrated_energies'], avg_norm_init_plot, 'k-', lw=2, label='All Average')
+            self.selected_avg_line_norm, = ax_norm_sdd.plot(self.ctx['calibrated_energies'], avg_norm_init_plot, 'r--', lw=2, label='Selected Average')
             i0_src = self.ctx.get('i0_source', 'mcc1')
             if self.sync.i0_calib_enabled and "Internal" not in i0_src and "Energy Shift:" not in i0_src:
                 i0_src += f" (Energy Shift: {self.sync.i0_energy_shift:+.2f} eV)"
@@ -2435,6 +2531,24 @@ class SummaryDashboard:
         ax_edit_meta = self.fig.add_axes([0.38, chk_y, 0.10, 0.03])
         self.btn_edit_meta = Button(ax_edit_meta, 'Edit Metadata', color='lightgreen', hovercolor='palegreen')
         self.btn_edit_meta.on_clicked(self.edit_metadata_call); self.btn_edit_meta.label.set_fontsize(7)
+
+        # SDD Detector Selector for Averaging
+        available_dets = list(self.ctx['detector_names'])
+        if getattr(self.sync, 'selected_detectors', None) is None:
+            self.sync.selected_detectors = list(available_dets)
+        init_states = [(d in self.sync.selected_detectors) for d in available_dets]
+        
+        ax_chk_sdd = self.fig.add_axes([0.50, chk_y, 0.45, 0.03])
+        self.chk_sdd = CheckButtons(ax_chk_sdd, [f"Average {d}" for d in available_dets], init_states)
+        for text in self.chk_sdd.labels:
+            text.set_fontsize(7)
+            
+        def on_sdd_check_toggle(label):
+            status_tuple = self.chk_sdd.get_status()
+            active_dets = [available_dets[i] for i, status in enumerate(status_tuple) if status]
+            self.sync.broadcast_selected_detectors(active_dets)
+
+        self.chk_sdd.on_clicked(on_sdd_check_toggle)
 
         ax_save_xanes = self.fig.add_axes([0.02, btn_y, 0.06, btn_h])
         self.btn_save_xanes = Button(ax_save_xanes, 'Save XANES\nSpectra', color='yellow', hovercolor='khaki')
