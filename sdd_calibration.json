@@ -1,27 +1,27 @@
 {
     "sdd1": {
-        "gain": 9.1695,
-        "offset": 16.0388
+        "gain": 10.0382,
+        "offset": -19.3033
     },
     "sdd2": {
         "gain": 1.0,
         "offset": 0.0
     },
     "sdd3": {
-        "gain": 9.8414,
-        "offset": 14.2854
+        "gain": 10.7439,
+        "offset": -22.8966
     },
     "sdd4": {
-        "gain": 9.9016,
-        "offset": 5.3366
+        "gain": 10.5584,
+        "offset": -14.04
     },
     "_metadata": {
-        "last_updated": "2026-07-31 15:17:06",
-        "scan_used": "595eV_Maps\\Stitched_173717_S1_map.h5",
+        "last_updated": "2026-08-19 11:43:44",
+        "scan_used": "025825_Sodium_metasilicate_si_k_fine_stack\\2026-07-19_025826_stack_data.h5",
         "edges_used": [
-            "C-K",
-            "N-K",
-            "O-K"
+            "O-K",
+            "Na-K",
+            "Si-K"
         ]
     }
 }
