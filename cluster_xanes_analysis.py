@@ -3,9 +3,11 @@ import sys
 
 # Prevent OpenMP duplicate runtime warnings from threadpoolctl / scikit-learn
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+os.environ["OMP_NUM_THREADS"] = "1"
 
 import warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning, message=".*OpenMP.*")
+warnings.filterwarnings("ignore", category=UserWarning, message=".*KMeans is known to have a memory leak.*")
 
 import h5py
 import numpy as np
@@ -592,7 +594,8 @@ def plot_results(x_coords, y_coords, energy, cluster_map, spectra, dataset_name,
     plot_path = os.path.join(output_dir, f"{scan_name}_{dataset_name}_cluster_preview.png")
     plt.savefig(plot_path, dpi=150, bbox_inches='tight')
     print(f"    -> Preview plot saved to: {plot_path}")
-    plt.show()
+    if not _display_scrollable_figure(fig):
+        plt.show()
 
 if __name__ == "__main__":
     import argparse
