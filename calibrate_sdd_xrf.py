@@ -206,23 +206,18 @@ class SDDCalibrationGUI:
         n_pts = self.num_points.value
         
         for sdd_id in sorted(self.current_spectra.keys()):
-            # Detect if flat line or no peaks found
+            # Detect if truly zero signal (dead detector)
             spec = self.current_spectra.get(sdd_id, np.zeros(256))
             peaks = self.detected_peaks_all.get(sdd_id, [])
-            has_no_peaks = (len(peaks) == 0)
-            is_flat = np.all(spec == 0) or np.std(spec) == 0 or np.max(spec) == 0 or has_no_peaks
+            is_zero_signal = np.all(spec == 0) or np.max(spec) == 0
             
-            # Retrieve or create active checkbox (default to False if flat or no peaks)
+            # Create active checkbox if not present (default to False ONLY if zero signal)
             if sdd_id not in self.detector_active:
                 self.detector_active[sdd_id] = widgets.Checkbox(
-                    value=not is_flat, 
+                    value=not is_zero_signal, 
                     description="Active", 
                     layout=widgets.Layout(width='80px')
                 )
-            else:
-                # If flat or no peaks, automatically uncheck Active
-                if is_flat:
-                    self.detector_active[sdd_id].value = False
             
             active_checkbox = self.detector_active[sdd_id]
             
