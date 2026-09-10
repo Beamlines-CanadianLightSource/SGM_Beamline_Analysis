@@ -236,7 +236,12 @@ class SDDCalibrationGUI:
                                        description=f"P{i+1}:", layout=widgets.Layout(width='200px'))
                 # Default distinct manual channel values (e.g. 50, 100, 150) to prevent duplicate [0,0,0] errors
                 default_man_ch = peaks[i] if i < len(peaks) else (i + 1) * 50
-                man = widgets.IntText(value=default_man_ch, description="Manual Ch:", layout=widgets.Layout(width='120px'))
+                man = widgets.IntText(
+                    value=default_man_ch, 
+                    description="Manual Ch:", 
+                    style={'description_width': '75px'}, 
+                    layout=widgets.Layout(width='170px')
+                )
                 
                 # Hide manual if peak ID selected
                 def make_man_toggle(s, m):
