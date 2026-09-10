@@ -125,8 +125,19 @@ class MCC1SummatorApp(tk.Tk):
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
     def close_app(self):
-        self.quit()
-        self.destroy()
+        try:
+            self.withdraw()
+            self.update()
+        except Exception:
+            pass
+        try:
+            self.destroy()
+        except Exception:
+            pass
+        try:
+            self.quit()
+        except Exception:
+            pass
         
     def select_all(self):
         for sd in self.spectra_data:

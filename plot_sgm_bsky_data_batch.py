@@ -186,6 +186,11 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
 
         for scan_idx, path_pack in enumerate(data_packs):
             scan_name = path_pack.get('scan_name', f"Scan_{scan_idx + 1}")
+            all_energies = np.array(sorted(path_pack.get('energies', [])))
+            if len(all_energies) <= 2:
+                print(f"  [Batch Loader] Skipping spatial map / survey scan '{scan_name}' ({len(all_energies)} energy image(s); batch mode processes multi-energy spectrum stacks).")
+                continue
+
             x_coords_raw = path_pack.get('x', np.array([]))
             y_coords_raw = path_pack.get('y', np.array([]))
             actual_num_s = min(x_coords_raw.size, y_coords_raw.size)
@@ -203,7 +208,10 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
             y_coords = y_coords_raw[:actual_num_s]
 
             if map_roi is None:
-                curr_map_roi = [np.min(x_coords), np.max(x_coords), np.min(y_coords), np.max(y_coords)]
+                if len(x_coords) > 0 and len(y_coords) > 0:
+                    curr_map_roi = [np.min(x_coords), np.max(x_coords), np.min(y_coords), np.max(y_coords)]
+                else:
+                    curr_map_roi = [0.0, 1.0, 0.0, 1.0]
             else:
                 curr_map_roi = map_roi
 

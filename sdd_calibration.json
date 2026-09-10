@@ -1,27 +1,26 @@
 {
     "sdd1": {
-        "gain": 10.0382,
-        "offset": -19.3033
+        "gain": 9.916,
+        "offset": -0.648
     },
     "sdd2": {
-        "gain": 1.0,
-        "offset": 0.0
+        "gain": 8.2633,
+        "offset": 53.89
     },
     "sdd3": {
-        "gain": 10.7439,
-        "offset": -22.8966
+        "gain": 9.1815,
+        "offset": 29.1
     },
     "sdd4": {
-        "gain": 10.5584,
-        "offset": -14.04
+        "gain": 10.7783,
+        "offset": -46.3478
     },
     "_metadata": {
-        "last_updated": "2026-08-19 11:43:44",
-        "scan_used": "025825_Sodium_metasilicate_si_k_fine_stack\\2026-07-19_025826_stack_data.h5",
+        "last_updated": "2026-08-29 13:00:39",
+        "scan_used": "115841_citric_acid_c_k_fine_stack\\2026-08-25_115843_stack_data.h5",
         "edges_used": [
-            "O-K",
-            "Na-K",
-            "Si-K"
+            "C-K",
+            "O-K"
         ]
     }
 }

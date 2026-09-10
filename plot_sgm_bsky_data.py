@@ -254,6 +254,12 @@ class ExternalI0PreviewDialog(tk.Toplevel):
         
         self.protocol("WM_DELETE_WINDOW", self.on_cancel)
         self.attributes("-topmost", True)
+        try:
+            self.deiconify()
+            self.lift()
+            self.focus_force()
+        except Exception:
+            pass
         
         self.i0_calib_enabled = tk.BooleanVar(value=False)
         self.i0_energy_shift = tk.DoubleVar(value=0.0)
@@ -483,6 +489,30 @@ class ExternalI0PreviewDialog(tk.Toplevel):
             self.fig.subplots_adjust(top=0.92, bottom=0.12, left=0.12, right=0.95, hspace=0.25)
         self.canvas.draw()
         
+    def _close_dialog(self):
+        try:
+            self.grab_release()
+        except Exception:
+            pass
+        try:
+            self.withdraw()
+            self.update()
+        except Exception:
+            pass
+        try:
+            self.destroy()
+        except Exception:
+            pass
+        try:
+            if self.master:
+                self.master.update()
+        except Exception:
+            pass
+        try:
+            self.quit()
+        except Exception:
+            pass
+
     def on_apply(self):
         smoothed_str = f" (Smoothed w={self.spin_window.get()})" if self.do_smooth.get() else ""
         shift_str = f" (Energy Shift: {self.i0_energy_shift.get():+.2f} eV)" if self.i0_calib_enabled.get() else ""
@@ -495,23 +525,12 @@ class ExternalI0PreviewDialog(tk.Toplevel):
             od_str = f" (Divided by OD: {c_str}, d={d_str}g/cc, t={t_str}um{scale_str})"
             
         self.result = (self.cb_e.get(), self.cb_i.get(), self.x_final, self.y_final, smoothed_str + shift_str + od_str, self.i0_calib_enabled.get(), self.i0_energy_shift.get())
-        try: self.grab_release()
-        except: pass
-        self.withdraw()
-        self.update_idletasks()
-        try: self.quit()  # Safely exit mainloop
-        except: pass
-        self.destroy()
+        self._close_dialog()
         
     def on_cancel(self):
         self.result = None
-        try: self.grab_release()
-        except: pass
-        self.withdraw()
-        self.update_idletasks()
-        try: self.quit()  # Safely exit mainloop
-        except: pass
-        self.destroy()
+        self._close_dialog()
+
 
 def save_csv_idl(path, rows):
     """Reliable binary write for IDL compatibility (no trailing newline)."""
@@ -523,6 +542,8 @@ def save_csv_idl(path, rows):
         print(f"Error saving {path}: {e}")
 
 def get_dynamic_mask(cx, cy, xt, yt, roi=None, poly=None):
+    if cx is None or cy is None or len(cx) == 0 or len(cy) == 0:
+        return np.array([], dtype=bool)
     xmin, xmax, ymin, ymax = np.min(cx), np.max(cx), np.min(cy), np.max(cy)
     mask = (cx >= xmin + xt) & (cx <= xmax - xt) & (cy >= ymin + yt) & (cy <= ymax - yt)
     if poly is not None and len(poly) > 2:
@@ -1473,8 +1494,9 @@ class DashboardRow:
         if np.any(tm):
             x_data = self.ctx['x_coords'][:len(m_rep)][tm]
             y_data = self.ctx['y_coords'][:len(m_rep)][tm]
-            self.ax[0].set_xlim(np.min(x_data), np.max(x_data))
-            self.ax[0].set_ylim(np.min(y_data), np.max(y_data))
+            if len(x_data) > 0 and len(y_data) > 0:
+                self.ax[0].set_xlim(np.min(x_data), np.max(x_data))
+                self.ax[0].set_ylim(np.min(y_data), np.max(y_data))
             
         det_id = int(self.name.replace('sdd','')) if 'sdd' in self.name else None
         title_name = (SDD_NAMES.get(det_id, self.name) if det_id else 
@@ -1511,8 +1533,9 @@ class DashboardRow:
         if np.any(tm):
             x_data = self.ctx['x_coords'][:len(m_avg)][tm]
             y_data = self.ctx['y_coords'][:len(m_avg)][tm]
-            self.ax[1].set_xlim(np.min(x_data), np.max(x_data))
-            self.ax[1].set_ylim(np.min(y_data), np.max(y_data))
+            if len(x_data) > 0 and len(y_data) > 0:
+                self.ax[1].set_xlim(np.min(x_data), np.max(x_data))
+                self.ax[1].set_ylim(np.min(y_data), np.max(y_data))
             
         self.ax[1].set_title(f"Stack Average", fontsize='small')
         self.ax[1].set_xlabel("X (mm)")
@@ -1579,7 +1602,8 @@ class DashboardRow:
         
         if self.sync.use_sdd_calib:
             self.selector_span.extents = self.sync.energy_roi
-            self.ax[2].set_xlim(np.min(x_axis), np.max(x_axis))
+            if len(x_axis) > 0:
+                self.ax[2].set_xlim(np.min(x_axis), np.max(x_axis))
         else:
             self.selector_span.extents = (self.ctx['channel_roi'][0] * 10.0, self.ctx['channel_roi'][1] * 10.0)
             self.ax[2].set_xlim(-50.0, 2600.0)
@@ -1590,7 +1614,14 @@ class DashboardRow:
         
         # Tighten margins and spacing to ensure the 3rd plot is pulled inward
         self.fig.subplots_adjust(left=0.06, right=0.97, bottom=0.2, top=0.85, wspace=0.18)
-        mplcursors.cursor(self.sc_en, hover=True); mplcursors.cursor(self.line_spec, hover=True)
+        mplcursors.cursor(self.sc_en, hover=True)
+        cur_xrf = mplcursors.cursor(self.line_spec, hover=True)
+        @cur_xrf.connect("add")
+        def _on_xrf_hover(sel):
+            sel.annotation.set_text(f"Energy: {sel.target[0]:.1f} eV\nPFY Counts: {sel.target[1]:.2f}")
+            sel.annotation.get_bbox_patch().set(fc="white", alpha=0.92, edgecolor='navy', boxstyle="round,pad=0.4")
+            sel.annotation.set_color('black')
+            sel.annotation.set_zorder(1000)
         
         # Enable double-click to copy to clipboard
         self.fig.canvas.mpl_connect('button_press_event', _on_dashboard_click)
@@ -1814,16 +1845,16 @@ class SummaryDashboard:
                     has_data = True
             
             if has_data:
-                pad = abs(ymax) * 0.05
-                # For Fluorescence plots, strictly prevent negative bottom scaling
+                pad_top = abs(ymax) * 0.15
+                pad_bot = abs(ymax) * 0.05
                 # For Fluorescence plots, strictly prevent negative bottom scaling UNLESS in IPFY mode
                 if "Fluorescence" in (ax.get_title() or ""):
                     if getattr(self.sync, 'ipfy_mode', False):
-                         ax.set_ylim(ymin - pad if ymin < 0 else -1.0, ymax + pad if ymax > ymin else 0.0)
+                         ax.set_ylim(ymin - pad_bot if ymin < 0 else -1.0, ymax + pad_top if ymax > ymin else 0.0)
                     else:
-                         ax.set_ylim(0, ymax + pad if ymax > 0 else 1.0)
+                         ax.set_ylim(0, ymax + pad_top if ymax > 0 else 1.0)
                 else:
-                    ax.set_ylim(ymin, ymax + pad if ymax > 0 else 1.0)
+                    ax.set_ylim(ymin - pad_bot if ymin < 0 else 0.0, ymax + pad_top if ymax > ymin else 1.0)
             else:
                 ax.set_ylim(0, 1.0)
         
@@ -2100,6 +2131,11 @@ class SummaryDashboard:
                     rows.append(",".join(row_data))
                 console_log(f"  Writing {len(rows)} rows to CSV...")
                 save_csv_idl(save_path, rows)
+                try:
+                    from analyze_sgm_bsky_data import save_last_dir
+                    save_last_dir(os.path.dirname(os.path.abspath(save_path)))
+                except Exception:
+                    pass
                 root_msg = get_tk_root()
                 root_msg.attributes("-topmost", True)
                 messagebox.showinfo("Save Successful", f"Exported {mode_str} XANES spectra to:\n{save_path}", parent=root_msg)
@@ -2516,6 +2552,39 @@ class SummaryDashboard:
             title_norm_mcc = format_norm_title("Normalized I0 and TEY Spectra", self.ctx['scan_name'], None, i0_src)
             ax_norm_mcc.set_title(title_norm_mcc, fontsize=8.5, pad=6); ax_norm_mcc.legend(fontsize='xx-small')
             ax_norm_mcc.set_xlabel("Energy (eV)"); ax_norm_mcc.set_ylabel("Normalized Intensity")
+            
+            # Enable interactive hover tooltips for all XANES summary spectrum lines
+            all_xanes_lines = []
+            for d, l in self.det_lines_raw.items():
+                if l is not None: all_xanes_lines.append(l)
+            if getattr(self, 'avg_line_raw', None) is not None: all_xanes_lines.append(self.avg_line_raw)
+            if getattr(self, 'selected_avg_line_raw', None) is not None: all_xanes_lines.append(self.selected_avg_line_raw)
+
+            for m, l in self.mcc_lines_raw.items():
+                if l is not None: all_xanes_lines.append(l)
+
+            for d, l in self.det_lines_norm.items():
+                if l is not None: all_xanes_lines.append(l)
+            if getattr(self, 'avg_line_norm', None) is not None: all_xanes_lines.append(self.avg_line_norm)
+            if getattr(self, 'selected_avg_line_norm', None) is not None: all_xanes_lines.append(self.selected_avg_line_norm)
+
+            for m, l in self.mcc_lines_norm.items():
+                if l is not None: all_xanes_lines.append(l)
+
+            if all_xanes_lines:
+                try:
+                    self.cursor_xanes = mplcursors.cursor(all_xanes_lines, hover=True)
+                    @self.cursor_xanes.connect("add")
+                    def _on_xanes_hover(sel):
+                        lbl = sel.artist.get_label()
+                        x_val = sel.target[0]
+                        y_val = sel.target[1]
+                        sel.annotation.set_text(f"{lbl}\nEnergy: {x_val:.2f} eV\nIntensity: {y_val:.4g}")
+                        sel.annotation.get_bbox_patch().set(fc="white", alpha=0.92, edgecolor='navy', boxstyle="round,pad=0.4")
+                        sel.annotation.set_color('black')
+                        sel.annotation.set_zorder(1000)
+                except Exception as _e_cur:
+                    print(f"  [Warning] Unable to attach hover cursor to XANES spectra: {_e_cur}")
         
         # Bottom row buttons - Adjusted positions to avoid overlapping x-axis labels
         ax_chk = self.fig.add_axes([0.02, chk_y, 0.35, 0.03])
@@ -2752,8 +2821,11 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
         x_coords = x_coords_raw[:actual_num_s]
         y_coords = y_coords_raw[:actual_num_s]
         
-        eb_x1, eb_x2 = np.min(x_coords) + x_trim, np.max(x_coords) - x_trim
-        eb_y1, eb_y2 = np.min(y_coords) + y_trim, np.max(y_coords) - y_trim
+        if x_coords.size > 0 and y_coords.size > 0:
+            eb_x1, eb_x2 = np.min(x_coords) + x_trim, np.max(x_coords) - x_trim
+            eb_y1, eb_y2 = np.min(y_coords) + y_trim, np.max(y_coords) - y_trim
+        else:
+            eb_x1, eb_x2, eb_y1, eb_y2 = 0.0, 1.0, 0.0, 1.0
 
         if map_roi is None:
             # Default to 1x1 mm square at the center of the trimmed area
@@ -2937,6 +3009,14 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                     i_col = next((c for c in ext_df.columns if any(k in c.lower() for k in ['i0', 'intensity', 'norm', 'tey'])), ext_df.columns[1])
                     
                     dialog = ExternalI0PreviewDialog(root_i0, ext_df, e_col, i_col)
+                    dialog.attributes("-topmost", True)
+                    try:
+                        dialog.deiconify()
+                        dialog.lift()
+                        dialog.focus_force()
+                        dialog.grab_set()
+                    except Exception:
+                        pass
                     dialog.mainloop()
                     
                     if dialog.result:
@@ -2956,24 +3036,61 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                         path_pack['i0_energy_shift'] = cal_val
                 except Exception as e:
                     messagebox.showerror("Error", f"Failed to load external I0: {e}")
-        elif use_internal and mcc_channels and 1 in mcc_channels and np.any(mcc_data['mcc1']):
+        elif use_internal:
             try:
-                # Internal I0 smoothing capability
-                # Ensure matching lengths for DataFrame creation
-                mcc1_vals = mcc_data['mcc1']
-                min_len = min(len(calibrated_energies), len(mcc1_vals))
-                int_df = pd.DataFrame({'Energy': calibrated_energies[:min_len], 'mcc1 (Au Mesh)': mcc1_vals[:min_len]})
-                dialog = ExternalI0PreviewDialog(root_i0, int_df, 'Energy', 'mcc1 (Au Mesh)')
-                dialog.title("Internal I0 (Au Mesh) Preview")
-                dialog.mainloop()
-                
-                if dialog.result:
-                    selected_e_col, selected_i_col, x_sorted, y_sorted, extra_str, cal_en, cal_val = dialog.result
-                    ext_i0_values = np.interp(calibrated_energies, x_sorted, y_sorted)
-                    i0_source = f"Internal: mcc1 (Au Mesh){extra_str}"
-                    # Note: Energy shift NOT applied to internal I0 as per user request
-                    path_pack['i0_calib_enabled'] = False
-                    path_pack['i0_energy_shift'] = 0.0
+                # Extract mcc1 values from mcc_data, mcc_maps, or path_pack['mcc_data']
+                mcc1_vals = None
+                if 'mcc1' in mcc_data and len(mcc_data['mcc1']) > 0 and np.any(mcc_data['mcc1']):
+                    mcc1_vals = np.array(mcc_data['mcc1'])
+                elif '1' in mcc_data and len(mcc_data['1']) > 0 and np.any(mcc_data['1']):
+                    mcc1_vals = np.array(mcc_data['1'])
+                elif 'mcc1' in mcc_maps and mcc_maps['mcc1'] is not None:
+                    mcc1_vals = np.nanmean(mcc_maps['mcc1'], axis=1)
+
+                if mcc1_vals is None or len(mcc1_vals) == 0:
+                    # Fallback extraction from raw path_pack mcc_data
+                    path_mcc = path_pack.get('mcc_data', {})
+                    all_e = path_pack.get('energies', [])
+                    ch_names = path_pack.get('mcc_channel_names', [])
+                    mcc1_idx = 0
+                    for idx, name in enumerate(ch_names):
+                        if any(k in str(name).lower() for k in ['i0', 'ch1', 'mcc1', 'mesh', '1']):
+                            mcc1_idx = idx
+                            break
+                    
+                    extracted = []
+                    for e in all_e:
+                        tbl = path_mcc.get(e)
+                        if tbl is not None and len(tbl) > 0:
+                            col = tbl[:, mcc1_idx] if (tbl.ndim > 1 and mcc1_idx < tbl.shape[1]) else tbl.flatten()
+                            val = np.nanmean(col)
+                            extracted.append(0.0 if np.isnan(val) else val)
+                        else:
+                            extracted.append(0.0)
+                    if len(extracted) > 0:
+                        mcc1_vals = np.array(extracted)
+
+                if mcc1_vals is not None and len(mcc1_vals) > 0:
+                    min_len = min(len(calibrated_energies), len(mcc1_vals))
+                    int_df = pd.DataFrame({'Energy': calibrated_energies[:min_len], 'mcc1 (Au Mesh)': mcc1_vals[:min_len]})
+                    dialog = ExternalI0PreviewDialog(root_i0, int_df, 'Energy', 'mcc1 (Au Mesh)')
+                    dialog.title("Internal I0 (Au Mesh) Preview")
+                    dialog.attributes("-topmost", True)
+                    try:
+                        dialog.deiconify()
+                        dialog.lift()
+                        dialog.focus_force()
+                        dialog.grab_set()
+                    except Exception:
+                        pass
+                    dialog.mainloop()
+                    
+                    if dialog.result:
+                        selected_e_col, selected_i_col, x_sorted, y_sorted, extra_str, cal_en, cal_val = dialog.result
+                        ext_i0_values = np.interp(calibrated_energies, x_sorted, y_sorted)
+                        i0_source = f"Internal: mcc1 (Au Mesh){extra_str}"
+                        path_pack['i0_calib_enabled'] = False
+                        path_pack['i0_energy_shift'] = 0.0
             except Exception as e:
                 print(f"Error previewing internal I0: {e}")
 

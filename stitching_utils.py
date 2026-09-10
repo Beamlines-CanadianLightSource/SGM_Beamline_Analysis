@@ -79,6 +79,7 @@ def calculate_initial_zero_overlap_trims(data_packs):
     Analyzes physical spatial bounds of loaded images to calculate initial
     trim distances (in mm) that remove spatial overlaps between adjacent grid images.
     
+    Uses 2D bounding box overlap detection (independent of tile scale/dimensions).
     Returns a list of dicts: [{'left': l, 'right': r, 'top': t, 'bottom': b}, ...]
     """
     num_maps = len(data_packs)
@@ -93,63 +94,85 @@ def calculate_initial_zero_overlap_trims(data_packs):
         y_min, y_max = float(np.min(dp['y'])), float(np.max(dp['y']))
         xc = (x_min + x_max) / 2.0
         yc = (y_min + y_max) / 2.0
+        w = max(x_max - x_min, 1e-4)
+        h = max(y_max - y_min, 1e-4)
         maps_info.append({
             'idx': i,
             'x_min': x_min, 'x_max': x_max,
             'y_min': y_min, 'y_max': y_max,
-            'xc': xc, 'yc': yc
+            'xc': xc, 'yc': yc,
+            'w': w, 'h': h
         })
 
-    # Sort maps into spatial rows (group by similar Y center)
-    maps_info.sort(key=lambda m: m['yc'], reverse=True) # Top to bottom
-    
-    rows = []
-    for m in maps_info:
-        placed = False
-        for row in rows:
-            if abs(row[0]['yc'] - m['yc']) < 2.5:
-                row.append(m)
-                placed = True
-                break
-        if not placed:
-            rows.append([m])
-            
-    # Sort each row from left to right (by X center)
-    for row in rows:
-        row.sort(key=lambda m: m['xc'])
+    # Pairwise neighbor analysis
+    for i in range(num_maps):
+        for j in range(num_maps):
+            if i == j:
+                continue
+            m_a = maps_info[i]
+            m_b = maps_info[j]
 
-    # 1. Calculate Horizontal Overlaps (Left/Right trims between adjacent columns)
-    for row in rows:
-        for c in range(len(row) - 1):
-            left_map = row[c]
-            right_map = row[c + 1]
-            overlap_x = left_map['x_max'] - right_map['x_min']
-            if overlap_x > 0:
-                half_overlap = round(float(overlap_x / 2.0) + 0.005, 3) # add slight 5-micron safety margin
-                auto_trims[left_map['idx']]['right'] = max(auto_trims[left_map['idx']]['right'], half_overlap)
-                auto_trims[right_map['idx']]['left'] = max(auto_trims[right_map['idx']]['left'], half_overlap)
+            # 1. Check Horizontal Relationship (m_a is Left, m_b is Right)
+            # Must have significant vertical (Y) overlap (> 50% of the smaller tile height)
+            y_overlap = min(m_a['y_max'], m_b['y_max']) - max(m_a['y_min'], m_b['y_min'])
+            min_h = min(m_a['h'], m_b['h'])
+            if y_overlap > 0.4 * min_h and m_a['xc'] < m_b['xc']:
+                # Check if m_a and m_b are immediate horizontal neighbors (no tile in-between)
+                between = False
+                for k in range(num_maps):
+                    if k != i and k != j:
+                        m_k = maps_info[k]
+                        k_y_ov = min(m_a['y_max'], m_k['y_max']) - max(m_a['y_min'], m_k['y_min'])
+                        if k_y_ov > 0.4 * min_h and m_a['xc'] < m_k['xc'] < m_b['xc']:
+                            between = True
+                            break
+                if not between:
+                    overlap_x = m_a['x_max'] - m_b['x_min']
+                    # Overlap must be positive and less than 50% of tile width
+                    if 0 < overlap_x < 0.5 * min(m_a['w'], m_b['w']):
+                        half_ov = round(float(overlap_x / 2.0) + 0.005, 3)
+                        auto_trims[m_a['idx']]['right'] = max(auto_trims[m_a['idx']]['right'], half_ov)
+                        auto_trims[m_b['idx']]['left'] = max(auto_trims[m_b['idx']]['left'], half_ov)
 
-    # 2. Calculate Vertical Overlaps (Top/Bottom trims between adjacent rows)
-    for r in range(len(rows) - 1):
-        top_row = rows[r]
-        bot_row = rows[r + 1]
-        
-        for t_map in top_row:
-            for b_map in bot_row:
-                if abs(t_map['xc'] - b_map['xc']) < 3.0: # Same column
-                    overlap_y = b_map['y_max'] - t_map['y_min']
-                    if overlap_y > 0:
-                        half_overlap = round(float(overlap_y / 2.0) + 0.005, 3)
-                        auto_trims[t_map['idx']]['bottom'] = max(auto_trims[t_map['idx']]['bottom'], half_overlap)
-                        auto_trims[b_map['idx']]['top'] = max(auto_trims[b_map['idx']]['top'], half_overlap)
+            # 2. Check Vertical Relationship (m_a is Top, m_b is Bottom)
+            # Must have significant horizontal (X) overlap (> 50% of the smaller tile width)
+            x_overlap = min(m_a['x_max'], m_b['x_max']) - max(m_a['x_min'], m_b['x_min'])
+            min_w = min(m_a['w'], m_b['w'])
+            if x_overlap > 0.4 * min_w and m_a['yc'] > m_b['yc']:
+                # Check if m_a and m_b are immediate vertical neighbors (no tile in-between)
+                between = False
+                for k in range(num_maps):
+                    if k != i and k != j:
+                        m_k = maps_info[k]
+                        k_x_ov = min(m_a['x_max'], m_k['x_max']) - max(m_a['x_min'], m_k['x_min'])
+                        if k_x_ov > 0.4 * min_w and m_b['yc'] < m_k['yc'] < m_a['yc']:
+                            between = True
+                            break
+                if not between:
+                    overlap_y = m_b['y_max'] - m_a['y_min']
+                    # Overlap must be positive and less than 50% of tile height
+                    if 0 < overlap_y < 0.5 * min(m_a['h'], m_b['h']):
+                        half_ov = round(float(overlap_y / 2.0) + 0.005, 3)
+                        auto_trims[m_a['idx']]['bottom'] = max(auto_trims[m_a['idx']]['bottom'], half_ov)
+                        auto_trims[m_b['idx']]['top'] = max(auto_trims[m_b['idx']]['top'], half_ov)
 
     return auto_trims
 
 
-def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50)):
+def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50), auto_trim=False):
     """
     Interactive widget to adjust trims for multiple maps before stitching.
     Includes contrast control for global visualization.
+
+    Parameters:
+    -----------
+    h5_files : list, optional
+        List of HDF5 file paths to stitch. If None, opens a file picker dialog.
+    channel_roi : tuple, default (30, 50)
+        Channel ROI to sum for live contrast preview.
+    auto_trim : bool, default False
+        If True, pre-calculates and populates sliders with zero-overlap trims.
+        If False (default), sliders start at 0.00 mm (no trimming).
     """
     if h5_files is None:
         h5_files = browse_for_quadrant_files()
@@ -173,8 +196,8 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50)):
     data_packs = [analyze_sgm_bsky_data(f, verbose=False) for f in h5_files]
     num_maps = len(data_packs)
     
-    # Calculate initial zero-overlap trims automatically
-    auto_trims = calculate_initial_zero_overlap_trims(data_packs)
+    # Calculate zero-overlap trims for reference / on-demand button
+    calculated_auto_trims = calculate_initial_zero_overlap_trims(data_packs)
     
     # Pre-load intensity for first detector and representative energy
     intensities = []
@@ -207,10 +230,13 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50)):
         x_range = np.max(data_packs[i]['x']) - np.min(data_packs[i]['x'])
         y_range = np.max(data_packs[i]['y']) - np.min(data_packs[i]['y'])
         
-        init_l = min(auto_trims[i]['left'], x_range * 0.45)
-        init_r = min(auto_trims[i]['right'], x_range * 0.45)
-        init_t = min(auto_trims[i]['top'], y_range * 0.45)
-        init_b = min(auto_trims[i]['bottom'], y_range * 0.45)
+        if auto_trim:
+            init_l = min(calculated_auto_trims[i]['left'], x_range * 0.45)
+            init_r = min(calculated_auto_trims[i]['right'], x_range * 0.45)
+            init_t = min(calculated_auto_trims[i]['top'], y_range * 0.45)
+            init_b = min(calculated_auto_trims[i]['bottom'], y_range * 0.45)
+        else:
+            init_l, init_r, init_t, init_b = 0.0, 0.0, 0.0, 0.0
         
         l_s = widgets.FloatSlider(value=init_l, min=0.0, max=x_range*0.5, step=0.01, description=f'{label} Left:')
         r_s = widgets.FloatSlider(value=init_r, min=0.0, max=x_range*0.5, step=0.01, description=f'{label} Right:')
@@ -224,6 +250,8 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50)):
         description='Contrast %:', layout=widgets.Layout(width='80%')
     )
 
+    btn_zero_trims = widgets.Button(description="Zero All Trims (No Trim)", button_style='info', icon='undo', layout=widgets.Layout(width='190px'))
+    btn_auto_trims = widgets.Button(description="Auto-Calculate Overlaps", button_style='primary', icon='magic', layout=widgets.Layout(width='190px'))
     stitch_btn = widgets.Button(description="Bake Stitched Image", button_style='success', layout=widgets.Layout(width='200px'))
     output = widgets.Output()
     
@@ -316,6 +344,25 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50)):
             s.observe(update_plot, names='value')
     contrast_slider.observe(update_plot, names='value')
 
+    def on_zero_trims_clicked(b):
+        for s in sliders:
+            s['L'].value = 0.0
+            s['R'].value = 0.0
+            s['T'].value = 0.0
+            s['B'].value = 0.0
+
+    def on_auto_trims_clicked(b):
+        for i, s in enumerate(sliders):
+            x_range = np.max(data_packs[i]['x']) - np.min(data_packs[i]['x'])
+            y_range = np.max(data_packs[i]['y']) - np.min(data_packs[i]['y'])
+            s['L'].value = min(calculated_auto_trims[i]['left'], x_range * 0.45)
+            s['R'].value = min(calculated_auto_trims[i]['right'], x_range * 0.45)
+            s['T'].value = min(calculated_auto_trims[i]['top'], y_range * 0.45)
+            s['B'].value = min(calculated_auto_trims[i]['bottom'], y_range * 0.45)
+
+    btn_zero_trims.on_click(on_zero_trims_clicked)
+    btn_auto_trims.on_click(on_auto_trims_clicked)
+
     def on_stitch_clicked(b):
         stitch_btn.description = "Baking Stitched Image..."
         stitch_btn.button_style = 'warning'
@@ -353,11 +400,14 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50)):
         
     notice_label = widgets.HTML(
         "<div style='background-color: #e8f4f8; padding: 8px 12px; border-left: 4px solid #0056b3; margin-bottom: 8px;'>"
-        "<b style='color:#004085;'>[AUTO-ALIGNMENT ACTIVE]</b> Trim sliders have been pre-populated with calculated zero-overlap values.<br>"
-        "You can inspect and fine-tune trim values in the tabs below, then click <b>'Bake Stitched Image'</b> when ready."
+        "<b style='color:#004085;'>Interactive Trimming & Stitching:</b> Adjust trim values manually in each tab below.<br>"
+        "• Click <b>'Zero All Trims (No Trim)'</b> to reset all trims to 0.00 mm.<br>"
+        "• Click <b>'Auto-Calculate Overlaps'</b> to compute and apply calculated zero-overlap cutoffs.<br>"
+        "• Click <b>'Bake Stitched Image'</b> when ready to generate the stitched dataset."
         "</div>"
     )
-    display(widgets.VBox([notice_label, tab_widget, widgets.Label("Global Contrast Control:"), contrast_slider, stitch_btn, output]))
+    action_box = widgets.HBox([btn_zero_trims, btn_auto_trims, stitch_btn])
+    display(widgets.VBox([notice_label, tab_widget, widgets.Label("Global Contrast Control:"), contrast_slider, action_box, output]))
     update_plot()
 
 def stitch_quadrant_maps(h5_files=None, output_dir=None, trims=None, verbose=True):
@@ -764,23 +814,29 @@ def check_stitching_gaps(h5_file_path, verbose=True):
         ky_min, ky_max = mdata['kept_y_range']
         xc = (kx_min + kx_max) / 2.0
         yc = (ky_min + ky_max) / 2.0
+        w = max(kx_max - kx_min, 1e-4)
+        h = max(ky_max - ky_min, 1e-4)
         maps_data.append({
             'key': key,
             'scan_name': mdata['scan_name'],
             'xc': xc, 'yc': yc,
             'x_min': kx_min, 'x_max': kx_max,
-            'y_min': ky_min, 'y_max': ky_max
+            'y_min': ky_min, 'y_max': ky_max,
+            'w': w, 'h': h
         })
+
+    # Group rows dynamically based on relative tile height
+    avg_h = np.mean([m['h'] for m in maps_data]) if maps_data else 1.0
+    y_tol = 0.35 * avg_h
 
     # Sort maps into spatial rows (group by similar Y center)
     maps_data.sort(key=lambda m: m['yc'], reverse=True) # Top to bottom
     
-    # Identify unique rows by clustering Y centers within 2.5 mm
     rows = []
     for m in maps_data:
         placed = False
         for row in rows:
-            if abs(row[0]['yc'] - m['yc']) < 2.5:
+            if abs(row[0]['yc'] - m['yc']) < y_tol:
                 row.append(m)
                 placed = True
                 break
@@ -864,5 +920,264 @@ def check_stitching_gaps(h5_file_path, verbose=True):
                 print(f"    Action: {rec}")
 
     return boundary_report
+
+
+def calculate_grid_tile_positions(
+    overall_center=(0.0, 0.0),
+    grid_size=(3, 3),
+    overlap=0.1,
+    overall_size=(9.0, 9.0),
+    tile_size=None,
+    pixels_per_tile=None,
+    scan_order="row_major",
+    plot=True,
+    verbose=True
+):
+    """
+    Calculates center coordinates, bounding boxes, and theoretical resolution metrics for grid image data collection.
+
+    Parameters
+    ----------
+    overall_center : tuple of float, default (0.0, 0.0)
+        (X, Y) center position of the overall sample region in physical units (e.g. mm).
+    grid_size : tuple of int, default (3, 3)
+        (N_cols, N_rows) or (N_x, N_y) grid dimensions.
+    overlap : float or tuple of float, default 0.1
+        Spatial overlap between adjacent tiles in physical units (e.g. mm).
+        Can be a scalar or a tuple (overlap_x, overlap_y).
+    overall_size : tuple of float, optional, default (9.0, 9.0)
+        (W_total, H_total) total size of the sample ROI to cover.
+        Required if tile_size is None.
+    tile_size : tuple of float, optional
+        (W_tile, H_tile) size of each sub-image FOV.
+        If provided, overall ROI coverage will be derived.
+    pixels_per_tile : int or tuple of int, optional
+        Number of pixel samples collected per sub-image tile, e.g., 100 or (100, 100).
+        If provided, spatial pixel resolution (um/pixel), Nyquist limit, and total stitched matrix dimensions are calculated.
+    scan_order : str, default 'row_major'
+        Tile sequence ordering: 'row_major' (row by row), 'col_major', or 'snake'.
+    plot : bool, default True
+        If True, plots and displays a 2D diagram of the grid collection plan.
+    verbose : bool, default True
+        If True, prints a summary table of calculated positions.
+
+    Returns
+    -------
+    dict containing:
+        - 'tiles': list of dicts with tile metadata and centers
+        - 'pitch': (pitch_x, pitch_y) step size between adjacent tile centers
+        - 'tile_size': (W_tile, H_tile) physical dimensions of each sub-image
+        - 'overall_size': (W_total, H_total) total ROI bounding dimensions
+        - 'overall_center': (X0, Y0)
+        - 'grid_size': (N_cols, N_rows)
+        - 'overlap': (overlap_x, overlap_y)
+        - 'resolution': dict of theoretical spatial resolution metrics (if pixels_per_tile is given)
+    """
+    n_cols, n_rows = grid_size
+    x0, y0 = overall_center
+
+    if isinstance(overlap, (int, float)):
+        ox, oy = float(overlap), float(overlap)
+    else:
+        ox, oy = float(overlap[0]), float(overlap[1])
+
+    if tile_size is not None:
+        w_tile, h_tile = float(tile_size[0]), float(tile_size[1])
+        pitch_x = w_tile - ox
+        pitch_y = h_tile - oy
+        w_total = (n_cols - 1) * pitch_x + w_tile if n_cols > 1 else w_tile
+        h_total = (n_rows - 1) * pitch_y + h_tile if n_rows > 1 else h_tile
+    elif overall_size is not None:
+        w_total, h_total = float(overall_size[0]), float(overall_size[1])
+        pitch_x = w_total / n_cols if n_cols > 0 else 0.0
+        pitch_y = h_total / n_rows if n_rows > 0 else 0.0
+        w_tile = pitch_x + ox
+        h_tile = pitch_y + oy
+    else:
+        raise ValueError("Either overall_size or tile_size must be specified.")
+
+    # Calculate center coordinate offsets
+    # Columns indexed 0 .. n_cols-1 (Left to Right)
+    # Rows indexed 0 .. n_rows-1 (Top to Bottom)
+    x_offsets = [(c - (n_cols - 1) / 2.0) * pitch_x for c in range(n_cols)]
+    y_offsets = [((n_rows - 1) / 2.0 - r) * pitch_y for r in range(n_rows)]
+
+    tiles = []
+    tile_idx = 1
+
+    for r in range(n_rows):
+        col_indices = range(n_cols)
+        if scan_order == "snake" and (r % 2 == 1):
+            col_indices = list(reversed(col_indices))
+
+        for c in col_indices:
+            cx = x0 + x_offsets[c]
+            cy = y0 + y_offsets[r]
+
+            x_min = cx - w_tile / 2.0
+            x_max = cx + w_tile / 2.0
+            y_min = cy - h_tile / 2.0
+            y_max = cy + h_tile / 2.0
+
+            tiles.append({
+                'tile_idx': tile_idx,
+                'row': r + 1,
+                'col': c + 1,
+                'center_x': round(cx, 4),
+                'center_y': round(cy, 4),
+                'x_min': round(x_min, 4),
+                'x_max': round(x_max, 4),
+                'y_min': round(y_min, 4),
+                'y_max': round(y_max, 4),
+                'width': round(w_tile, 4),
+                'height': round(h_tile, 4)
+            })
+            tile_idx += 1
+
+    resolution_info = None
+    if pixels_per_tile is not None:
+        if isinstance(pixels_per_tile, (int, float)):
+            px_cols, px_rows = int(pixels_per_tile), int(pixels_per_tile)
+        else:
+            px_cols, px_rows = int(pixels_per_tile[0]), int(pixels_per_tile[1])
+
+        pixel_size_x_mm = w_tile / px_cols
+        pixel_size_y_mm = h_tile / px_rows
+        pixel_size_x_um = pixel_size_x_mm * 1000.0
+        pixel_size_y_um = pixel_size_y_mm * 1000.0
+
+        nyquist_x_um = 2.0 * pixel_size_x_um
+        nyquist_y_um = 2.0 * pixel_size_y_um
+
+        overlap_px_x = int(round(ox / pixel_size_x_mm))
+        overlap_px_y = int(round(oy / pixel_size_y_mm))
+
+        total_px_x = n_cols * px_cols - (n_cols - 1) * overlap_px_x
+        total_px_y = n_rows * px_rows - (n_rows - 1) * overlap_px_y
+
+        resolution_info = {
+            'pixels_per_tile': (px_cols, px_rows),
+            'pixel_size_mm': (round(pixel_size_x_mm, 6), round(pixel_size_y_mm, 6)),
+            'pixel_size_um': (round(pixel_size_x_um, 2), round(pixel_size_y_um, 2)),
+            'nyquist_limit_um': (round(nyquist_x_um, 2), round(nyquist_y_um, 2)),
+            'overlap_pixels': (overlap_px_x, overlap_px_y),
+            'stitched_matrix_shape': (total_px_x, total_px_y),
+            'total_megapixels': round((total_px_x * total_px_y) / 1e6, 3)
+        }
+
+    result = {
+        'tiles': tiles,
+        'pitch': (round(pitch_x, 4), round(pitch_y, 4)),
+        'tile_size': (round(w_tile, 4), round(h_tile, 4)),
+        'overall_size': (round(w_total, 4), round(h_total, 4)),
+        'overall_center': (round(x0, 4), round(y0, 4)),
+        'grid_size': (n_cols, n_rows),
+        'overlap': (round(ox, 4), round(oy, 4)),
+        'resolution': resolution_info
+    }
+
+    if verbose:
+        print("=" * 70)
+        print("                IMAGE GRID COLLECTION PLAN")
+        print("=" * 70)
+        print(f"  Overall Center   : ({x0:.2f}, {y0:.2f}) mm")
+        print(f"  Grid Setup       : {n_cols} cols x {n_rows} rows ({len(tiles)} total images)")
+        print(f"  Overall ROI Size : {w_total:.2f} mm x {h_total:.2f} mm")
+        print(f"  Sub-Image FOV    : {w_tile:.2f} mm x {h_tile:.2f} mm")
+        print(f"  Center Spacing   : Pitch X = {pitch_x:.2f} mm, Pitch Y = {pitch_y:.2f} mm")
+        print(f"  Target Overlap   : Overlap X = {ox:.2f} mm, Overlap Y = {oy:.2f} mm")
+        if resolution_info is not None:
+            r_info = resolution_info
+            print("-" * 70)
+            print("                THEORETICAL SPATIAL RESOLUTION")
+            print("-" * 70)
+            print(f"  Pixels per Tile  : {r_info['pixels_per_tile'][0]} x {r_info['pixels_per_tile'][1]} px")
+            print(f"  Pixel Step Size  : {r_info['pixel_size_um'][0]:.2f} \u03bcm x {r_info['pixel_size_um'][1]:.2f} \u03bcm per pixel")
+            print(f"  Nyquist Limit    : {r_info['nyquist_limit_um'][0]:.2f} \u03bcm x {r_info['nyquist_limit_um'][1]:.2f} \u03bcm (min resolvable feature)")
+            print(f"  Overlap Width    : {r_info['overlap_pixels'][0]} px (X) x {r_info['overlap_pixels'][1]} px (Y)")
+            print(f"  Stitched Matrix  : {r_info['stitched_matrix_shape'][0]} x {r_info['stitched_matrix_shape'][1]} total pixels ({r_info['total_megapixels']} MP)")
+        print("-" * 70)
+        print(f"{'Idx':^5} | {'Row':^5} | {'Col':^5} | {'Center X (mm)':^14} | {'Center Y (mm)':^14} | {'Sub-Image FOV':^14}")
+        print("-" * 70)
+        for t in tiles:
+            print(f"{t['tile_idx']:^5} | {t['row']:^5} | {t['col']:^5} | {t['center_x']:^14.3f} | {t['center_y']:^14.3f} | {t['width']:.2f} x {t['height']:.2f} mm")
+        print("=" * 70)
+
+    if plot:
+        plot_grid_tile_positions(result)
+        plt.show()
+
+    return result
+
+
+def plot_grid_tile_positions(grid_info, show_overlap=True, figsize=(8, 8)):
+    """
+    Plots a 2D diagram of the planned image collection grid.
+
+    Parameters
+    ----------
+    grid_info : dict
+        Dictionary returned by calculate_grid_tile_positions().
+    show_overlap : bool, default True
+        If True, shades the overlap regions between tiles.
+    figsize : tuple, default (8, 8)
+        Matplotlib figure size.
+    """
+    import matplotlib.patches as patches
+
+    tiles = grid_info['tiles']
+    x0, y0 = grid_info['overall_center']
+    w_tot, h_tot = grid_info['overall_size']
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # Draw overall ROI boundary
+    roi_rect = patches.Rectangle(
+        (x0 - w_tot / 2.0, y0 - h_tot / 2.0),
+        w_tot, h_tot,
+        linewidth=2, edgecolor='black', facecolor='none', linestyle='--',
+        label='Overall ROI Target'
+    )
+    ax.add_patch(roi_rect)
+
+    colors = plt.cm.tab20(np.linspace(0, 1, len(tiles)))
+
+    for i, t in enumerate(tiles):
+        cx, cy = t['center_x'], t['center_y']
+        w, h = t['width'], t['height']
+        x_min, y_min = t['x_min'], t['y_min']
+
+        # Tile rectangle
+        tile_rect = patches.Rectangle(
+            (x_min, y_min), w, h,
+            linewidth=1.5, edgecolor=colors[i % len(colors)], facecolor=colors[i % len(colors)],
+            alpha=0.2, label=f"Tile {t['tile_idx']}" if len(tiles) <= 9 else None
+        )
+        ax.add_patch(tile_rect)
+
+        # Plot center marker
+        ax.plot(cx, cy, 'k+', markersize=10, markeredgewidth=2)
+        ax.plot(cx, cy, 'o', color=colors[i % len(colors)], markersize=5)
+        ax.text(cx, cy + 0.05 * h, f"T{t['tile_idx']}\n({cx:.2f}, {cy:.2f})",
+                ha='center', va='bottom', fontsize=8, fontweight='bold')
+
+    ax.plot(x0, y0, 'r*', markersize=14, label=f'Overall Center ({x0}, {y0})')
+
+    ax.set_xlabel('X Position (mm)', fontsize=11, fontweight='bold')
+    ax.set_ylabel('Y Position (mm)', fontsize=11, fontweight='bold')
+    ax.set_title(f"Planned Data Collection Grid ({grid_info['grid_size'][0]}x{grid_info['grid_size'][1]} Images)",
+                 fontsize=12, fontweight='bold')
+    ax.set_aspect('equal', 'box')
+    ax.grid(True, linestyle=':', alpha=0.6)
+
+    # Padding around bounds
+    margin_x = w_tot * 0.2
+    margin_y = h_tot * 0.2
+    ax.set_xlim(x0 - w_tot / 2.0 - margin_x, x0 + w_tot / 2.0 + margin_x)
+    ax.set_ylim(y0 - h_tot / 2.0 - margin_y, y0 + h_tot / 2.0 + margin_y)
+
+    plt.tight_layout()
+    return fig, ax
+
 
 

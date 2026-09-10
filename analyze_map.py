@@ -7,7 +7,7 @@ import sys
 import json
 import tkinter as tk
 from tkinter import filedialog
-from alignment_utils import format_num_val
+from alignment_utils import format_num_val, safe_filedialog_call
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".last_dir.json")
 
@@ -31,19 +31,14 @@ def save_last_dir(directory):
         pass
 
 def browse_for_file():
-    """Opens a file dialog to select an HDF5 file."""
-    root = tk.Tk()
-    root.withdraw()
-    root.attributes("-topmost", True)
-    
+    """Opens a file dialog to select an HDF5 file safely via subprocess to avoid Jupyter hangs."""
     last_dir = get_last_dir()
-    file_path = filedialog.askopenfilename(
+    file_path = safe_filedialog_call(
+        filedialog.askopenfilename,
         title="Select HDF5 Map File",
         initialdir=last_dir,
         filetypes=[("HDF5 files", "*.h5"), ("All files", "*.*")]
     )
-    
-    root.destroy()
     return file_path
 
 def analyze_map(file_path=None, verbose=True):

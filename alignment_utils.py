@@ -99,13 +99,28 @@ class CustomTkDialog(tk.Toplevel):
         self.close()
         
     def close(self):
-        try: self.grab_release()
-        except: pass
-        self.withdraw()
-        self.update_idletasks()
-        try: self.quit()  # Safely exit local mainloop
-        except: pass
-        self.destroy()
+        try:
+            self.grab_release()
+        except Exception:
+            pass
+        try:
+            self.withdraw()
+            self.update()
+        except Exception:
+            pass
+        try:
+            self.destroy()
+        except Exception:
+            pass
+        try:
+            if self.master:
+                self.master.update()
+        except Exception:
+            pass
+        try:
+            self.quit()
+        except Exception:
+            pass
 
 def show_custom_dialog_subprocess(title, message, dialog_type="info"):
     import subprocess
@@ -188,13 +203,28 @@ class CustomTkDialog(tk.Toplevel):
         self.close()
         
     def close(self):
-        try: self.grab_release()
-        except: pass
-        self.withdraw()
-        self.update_idletasks()
-        try: self.quit()
-        except: pass
-        self.destroy()
+        try:
+            self.grab_release()
+        except Exception:
+            pass
+        try:
+            self.withdraw()
+            self.update()
+        except Exception:
+            pass
+        try:
+            self.destroy()
+        except Exception:
+            pass
+        try:
+            if self.master:
+                self.master.update()
+        except Exception:
+            pass
+        try:
+            self.quit()
+        except Exception:
+            pass
 
 try:
     root = tk.Tk()

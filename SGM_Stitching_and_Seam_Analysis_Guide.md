@@ -25,7 +25,13 @@ Stitched datasets automatically analyze physical stage coordinates $(X, Y)$ acro
 
 ## 2. Interactive Trimming and Auto-Alignment
 
-To eliminate boundary overlaps and seam artifacts, `interactive_stitching_trim()` provides live interactive visualization and automated alignment.
+To eliminate boundary overlaps and seam artifacts, `interactive_stitching_trim()` provides live interactive visualization and optional automated alignment.
+
+- **Default Behavior (`auto_trim=False`)**: Sliders start at `0.00 mm` (no data is trimmed by default).
+- **Interactive UI Buttons**:
+  - **`Zero All Trims (No Trim)`**: Resets all sliders across all images to `0.00 mm`.
+  - **`Auto-Calculate Overlaps`**: Dynamically calculates physical spatial overlaps and pre-populates sliders with zero-overlap boundary trims.
+- **Explicit Auto-Trim**: Call `interactive_stitching_trim(auto_trim=True)` to open with zero-overlap trims pre-applied.
 
 ### 2.1 How Trimming & Joining Works (Direct Edge Trimming vs. Averaging)
 

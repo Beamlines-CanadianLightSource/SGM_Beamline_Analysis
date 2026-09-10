@@ -206,21 +206,26 @@ class SDDCalibrationGUI:
         n_pts = self.num_points.value
         
         for sdd_id in sorted(self.current_spectra.keys()):
-            # Detect if flat line (all zeros or constant value)
+            # Detect if flat line or no peaks found
             spec = self.current_spectra.get(sdd_id, np.zeros(256))
-            is_flat = np.all(spec == 0) or np.std(spec) == 0
+            peaks = self.detected_peaks_all.get(sdd_id, [])
+            has_no_peaks = (len(peaks) == 0)
+            is_flat = np.all(spec == 0) or np.std(spec) == 0 or np.max(spec) == 0 or has_no_peaks
             
-            # Retrieve or create active checkbox
+            # Retrieve or create active checkbox (default to False if flat or no peaks)
             if sdd_id not in self.detector_active:
                 self.detector_active[sdd_id] = widgets.Checkbox(
                     value=not is_flat, 
                     description="Active", 
                     layout=widgets.Layout(width='80px')
                 )
+            else:
+                # If flat or no peaks, automatically uncheck Active
+                if is_flat:
+                    self.detector_active[sdd_id].value = False
             
             active_checkbox = self.detector_active[sdd_id]
             
-            peaks = self.detected_peaks_all.get(sdd_id, [])
             peak_options = [("Manual", -1)] + [(f"Peak {i} (Ch {p})", i) for i, p in enumerate(peaks)]
             
             det_label = widgets.HTML(value=f"<b>{sdd_id} Assignments:</b>", layout=widgets.Layout(width='130px'))
@@ -229,10 +234,9 @@ class SDDCalibrationGUI:
             for i in range(n_pts):
                 sel = widgets.Dropdown(options=peak_options, value=i if i < len(peaks) else -1, 
                                        description=f"P{i+1}:", layout=widgets.Layout(width='200px'))
-                man = widgets.IntText(value=0, description="Manual Ch:", layout=widgets.Layout(width='120px'))
-                
-                # Default manual value if no peak found
-                if i < len(peaks): man.value = peaks[i]
+                # Default distinct manual channel values (e.g. 50, 100, 150) to prevent duplicate [0,0,0] errors
+                default_man_ch = peaks[i] if i < len(peaks) else (i + 1) * 50
+                man = widgets.IntText(value=default_man_ch, description="Manual Ch:", layout=widgets.Layout(width='120px'))
                 
                 # Hide manual if peak ID selected
                 def make_man_toggle(s, m):
