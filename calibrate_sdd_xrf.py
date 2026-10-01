@@ -89,8 +89,13 @@ class SDDCalibrationGUI:
         self.detector_box = widgets.VBox([])
         
         # 5. Actions
-        self.btn_calc = widgets.Button(description="Calculate & Save Calibration", button_style='success', disabled=True, layout=widgets.Layout(width='300px'))
+        self.btn_calc = widgets.Button(description="Calculate & Save Calibration", button_style='success', disabled=True, layout=widgets.Layout(width='260px'))
         self.btn_calc.on_click(self.on_save_clicked)
+        
+        self.btn_export = widgets.Button(description="Export XRF Spectra (CSV)", button_style='warning', disabled=True, layout=widgets.Layout(width='220px'))
+        self.btn_export.on_click(self.on_export_clicked)
+        
+        actions_box = widgets.HBox([self.btn_calc, self.btn_export])
         
         self.status = widgets.HTML(value="<b>Status:</b> Please load a standard scan (e.g. AlPO4, Cryolite, MgO)")
         
@@ -105,7 +110,7 @@ class SDDCalibrationGUI:
             widgets.HTML("<hr><b>3. Per-Detector Peak Selection</b>"),
             self.detector_box,
             widgets.HTML("<hr>"),
-            self.btn_calc,
+            actions_box,
             self.status,
             self.out_plot,
             self.out
@@ -140,6 +145,7 @@ class SDDCalibrationGUI:
             self.plot_spectra()
             self.rebuild_detector_widgets()
             self.btn_calc.disabled = False
+            self.btn_export.disabled = False
             self.status.value = "<b>Status:</b> Data loaded. Assign peaks for each detector."
 
     def process_data(self):
@@ -336,6 +342,167 @@ class SDDCalibrationGUI:
             self.status.value = summary_text + "<br><font color='green'><b>Successfully saved to sdd_calibration.json</b></font>"
         else:
             self.status.value = "<b>Status:</b> <font color='red'>Error saving to file.</font>"
+
+    def on_export_clicked(self, b):
+        if not self.current_spectra:
+            self.status.value = "<b>Status:</b> <font color='red'>No spectra data loaded to export.</font>"
+            return
+
+        dp = self.data_pack or {}
+        scan_name = dp.get('scan_name', 'scan')
+        h5_dir = dp.get('h5_dir', '')
+        if not h5_dir or not os.path.isdir(h5_dir):
+            if dp.get('h5_file_path') and os.path.exists(dp['h5_file_path']):
+                h5_dir = os.path.dirname(os.path.abspath(dp['h5_file_path']))
+            else:
+                h5_dir = os.getcwd()
+
+        default_name = f"{scan_name}_Calibration_XRF_Spectra.csv"
+
+        save_path = None
+        try:
+            from alignment_utils import safe_filedialog_call
+            from tkinter import filedialog
+            save_path = safe_filedialog_call(
+                filedialog.asksaveasfilename,
+                title="Export SDD XRF Spectra (CSV)",
+                initialdir=h5_dir,
+                initialfile=default_name,
+                defaultextension=".csv",
+                filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+            )
+        except Exception:
+            try:
+                import tkinter as tk
+                from tkinter import filedialog
+                root = tk.Tk()
+                root.withdraw()
+                root.attributes("-topmost", True)
+                save_path = filedialog.asksaveasfilename(
+                    title="Export SDD XRF Spectra (CSV)",
+                    initialdir=h5_dir,
+                    initialfile=default_name,
+                    defaultextension=".csv",
+                    filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+                )
+                root.destroy()
+            except Exception:
+                save_path = os.path.join(h5_dir, default_name)
+
+        if not save_path:
+            self.status.value = "<b>Status:</b> Export cancelled."
+            return
+
+        sorted_dets = sorted(self.current_spectra.keys())
+        active_dets = [d for d in sorted_dets if self.detector_active.get(d, None) is None or self.detector_active[d].value]
+        excluded_dets = [d for d in sorted_dets if d not in active_dets]
+
+        # Check if calibration parameters exist
+        has_calib = False
+        calib_lines = []
+        for d in sorted_dets:
+            if d in self.calibrations and isinstance(self.calibrations[d], dict) and 'gain' in self.calibrations[d]:
+                g = self.calibrations[d].get('gain', 1.0)
+                o = self.calibrations[d].get('offset', 0.0)
+                calib_lines.append(f"#   {d}: Gain={g:.4f}, Offset={o:.4f}")
+                has_calib = True
+            else:
+                calib_lines.append(f"#   {d}: Uncalibrated (Default Gain=1.0, Offset=0.0)")
+
+        # Target calibration points if configured
+        n_pts = self.num_points.value if hasattr(self, 'num_points') else 0
+        target_pts = []
+        if n_pts > 0 and hasattr(self, 'point_configs'):
+            for i in range(n_pts):
+                p_name = self.point_configs[i]['name'].value
+                p_val = self.point_configs[i]['val'].value
+                target_pts.append(f"{p_name} ({p_val} eV)")
+
+        # Build Metadata Header
+        rows = [
+            "# ========================================================",
+            "# Canadian Light Source (CLS) - SGM Beamline (11ID-1)",
+            "# SDD XRF Calibration Spectra Export",
+            "# ========================================================",
+            f"# Scan Name: {scan_name}",
+            f"# Date: {dp.get('date', 'N/A')}",
+            f"# Project: {dp.get('project', 'N/A')}",
+            f"# Scan Type: {dp.get('scan_type', 'N/A')}",
+            f"# Source File: {dp.get('h5_file_path', 'N/A')}",
+            f"# Facility: Canadian Light Source (CLS)",
+            f"# Beamline: Spherical Grating Monochromator (SGM) (11ID-1)",
+            f"# Grating: {dp.get('grating', 'N/A')}",
+            f"# Harmonic: {dp.get('harmonic', 'N/A')}",
+            f"# Mirror Stripe: {dp.get('strip', 'N/A')}",
+            f"# Polarization: {dp.get('polarization', 'N/A')}",
+            f"# Exit Slit Gap: {dp.get('exit_slit_gap', 'N/A')}",
+            f"# XPS Z: {dp.get('xps_z', 'N/A')}",
+            f"# Time Per Map: {dp.get('time_per_map', 'N/A')}",
+            f"# Coordinates: {dp.get('coordinates', 'N/A')}",
+            f"# Command: {dp.get('command', 'N/A')}",
+        ]
+
+        if 'energies' in dp and len(dp['energies']) > 0:
+            rows.append(f"# Total Scan Energies: {len(dp['energies'])}")
+            rows.append(f"# Energy Range (eV): {dp['energies'][0]:.2f} to {dp['energies'][-1]:.2f}")
+
+        rows.append(f"# Active SDD Detectors: {', '.join(active_dets) if active_dets else 'None'}")
+        if excluded_dets:
+            rows.append(f"# Excluded SDD Detectors: {', '.join(excluded_dets)}")
+
+        if target_pts:
+            rows.append(f"# Target Calibration Reference Peaks: {', '.join(target_pts)}")
+
+        rows.append("# SDD Calibration Parameters (Energy = Gain * Channel + Offset):")
+        rows.extend(calib_lines)
+        # Column descriptions with explicit column numbers (matching plot_sgm_bsky_data format)
+        rows.append("#")
+        c_idx = 1
+        rows.append(f"# Column {c_idx}: Channel (0-255)"); c_idx += 1
+        for d in sorted_dets:
+            rows.append(f"# Column {c_idx}: RAW_{d} (Counts)"); c_idx += 1
+        rows.append(f"# Column {c_idx}: RAW_Average_SDD (All Detectors)"); c_idx += 1
+        sel_label = "+".join(active_dets) if active_dets else "None"
+        rows.append(f"# Column {c_idx}: RAW_Selected_Average_SDD ({sel_label})"); c_idx += 1
+        if has_calib:
+            for d in sorted_dets:
+                c_dict = self.calibrations.get(d, {})
+                g = c_dict.get('gain', 1.0)
+                o = c_dict.get('offset', 0.0)
+                rows.append(f"# Column {c_idx}: Energy_{d}_eV (Calibrated Energy in eV: Gain={g:.4f}, Offset={o:.4f})"); c_idx += 1
+        rows.append("#")
+
+        # Data Rows (256 channels) - purely numeric data, no text row overtop of columns
+        for ch in range(256):
+            counts = [self.current_spectra[d][ch] for d in sorted_dets]
+            all_avg = np.mean(counts) if counts else 0.0
+            active_counts = [self.current_spectra[d][ch] for d in active_dets] if active_dets else counts
+            sel_avg = np.mean(active_counts) if active_counts else all_avg
+
+            row_items = [str(ch)]
+            for c in counts:
+                row_items.append(f"{c:.2f}")
+            row_items.append(f"{all_avg:.2f}")
+            row_items.append(f"{sel_avg:.2f}")
+
+            if has_calib:
+                for d in sorted_dets:
+                    c_dict = self.calibrations.get(d, {})
+                    g = c_dict.get('gain', 1.0)
+                    o = c_dict.get('offset', 0.0)
+                    e_val = calib_utils.channel_to_energy(ch, g, o)
+                    row_items.append(f"{e_val:.2f}")
+
+            rows.append(",".join(row_items))
+
+        try:
+            with open(save_path, 'wb') as f:
+                f.write("\r\n".join(rows).encode('utf-8'))
+            self.status.value = f"<b>Status:</b> <font color='green'>Successfully exported XRF spectra to:<br><b>{save_path}</b></font>"
+            print(f"  -> [EXPORT] SDD XRF spectra successfully exported to: {save_path}")
+        except Exception as e:
+            self.status.value = f"<b>Status:</b> <font color='red'>Error saving CSV file: {e}</font>"
+            print(f"  [Error] Failed to export XRF spectra: {e}")
 
 def run_calibration():
     gui = SDDCalibrationGUI()

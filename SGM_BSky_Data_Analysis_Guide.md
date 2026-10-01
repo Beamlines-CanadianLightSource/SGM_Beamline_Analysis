@@ -210,7 +210,9 @@ run_calibration()
 - **Energy Selection:** Select up to 5 incident energies (or indices) to plot simultaneously.
 - **Color Coding:** Each spectrum is rendered in a distinct color for easy visual differentiation.
 - **Waterfall Spacing:** Supports `apply_waterfall=True` to add vertical offset between spectra or `apply_waterfall=False` for direct overlay.
-- **Interactive Save Button:** Includes a yellow **"Save Spectra Plot"** button on the figure canvas for exporting to the original scan folder.
+- **Interactive Save Buttons:** Includes side-by-side buttons on the figure canvas:
+  - **"Save Spectra Plot":** Exports the high-resolution overlay image (PNG/PDF/SVG).
+  - **"Save Spectra (CSV)":** Exports a CSV file of the selected spectra with complete metadata headers, numbered column documentation (`# Column 1: Calibrated Emission Energy (eV)`, `# Column 2: Channel`, `# Column 3+: Emission_Counts_Einc_<E>eV`), and pure numeric data rows matching the standard CLS format.
 
 ### 4. `pca_xanes_analysis.py`
 **Purpose:** Performs Principal Component Analysis (PCA) to reduce the dimensionality of the XANES stack and isolate the primary chemical variations (components) while filtering out background noise.

@@ -458,6 +458,21 @@ def save_pymca_stack_h5(path_pack, output_path=None, channel_roi=None, xrf_roi=N
             meta_group.attrs['x_trim'] = x_trim
             meta_group.attrs['y_trim'] = y_trim
 
+            # SDD Calibration metadata
+            use_calib = path_pack.get('use_sdd_calib', False)
+            meta_group.attrs['sdd_calibration_enabled'] = "Yes" if use_calib else "No"
+            if use_calib:
+                calib_d = path_pack.get('sdd_calib_data', {})
+                meta_calib = calib_d.get('_metadata', {}) if calib_d else {}
+                meta_group.attrs['sdd_calibration_file'] = "sdd_calibration.json"
+                meta_group.attrs['sdd_calibration_scan_used'] = str(meta_calib.get('scan_used', 'N/A'))
+                edges = meta_calib.get('edges_used', 'N/A')
+                if isinstance(edges, list):
+                    edges = ", ".join(edges)
+                meta_group.attrs['sdd_calibration_edges_used'] = str(edges)
+                if 'last_updated' in meta_calib:
+                    meta_group.attrs['sdd_calibration_date'] = str(meta_calib['last_updated'])
+
             # Iterate through energies to populate the stacks
             print(f"Processing {num_energies} energy steps for {len(detector_names)} detectors...")
             

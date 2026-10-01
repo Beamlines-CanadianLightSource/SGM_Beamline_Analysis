@@ -337,9 +337,30 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
                 edges_used = meta_calib.get("edges_used", "N/A")
                 if isinstance(edges_used, list):
                     edges_used = ", ".join(edges_used)
-                calib_str = f"Active (Scan: {scan_used}, Edges: {edges_used})"
+                calib_date = meta_calib.get("last_updated", "N/A")
+                calib_file = "sdd_calibration.json"
+
+                calib_meta_rows = [
+                    "# SDD Calibration: Active",
+                    f"# SDD Calibration File: {calib_file}",
+                    f"# SDD Calibration Scan Used: {scan_used}",
+                    f"# SDD Calibration Edges Used: {edges_used}",
+                ]
+                if calib_date and calib_date != "N/A":
+                    calib_meta_rows.append(f"# SDD Calibration Date: {calib_date}")
+                
+                calib_params = []
+                for det in ['sdd1', 'sdd2', 'sdd3', 'sdd4']:
+                    if det in calib_data and isinstance(calib_data[det], dict):
+                        g = calib_data[det].get('gain', 1.0)
+                        o = calib_data[det].get('offset', 0.0)
+                        calib_params.append(f"{det}: Gain={g:.4f}, Offset={o:.4f} eV")
+                if calib_params:
+                    calib_meta_rows.append(f"# SDD Calibration Parameters: {'; '.join(calib_params)}")
             else:
-                calib_str = "Disabled"
+                calib_meta_rows = [
+                    "# SDD Calibration: Disabled"
+                ]
 
             rows = []
             rows += [
@@ -364,9 +385,9 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
                 f"# ROI Selection: Rect",
                 f"# {'Energy ROI' if use_calibration else 'Channels'}: {roi_str}",
                 f"# Normalization: {i0_source_label}",
-                f"# SDD Calibration: {calib_str}",
-                "#"
             ]
+            rows += calib_meta_rows
+            rows.append("#")
             
             ext_i0_col_values = np.interp(scan_energies, x_sorted, y_sorted) if (not use_internal and x_sorted is not None and y_sorted is not None) else None
 

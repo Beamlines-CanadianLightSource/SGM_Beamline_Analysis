@@ -18,6 +18,7 @@ def plot_selected_emission_spectra(
     show_markers=True,
     map_roi=None,
     save_plot=False,
+    save_csv=False,
     output_dir=None,
     file_format='png',
     dpi=300
@@ -37,7 +38,8 @@ def plot_selected_emission_spectra(
         waterfall_offset (float, optional): Custom vertical offset. If None, auto-calculated.
         show_markers (bool): If True, displays markers on spectral lines.
         map_roi (list, optional): [x1, x2, y1, y2] spatial ROI for filtering.
-        save_plot (bool): If True, opens save dialog after display.
+        save_plot (bool): If True, opens save dialog for image plot after display.
+        save_csv (bool): If True, opens save dialog for spectra CSV after display.
         output_dir (str, optional): Target folder for save dialog.
         file_format (str): Default image format ('png', 'pdf', 'svg', 'jpg').
         dpi (int): Image resolution (DPI).
@@ -193,11 +195,16 @@ def plot_selected_emission_spectra(
 
     saved_files = []
 
-    # Add interactive "Save Spectra Plot" button
-    ax_save_btn = fig.add_axes([0.38, 0.02, 0.24, 0.05])
+    # Add interactive buttons
+    ax_save_btn = fig.add_axes([0.22, 0.02, 0.25, 0.05])
     btn_save = Button(ax_save_btn, 'Save Spectra Plot', color='yellow', hovercolor='khaki')
     btn_save.label.set_fontsize(9)
     btn_save.label.set_fontweight('bold')
+
+    ax_save_csv_btn = fig.add_axes([0.53, 0.02, 0.25, 0.05])
+    btn_save_csv = Button(ax_save_csv_btn, 'Save Spectra (CSV)', color='gold', hovercolor='khaki')
+    btn_save_csv.label.set_fontsize(9)
+    btn_save_csv.label.set_fontweight('bold')
 
     def trigger_save(event=None):
         if output_dir:
@@ -217,6 +224,7 @@ def plot_selected_emission_spectra(
         initial_name = f"{safe_title}_Emission_Spectra_Overlay_{detector}.{ext}"
 
         ax_save_btn.set_visible(False)
+        ax_save_csv_btn.set_visible(False)
         fig.canvas.draw_idle()
 
         out_filename = safe_filedialog_call(
@@ -242,13 +250,123 @@ def plot_selected_emission_spectra(
             print("Save operation cancelled.")
 
         ax_save_btn.set_visible(True)
+        ax_save_csv_btn.set_visible(True)
         fig.canvas.draw_idle()
 
+    def trigger_save_csv(event=None):
+        if output_dir:
+            save_directory = os.path.abspath(output_dir)
+        else:
+            h5_path = data_pack.get('h5_file_path') or data_pack.get('h5_dir')
+            if h5_path and os.path.isfile(h5_path):
+                save_directory = os.path.dirname(os.path.abspath(h5_path))
+            elif h5_path and os.path.isdir(h5_path):
+                save_directory = os.path.abspath(h5_path)
+            else:
+                save_directory = os.getcwd()
+
+        os.makedirs(save_directory, exist_ok=True)
+        safe_title = "".join(c if c.isalnum() or c in ('-', '_') else '_' for c in scan_title)
+        initial_csv_name = f"{safe_title}_Selected_Emission_Spectra_{detector}.csv"
+
+        out_csv = safe_filedialog_call(
+            filedialog.asksaveasfilename,
+            title="Save Selected Emission Spectra (CSV)",
+            initialdir=save_directory,
+            initialfile=initial_csv_name,
+            defaultextension=".csv",
+            filetypes=[
+                ("CSV files", "*.csv"),
+                ("All files", "*.*")
+            ]
+        )
+
+        if not out_csv:
+            print("Save CSV operation cancelled.")
+            return
+
+        # Calibration parameters for the energy column
+        calib_gain = gain if (gain != 1.0 or offset != 0.0) else 10.0
+        calib_offset = offset
+
+        # Build Metadata Header (matches plot_sgm_bsky_data structure)
+        rows = [
+            "# ========================================================",
+            "# Canadian Light Source (CLS) - SGM Beamline (11ID-1)",
+            "# Selected Emission / XRD Spectra Export",
+            "# ========================================================",
+            "# Facility: Canadian Light Source (CLS)",
+            "# Beamline: Spherical Grating Monochromator (SGM) (11ID-1)",
+            "# Application: plot_selected_emission_spectra",
+            f"# Scan Name: {scan_title}",
+            f"# Date: {data_pack.get('date', 'N/A')}",
+            f"# Project: {data_pack.get('project', 'N/A')}",
+            f"# Scan Type: {data_pack.get('scan_type', 'N/A')}",
+            f"# Source File: {data_pack.get('h5_file_path', 'N/A')}",
+            f"# Grating: {data_pack.get('grating', 'N/A')}",
+            f"# Harmonic: {data_pack.get('harmonic', 'N/A')}",
+            f"# Mirror Stripe: {data_pack.get('strip', 'N/A')}",
+            f"# Polarization: {data_pack.get('polarization', 'N/A')}",
+            f"# Exit Slit Gap: {data_pack.get('exit_slit_gap', 'N/A')}",
+            f"# XPS Z: {data_pack.get('xps_z', 'N/A')}",
+            f"# Time Per Map: {data_pack.get('time_per_map', 'N/A')}",
+            f"# Coordinates: {data_pack.get('coordinates', 'N/A')}",
+            f"# Command: {data_pack.get('command', 'N/A')}",
+            f"# Target Detector: {detector} ({'+'.join(target_dets)})",
+        ]
+
+        if map_roi:
+            rows.append(f"# Spatial ROI: X=[{map_roi[0]}, {map_roi[1]}], Y=[{map_roi[2]}, {map_roi[3]}]")
+        else:
+            rows.append("# Spatial ROI: Full Map")
+
+        if use_energy_calib:
+            rows.append(f"# SDD Energy Calibration: Enabled (Reference Detector: {ref_det}, Gain={calib_gain:.4f}, Offset={calib_offset:.4f})")
+        else:
+            rows.append("# SDD Energy Calibration: Disabled (Default Linear Scaling)")
+
+        energies_str = ", ".join([f"{e:.2f} eV" for e in target_energies])
+        rows.append(f"# Selected Incident Energies ({len(target_energies)}): {energies_str}")
+
+        if apply_waterfall and offset_step > 0:
+            rows.append(f"# Note: Raw spectra saved (Waterfall display offset of {offset_step:.2f} counts not applied to CSV)")
+
+        # Column descriptions with explicit column numbers (matching plot_sgm_bsky_data format)
+        rows.append("#")
+        c_idx = 1
+        rows.append(f"# Column {c_idx}: Calibrated Emission Energy (eV)"); c_idx += 1
+        rows.append(f"# Column {c_idx}: Channel (0-255)"); c_idx += 1
+        for item in spectra_data:
+            en_val = item['energy']
+            rows.append(f"# Column {c_idx}: Emission_Counts_Einc_{en_val:.2f}eV ({detector})"); c_idx += 1
+        rows.append("#")
+
+        # Purely numeric data rows - no text header row overtop of columns (matches plot_sgm_bsky_data format)
+        for ch in range(256):
+            e_val = sdd_calib.channel_to_energy(ch, calib_gain, calib_offset)
+            row_items = [f"{e_val:.2f}", str(ch)]
+            for item in spectra_data:
+                spec_val = item['spectrum'][ch]
+                row_items.append(f"{spec_val:.2f}")
+            rows.append(",".join(row_items))
+
+        try:
+            with open(out_csv, 'wb') as f:
+                f.write("\r\n".join(rows).encode('utf-8'))
+            print(f"  -> [SAVE] Selected emission spectra CSV exported to: {out_csv}")
+            saved_files.append(out_csv)
+        except Exception as e:
+            print(f"Error saving CSV file {out_csv}: {e}", file=sys.stderr)
+
     btn_save.on_clicked(trigger_save)
+    btn_save_csv.on_clicked(trigger_save_csv)
     fig._btn_save_ref = btn_save
+    fig._btn_save_csv_ref = btn_save_csv
 
     if save_plot:
         trigger_save()
+    if save_csv:
+        trigger_save_csv()
 
     plt.show()
     return saved_files if saved_files else None

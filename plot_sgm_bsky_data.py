@@ -2019,9 +2019,30 @@ class SummaryDashboard:
                     edges_used = meta_calib.get("edges_used", "N/A")
                     if isinstance(edges_used, list):
                         edges_used = ", ".join(edges_used)
-                    calib_str = f"Active (Scan: {scan_used}, Edges: {edges_used})"
+                    calib_date = meta_calib.get("last_updated", "N/A")
+                    calib_file = os.path.basename(getattr(sdd_calib, 'CALIBRATION_FILE', 'sdd_calibration.json'))
+
+                    calib_meta_rows = [
+                        "# SDD Calibration: Active",
+                        f"# SDD Calibration File: {calib_file}",
+                        f"# SDD Calibration Scan Used: {scan_used}",
+                        f"# SDD Calibration Edges Used: {edges_used}",
+                    ]
+                    if calib_date and calib_date != "N/A":
+                        calib_meta_rows.append(f"# SDD Calibration Date: {calib_date}")
+                    
+                    calib_params = []
+                    for det in self.ctx['detector_names']:
+                        if det in calib_info and isinstance(calib_info[det], dict):
+                            g = calib_info[det].get('gain', 1.0)
+                            o = calib_info[det].get('offset', 0.0)
+                            calib_params.append(f"{det}: Gain={g:.4f}, Offset={o:.4f} eV")
+                    if calib_params:
+                        calib_meta_rows.append(f"# SDD Calibration Parameters: {'; '.join(calib_params)}")
                 else:
-                    calib_str = "Disabled"
+                    calib_meta_rows = [
+                        "# SDD Calibration: Disabled"
+                    ]
 
                 sel_str = "+".join(selected_dets) if selected_dets else "None"
                 excl_str = "+".join(excluded_dets) if excluded_dets else "None"
@@ -2048,7 +2069,9 @@ class SummaryDashboard:
                     f"# ROI Selection: {mode_str}",
                     f"# {'Energy ROI' if self.sync.use_sdd_calib else 'Channels'}: {roi_str}",
                     f"# Normalization: {i0_source}",
-                    f"# SDD Calibration: {calib_str}",
+                ]
+                rows += calib_meta_rows
+                rows += [
                     f"# Active SDD Selection for Selected Average: {sel_str}",
                     f"# Excluded SDD Detectors: {excl_str}",
                 ]
@@ -2246,11 +2269,46 @@ class SummaryDashboard:
                 sel_str = "+".join(selected_dets) if selected_dets else "None"
                 excl_str = "+".join(excluded_dets) if excluded_dets else "None"
 
+                if self.sync.use_sdd_calib:
+                    calib_info = sdd_calib.load_calibration()
+                    meta_calib = calib_info.get("_metadata", {}) if calib_info else {}
+                    scan_used = meta_calib.get("scan_used", "N/A")
+                    edges_used = meta_calib.get("edges_used", "N/A")
+                    if isinstance(edges_used, list):
+                        edges_used = ", ".join(edges_used)
+                    calib_date = meta_calib.get("last_updated", "N/A")
+                    calib_file = os.path.basename(getattr(sdd_calib, 'CALIBRATION_FILE', 'sdd_calibration.json'))
+
+                    calib_meta_rows = [
+                        "# SDD Calibration: Active",
+                        f"# SDD Calibration File: {calib_file}",
+                        f"# SDD Calibration Scan Used: {scan_used}",
+                        f"# SDD Calibration Edges Used: {edges_used}",
+                    ]
+                    if calib_date and calib_date != "N/A":
+                        calib_meta_rows.append(f"# SDD Calibration Date: {calib_date}")
+                    
+                    calib_params = []
+                    for det in self.ctx['detector_names']:
+                        if det in calib_info and isinstance(calib_info[det], dict):
+                            g = calib_info[det].get('gain', 1.0)
+                            o = calib_info[det].get('offset', 0.0)
+                            calib_params.append(f"{det}: Gain={g:.4f}, Offset={o:.4f} eV")
+                    if calib_params:
+                        calib_meta_rows.append(f"# SDD Calibration Parameters: {'; '.join(calib_params)}")
+                else:
+                    calib_meta_rows = [
+                        "# SDD Calibration: Disabled"
+                    ]
+
                 rows += [
                     f"# ROI Selection: {mode_str}",
                     sdd_roi_str,
                     f"# Image Energy: {self.sync.all_energies[self.sync.energy_idx]:.2f} eV",
                     f"# Selection Coordinates: {roi if mode=='rect' else poly}",
+                ]
+                rows += calib_meta_rows
+                rows += [
                     f"# Active SDD Selection for Selected Average: {sel_str}",
                     f"# Excluded SDD Detectors: {excl_str}",
                     "#"
