@@ -146,16 +146,17 @@ run_calibration()
      - **CSV Files:** All exported CSV summary files contain header lines detailing active and excluded detectors (`# Active SDD Selection for Selected Average: sdd1+sdd2+sdd4`, `# Excluded SDD Detectors: sdd3`), and include both `RAW_Average_SDD` / `RAW_Selected_Average_SDD` and `NORM_Average_SDD` / `NORM_Selected_Average_SDD` columns.
      - **3D HDF5 Stacks (`_PCA-CA.h5`):** The stack exporter automatically generates both `entry/measurement/average` (all detectors) and `entry/measurement/selected_average` (selected detectors) with metadata attributes (`selected_detectors = 'sdd1,sdd2,sdd4'`).
 
-**I0 Normalization, Smoothing & OD Division:**
+**I0 Normalization, Smoothing, Constant Offset & OD Division:**
 - At the beginning of plotting, you will be prompted to select the normalization source:
   - **Internal I0 (`mcc1`):** Uses the Au mesh reference current collected during your scan.
   - **External I0 CSV:** Uses a previously collected standard (e.g., BN for Carbon C K-edge analysis).
 - An **I0 Preview Dialog** opens to configure processing parameters:
   - **Column Selection:** Select Energy (X) and Intensity (Y) columns.
   - **Smoothing:** Enable Savitzky-Golay smoothing with an adjustable window size to filter out noise in your $I_0$ standard.
+  - **I0 Constant Offset:** Add or subtract a baseline constant ($I_0' = I_0 + C$) to correct for detector dark currents, amplifier zero-offsets, or baseline drift. The plot provides real-time visual feedback comparing the baseline **Raw I0** curve (gray) directly with the **Modified I0** curve (blue), exactly like the compound optical density correction.
   - **Energy Shift:** Apply an energy calibration offset (eV) to align the $I_0$ standard with your scan energies.
   - **Compound Optical Density (SF) Correction:** Optionally divide the $I_0$ signal by the Optical Density of a compound (e.g., BN) using the Henke database (`sf.py`), with custom density (g/cm³), thickness (µm), and auto-scaling.
-- **Normalized Plot Titles:** $I_0$ normalization details are formatted into compact, 2-line small print (`fontsize=8.5`) above normalized subplots so long parameter strings never overlap or crowd the spectral curves.
+- **Normalized Plot Titles & Metadata:** Applied constant offsets are documented in the normalization string (`(+ Constant: +0.05)`), formatted into compact plot headers, and recorded into CSV comment headers and HDF5 stack metadata attributes.
 
 **IPFY Mode (Inverse Partial Fluorescence Yield):**
 - **Purpose & Inversion Math:** When **"IPFY Mode (Invert for PCA)"** is checked, the normalized spectra $N(E) = \text{RAW}(E) / I_0(E)$ are inverted by multiplying by $-1$ and shifted by a baseline constant:

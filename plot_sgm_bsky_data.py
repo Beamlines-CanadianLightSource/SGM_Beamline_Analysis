@@ -264,6 +264,10 @@ class ExternalI0PreviewDialog(tk.Toplevel):
         self.i0_calib_enabled = tk.BooleanVar(value=False)
         self.i0_energy_shift = tk.DoubleVar(value=0.0)
         
+        # Constant Offset variables
+        self.do_const_offset = tk.BooleanVar(value=False)
+        self.i0_const_offset = tk.DoubleVar(value=0.0)
+        
         # Optical Density (SF) variables
         self.do_od_divide = tk.BooleanVar(value=False)
         self.od_compound = tk.StringVar(value="BN")
@@ -291,34 +295,56 @@ class ExternalI0PreviewDialog(tk.Toplevel):
         
         # Smoothing UI
         smooth_frame = tk.LabelFrame(ctrl_frame, text="Smoothing (Savitzky-Golay)")
-        smooth_frame.grid(row=2, column=0, columnspan=2, padx=5, pady=5, sticky="ew")
+        smooth_frame.grid(row=2, column=0, columnspan=2, padx=5, pady=4, sticky="ew")
         
         self.do_smooth = tk.BooleanVar(value=False)
         self.chk_smooth = tk.Checkbutton(smooth_frame, text="Enable Smoothing", variable=self.do_smooth, command=self.update_plot)
-        self.chk_smooth.grid(row=0, column=0, padx=5, pady=5)
+        self.chk_smooth.grid(row=0, column=0, padx=5, pady=4)
         
-        tk.Label(smooth_frame, text="Window Size (odd):").grid(row=0, column=1, padx=5, pady=5)
+        tk.Label(smooth_frame, text="Window Size (odd):").grid(row=0, column=1, padx=5, pady=4)
         self.spin_window = ttk.Spinbox(smooth_frame, from_=3, to=1001, increment=2, width=5, command=self.update_plot)
         self.spin_window.set(11)
-        self.spin_window.grid(row=0, column=2, padx=5, pady=5)
+        self.spin_window.grid(row=0, column=2, padx=5, pady=4)
         self.spin_window.bind("<Return>", self.update_plot)
         
         # Energy Calibration UI (External I0 Only)
         calib_frame = tk.LabelFrame(ctrl_frame, text="I0 Energy Calibration")
-        calib_frame.grid(row=3, column=0, columnspan=2, padx=5, pady=5, sticky="ew")
+        calib_frame.grid(row=3, column=0, columnspan=2, padx=5, pady=4, sticky="ew")
         
         self.chk_calib = tk.Checkbutton(calib_frame, text="Enable Energy Calibration", variable=self.i0_calib_enabled, command=self.update_plot)
-        self.chk_calib.grid(row=0, column=0, padx=5, pady=5)
+        self.chk_calib.grid(row=0, column=0, padx=5, pady=4)
         
-        tk.Label(calib_frame, text="Shift (eV):").grid(row=0, column=1, padx=5, pady=5)
+        tk.Label(calib_frame, text="Shift (eV):").grid(row=0, column=1, padx=5, pady=4)
         self.ent_calib = ttk.Entry(calib_frame, textvariable=self.i0_energy_shift, width=10)
-        self.ent_calib.grid(row=0, column=2, padx=5, pady=5)
+        self.ent_calib.grid(row=0, column=2, padx=5, pady=4)
         self.ent_calib.bind("<Return>", self.update_plot)
         self.ent_calib.bind("<FocusOut>", self.update_plot)
         
+        # Constant Offset UI
+        const_frame = tk.LabelFrame(ctrl_frame, text="I0 Constant Offset")
+        const_frame.grid(row=4, column=0, columnspan=2, padx=5, pady=4, sticky="ew")
+        
+        self.do_const_offset = tk.BooleanVar(value=False)
+        self.i0_const_offset = tk.DoubleVar(value=0.0)
+        
+        self.chk_const = tk.Checkbutton(
+            const_frame, text="Add Constant to I0",
+            variable=self.do_const_offset, command=self.update_plot,
+            font=('TkDefaultFont', 9, 'bold')
+        )
+        self.chk_const.grid(row=0, column=0, padx=5, pady=3, sticky="w")
+        
+        tk.Label(const_frame, text="Constant (+/-):").grid(row=0, column=1, padx=5, pady=3, sticky="w")
+        self.ent_const = ttk.Entry(const_frame, textvariable=self.i0_const_offset, width=12)
+        self.ent_const.grid(row=0, column=2, padx=5, pady=3, sticky="w")
+        self.ent_const.bind("<Return>", self._on_const_return)
+        self.ent_const.bind("<FocusOut>", self.update_plot)
+        self.ent_const.bind("<KeyRelease>", self._on_const_key)
+        tk.Label(const_frame, text="(I0' = I0 + C)", font=('TkDefaultFont', 8, 'italic'), fg='gray').grid(row=0, column=3, padx=5, pady=3, sticky="w")
+
         # Optical Density (SF) Correction UI
         od_frame = tk.LabelFrame(ctrl_frame, text="Compound Optical Density (SF) Correction")
-        od_frame.grid(row=4, column=0, columnspan=2, padx=5, pady=5, sticky="ew")
+        od_frame.grid(row=5, column=0, columnspan=2, padx=5, pady=4, sticky="ew")
         
         self.chk_od = tk.Checkbutton(od_frame, text="Divide I0 by Optical Density (OD)", variable=self.do_od_divide, command=self.update_plot, font=('TkDefaultFont', 9, 'bold'))
         self.chk_od.grid(row=0, column=0, columnspan=4, padx=5, pady=2, sticky="w")
@@ -346,10 +372,10 @@ class ExternalI0PreviewDialog(tk.Toplevel):
 
         # Status / Error Label
         self.lbl_status = tk.Label(ctrl_frame, text="", fg="red", font=('TkDefaultFont', 9, 'italic'))
-        self.lbl_status.grid(row=5, column=0, columnspan=2, padx=5, pady=2, sticky="w")
+        self.lbl_status.grid(row=6, column=0, columnspan=2, padx=5, pady=2, sticky="w")
 
         btn_frame = tk.Frame(ctrl_frame)
-        btn_frame.grid(row=0, column=2, rowspan=5, padx=20, sticky="n")
+        btn_frame.grid(row=0, column=2, rowspan=7, padx=20, sticky="n")
         
         tk.Button(btn_frame, text="Apply", command=self.on_apply, width=15, bg='lightgreen').pack(pady=4)
         tk.Button(btn_frame, text="Cancel", command=self.on_cancel, width=15, bg='lightcoral').pack(pady=4)
@@ -362,10 +388,22 @@ class ExternalI0PreviewDialog(tk.Toplevel):
         
         toolbar = NavigationToolbar2Tk(self.canvas, self)
         toolbar.update()
-        self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         
         self.update_plot()
         
+    def _on_const_key(self, event=None):
+        if self.do_const_offset.get():
+            self.update_plot()
+
+    def _on_const_return(self, event=None):
+        try:
+            val = float(self.ent_const.get())
+            if val != 0.0 and not self.do_const_offset.get():
+                self.do_const_offset.set(True)
+        except Exception:
+            pass
+        self.update_plot()
+
     def update_plot(self, event=None):
         self.lbl_status.config(text="")
         e_col = self.cb_e.get()
@@ -394,6 +432,16 @@ class ExternalI0PreviewDialog(tk.Toplevel):
                         y_proc = savgol_filter(y_sorted, window_length=w, polyorder=2)
                 except Exception as e:
                     self.lbl_status.config(text=f"Smoothing error: {e}")
+
+            const_val = 0.0
+            if self.do_const_offset.get():
+                try:
+                    const_val = float(self.ent_const.get())
+                    y_proc = y_proc + const_val
+                except (ValueError, TypeError):
+                    pass
+                except Exception as e:
+                    self.lbl_status.config(text=f"Constant offset error: {e}")
 
             od_vals = None
             od_error = None
@@ -436,12 +484,18 @@ class ExternalI0PreviewDialog(tk.Toplevel):
                 ax_top = self.fig.add_subplot(gs[0, 0])
                 ax_bot = self.fig.add_subplot(gs[1, 0], sharex=ax_top)
                 
-                # Top Subplot: Original vs OD-Modified I0
+                # Top Subplot: Original vs Modified I0
                 ax_top.plot(x_sorted, y_sorted, color='gray', alpha=0.5, label='Raw I0')
+                
+                mod_desc = []
                 if self.do_smooth.get():
-                    ax_top.plot(x_sorted, y_proc, 'b.-', label='Smoothed & OD-Divided I0', linewidth=1.5)
-                else:
-                    ax_top.plot(x_sorted, y_proc, 'b.-', label='OD-Divided I0', linewidth=1.5)
+                    mod_desc.append(f"Smoothed (w={self.spin_window.get()})")
+                if self.do_const_offset.get() and const_val != 0.0:
+                    mod_desc.append(f"Offset: {const_val:+.4g}")
+                mod_desc.append(f"OD-Div ({compound_str})")
+                top_label = " & ".join(mod_desc) if mod_desc else "Modified I0"
+                
+                ax_top.plot(x_sorted, y_proc, 'b.-', label=top_label, linewidth=1.5)
                     
                 if self.i0_calib_enabled.get():
                     try:
@@ -450,7 +504,8 @@ class ExternalI0PreviewDialog(tk.Toplevel):
                     except: pass
                     
                 ax_top.set_ylabel(i_col)
-                ax_top.set_title(f"I0 Preview: {i_col} (OD Divided by {compound_str})")
+                title_extra = f", Offset: {const_val:+.4g}" if (self.do_const_offset.get() and const_val != 0.0) else ""
+                ax_top.set_title(f"I0 Preview: {i_col} (OD Divided by {compound_str}{title_extra})")
                 ax_top.legend(loc='upper right', fontsize=8)
                 ax_top.grid(True, linestyle='--', alpha=0.6)
                 plt.setp(ax_top.get_xticklabels(), visible=False)
@@ -463,24 +518,49 @@ class ExternalI0PreviewDialog(tk.Toplevel):
                 ax_bot.grid(True, linestyle='--', alpha=0.6)
             else:
                 ax = self.fig.add_subplot(111)
-                if self.do_smooth.get():
-                    ax.plot(x_sorted, y_sorted, color='gray', alpha=0.5, label='Raw')
-                    ax.plot(x_sorted, y_proc, 'b.-', label=f'Smoothed (w={self.spin_window.get()})')
-                    ax.legend()
+                is_modified = self.do_smooth.get() or self.do_const_offset.get()
+                
+                if is_modified:
+                    # Show Raw I0 in gray and Modified I0 in blue for instant visual comparison
+                    ax.plot(x_sorted, y_sorted, color='gray', alpha=0.5, label='Raw I0')
+                    
+                    mod_desc = []
+                    if self.do_smooth.get():
+                        mod_desc.append(f"Smoothed (w={self.spin_window.get()})")
+                    if self.do_const_offset.get():
+                        mod_desc.append(f"Offset: {const_val:+.4g}")
+                    
+                    mod_label = "Modified I0 (" + ", ".join(mod_desc) + ")"
+                    ax.plot(x_sorted, y_proc, 'b.-', label=mod_label, linewidth=1.5)
+                    ax.legend(loc='best', fontsize=8)
                 else:
-                    ax.plot(x_sorted, y_proc, 'b.-')
+                    ax.plot(x_sorted, y_proc, 'b.-', label='I0')
                     
                 ax.set_xlabel(e_col)
                 ax.set_ylabel(i_col)
-                ax.set_title(f"Preview: {i_col} vs {e_col}")
+                
+                title_mods = []
+                if self.do_const_offset.get():
+                    title_mods.append(f"Offset: {const_val:+.4g}")
+                if self.do_smooth.get():
+                    title_mods.append("Smoothed")
+                if self.i0_calib_enabled.get():
+                    try:
+                        shift = float(self.i0_energy_shift.get())
+                        title_mods.append(f"Shift: {shift:+.2f} eV")
+                    except: pass
+                
+                title_str = f"Preview: {i_col} vs {e_col}"
+                if title_mods:
+                    title_str += f" ({', '.join(title_mods)})"
+                ax.set_title(title_str)
                 ax.grid(True, linestyle='--', alpha=0.6)
                 
                 if self.i0_calib_enabled.get():
                     try:
                         shift = float(self.i0_energy_shift.get())
                         ax.plot(x_sorted + shift, y_proc, 'r--', alpha=0.7, label=f'Shifted ({shift:+.2f} eV)')
-                        ax.legend()
-                        ax.set_title(f"Preview: {i_col} vs {e_col} (Shift: {shift:+.2f} eV)")
+                        ax.legend(loc='best', fontsize=8)
                     except: pass
             
         try:
@@ -515,6 +595,13 @@ class ExternalI0PreviewDialog(tk.Toplevel):
 
     def on_apply(self):
         smoothed_str = f" (Smoothed w={self.spin_window.get()})" if self.do_smooth.get() else ""
+        const_str = ""
+        if self.do_const_offset.get():
+            try:
+                c_val = float(self.ent_const.get())
+                const_str = f" (+ Constant: {c_val:+.4g})"
+            except Exception:
+                pass
         shift_str = f" (Energy Shift: {self.i0_energy_shift.get():+.2f} eV)" if self.i0_calib_enabled.get() else ""
         od_str = ""
         if self.do_od_divide.get():
@@ -524,7 +611,7 @@ class ExternalI0PreviewDialog(tk.Toplevel):
             scale_str = " auto-scaled" if self.do_autoscale.get() else ""
             od_str = f" (Divided by OD: {c_str}, d={d_str}g/cc, t={t_str}um{scale_str})"
             
-        self.result = (self.cb_e.get(), self.cb_i.get(), self.x_final, self.y_final, smoothed_str + shift_str + od_str, self.i0_calib_enabled.get(), self.i0_energy_shift.get())
+        self.result = (self.cb_e.get(), self.cb_i.get(), self.x_final, self.y_final, smoothed_str + const_str + shift_str + od_str, self.i0_calib_enabled.get(), self.i0_energy_shift.get())
         self._close_dialog()
         
     def on_cancel(self):
