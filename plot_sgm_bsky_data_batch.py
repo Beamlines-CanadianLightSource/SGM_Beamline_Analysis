@@ -405,11 +405,11 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
                 rows.append(f"# Column {c_idx}: NORM_{det.upper()} (by {i0_source_label})"); c_idx += 1
             rows.append(f"# Column {c_idx}: NORM_Average_SDD"); c_idx += 1
             
-            rows.append(f"# Column {c_idx}: RAW_I0 (MCC1)"); c_idx += 1
+            rows.append(f"# Column {c_idx}: RAW_Au Mesh I0 (mcc1)"); c_idx += 1
             if ext_i0_col_values is not None:
                 rows.append(f"# Column {c_idx}: RAW_External_I0 (from {i0_source_label})"); c_idx += 1
-            rows.append(f"# Column {c_idx}: RAW_TEY (MCC4)"); c_idx += 1
-            rows.append(f"# Column {c_idx}: NORM_TEY (MCC4) (by {i0_source_label})"); c_idx += 1
+            rows.append(f"# Column {c_idx}: RAW_TEY of Sample (mcc4)"); c_idx += 1
+            rows.append(f"# Column {c_idx}: NORM_TEY of Sample (mcc4) (by {i0_source_label})"); c_idx += 1
             rows.append("#")
             
             sdd_raw_data = []
@@ -539,10 +539,10 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
             ax.set_title(f"Detector {key.split('_')[0].upper()} (Raw)", fontsize=11, fontweight='semibold')
             ax.set_ylabel("Raw Counts", fontsize=9)
         elif key == 'mcc1_raw':
-            ax.set_title("Raw I0 (MCC1) Intensity", fontsize=11, fontweight='semibold')
+            ax.set_title("Raw Au Mesh I0 (mcc1) Intensity", fontsize=11, fontweight='semibold')
             ax.set_ylabel("Raw Counts / Intensity", fontsize=9)
         elif key == 'mcc4_raw':
-            ax.set_title("Raw TEY (MCC4) Intensity", fontsize=11, fontweight='semibold')
+            ax.set_title("Raw TEY of Sample (mcc4) Intensity", fontsize=11, fontweight='semibold')
             ax.set_ylabel("Raw Counts / Intensity", fontsize=9)
             
         ax.set_xlabel("Energy (eV)", fontsize=9)
@@ -596,10 +596,10 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
             ax.set_title(f"Detector {key.split('_')[0].upper()} (Normalized)", fontsize=11, fontweight='semibold')
             ax.set_ylabel("Intensity (Normalized)", fontsize=9)
         elif key == 'mcc1_raw':
-            ax.set_title("Raw I0 (MCC1) Intensity (Reference)", fontsize=11, fontweight='semibold')
+            ax.set_title("Raw Au Mesh I0 (mcc1) Intensity (Reference)", fontsize=11, fontweight='semibold')
             ax.set_ylabel("Raw Counts / Intensity", fontsize=9)
         elif key == 'mcc4_norm':
-            ax.set_title("Normalized TEY (MCC4) XANES", fontsize=11, fontweight='semibold')
+            ax.set_title("Normalized TEY of Sample (mcc4) XANES", fontsize=11, fontweight='semibold')
             ax.set_ylabel("Normalized Intensity", fontsize=9)
             
         ax.set_xlabel("Energy (eV)", fontsize=9)

@@ -161,10 +161,10 @@ SDD_NAMES = {
 }
 
 MCC_NAMES = {
-    1: "mcc1 (I0 from Au Mesh, before KBs)",
-    2: "mcc2 (Photodiode)",
-    3: "mcc3 (Auxillary)",
-    4: "mcc4 (TEY of Sample)"
+    1: "Au Mesh I0 (mcc1)",
+    2: "Photodiode (mcc2)",
+    3: "Auxiliary (mcc3)",
+    4: "TEY of Sample (mcc4)"
 }
 
 # --- GUI Helpers ---
@@ -611,9 +611,19 @@ class ExternalI0PreviewDialog(tk.Toplevel):
             d_str = self.od_density.get()
             t_str = self.od_thickness.get()
             scale_str = " auto-scaled" if self.do_autoscale.get() else ""
-            od_str = f" (Divided by OD: {c_str}, d={d_str}g/cc, t={t_str}um{scale_str})"
+        if c_val != 0.0:
+            console_log(f"[I0 Preview] Constant offset applied: {c_val:+.4g}")
             
-        self.result = (self.cb_e.get(), self.cb_i.get(), self.x_final, self.y_final, smoothed_str + const_str + shift_str + od_str, self.i0_calib_enabled.get(), self.i0_energy_shift.get())
+        self.result = (
+            self.cb_e.get(), 
+            self.cb_i.get(), 
+            self.x_final, 
+            self.y_final, 
+            smoothed_str + const_str + shift_str + od_str, 
+            self.i0_calib_enabled.get(), 
+            self.i0_energy_shift.get(),
+            c_val
+        )
         self._close_dialog()
         
     def on_cancel(self):
@@ -1908,7 +1918,7 @@ class SummaryDashboard:
                 i0_src += f" (Energy Shift: {self.sync.i0_energy_shift:+.2f} eV)"
             
             title_sdd = format_norm_title("Normalized Fluorescence Spectra", self.ctx['scan_name'], roi_label, i0_src)
-            title_mcc = format_norm_title("Normalized I0 and TEY Spectra", self.ctx['scan_name'], None, i0_src)
+            title_mcc = format_norm_title("Normalized Au Mesh I0 and TEY of Sample Spectra", self.ctx['scan_name'], None, i0_src)
             try:
                 # Handle both 1D and 2D axis arrays
                 if self.ax.ndim == 2 and self.ax.shape == (2, 2):
@@ -2219,14 +2229,14 @@ class SummaryDashboard:
                     for ch in self.ctx['mcc_channels']:
                         label = MCC_NAMES.get(ch, f"mcc{ch}")
                         if is_ext_i0 and ch == 1:
-                            rows.append(f"# Column {c_idx}: RAW_mcc1 (Scan Au Mesh)"); c_idx += 1
+                            rows.append(f"# Column {c_idx}: RAW_Scan Au Mesh (mcc1)"); c_idx += 1
                             rows.append(f"# Column {c_idx}: RAW_External_I0 (from {i0_source})"); c_idx += 1
                         else:
                             rows.append(f"# Column {c_idx}: RAW_{label}"); c_idx += 1
                     for ch in self.ctx['mcc_channels']:
                         label = MCC_NAMES.get(ch, f"mcc{ch}")
                         if is_ext_i0 and ch == 1:
-                            rows.append(f"# Column {c_idx}: NORM_mcc1 (Scan Mesh / Ext I0)"); c_idx += 1
+                            rows.append(f"# Column {c_idx}: NORM_Scan Mesh (mcc1) / External I0"); c_idx += 1
                         else:
                             rows.append(f"# Column {c_idx}: NORM_{label} (by {i0_source})"); c_idx += 1
                     if is_ext_i0:
@@ -2648,6 +2658,10 @@ class SummaryDashboard:
             
             fmt = 'o-' if self.ctx.get('show_markers', True) else '-'
             
+            const_offset_dashboard = self.ctx.get('i0_const_offset', 0.0)
+            if const_offset_dashboard != 0.0:
+                console_log(f"  [I0 CONFIGURATION] Summary Dashboard loaded with Au Mesh I0 constant offset: {const_offset_dashboard:+.4g}")
+            
             # 1. Plot Raw Fluorescence (Top)
             for det in self.ctx['detector_names']:
                 det_id = int(det.replace('sdd','')) if 'sdd' in det else None
@@ -2673,7 +2687,7 @@ class SummaryDashboard:
             if self.ctx.get('mcc_data', {}).get('mcc1_original') is not None:
                 orig_mcc1 = self.ctx['mcc_data']['mcc1_original']
                 if not np.allclose(orig_mcc1, self.ctx['mcc_data']['mcc1']):
-                    ax_raw_mcc.plot(self.ctx['calibrated_energies'], orig_mcc1, color='gray', alpha=0.5, linestyle=':', label='Original Au Mesh I0')
+                    ax_raw_mcc.plot(self.ctx['calibrated_energies'], orig_mcc1, color='gray', alpha=0.5, linestyle=':', label='Original Au Mesh I0 (mcc1)')
 
             for ch in (self.ctx['mcc_channels'] or []):
                 data = self.ctx['mcc_data'][f'mcc{ch}']
@@ -2681,17 +2695,19 @@ class SummaryDashboard:
                     m_fmt = 's-' if self.ctx.get('show_markers', True) else '-'
                     base_label = MCC_NAMES.get(ch, f'mcc{ch}')
                     if is_ext_i0 and ch == 1:
-                        lbl = "Raw mcc1 (Scan Au Mesh)"
+                        lbl = "Raw Scan Au Mesh (mcc1)"
                     elif ch == 1 and "Internal" in self.ctx.get('i0_source', ''):
                         if const_offset != 0.0:
-                            lbl = f"Raw mcc1 (Au Mesh I0 {const_offset:+.4g})"
+                            lbl = f"Raw Au Mesh I0 {const_offset:+.4g} (mcc1)"
                         else:
-                            lbl = "Raw mcc1 (Au Mesh I0)"
+                            lbl = "Raw Au Mesh I0 (mcc1)"
+                    elif ch == 4:
+                        lbl = "Raw TEY of Sample (mcc4)"
                     else:
                         lbl = f"Raw {base_label}"
                     l, = ax_raw_mcc.plot(self.ctx['calibrated_energies'], data, m_fmt, label=lbl)
                     self.mcc_lines_raw[ch] = l
-            ax_raw_mcc.set_title("Raw I0 and Total Electron Yield (TEY) Spectra"); ax_raw_mcc.legend(fontsize='xx-small')
+            ax_raw_mcc.set_title("Raw Au Mesh I0 and TEY of Sample Spectra"); ax_raw_mcc.legend(fontsize='xx-small')
             ax_raw_mcc.set_xlabel("Energy (eV)"); ax_raw_mcc.set_ylabel("Counts/Intensity")
 
             # 3. Plot Normalized Fluorescence
@@ -2730,7 +2746,7 @@ class SummaryDashboard:
 
             # 4. Plot Normalized MCC
             if is_ext_i0:
-                l_ext_norm, = ax_norm_mcc.plot(self.ctx['calibrated_energies'], np.ones(len(self.ctx['calibrated_energies'])), 'b.-', lw=1.5, label="Normalized Ext I0 (=1.0)")
+                l_ext_norm, = ax_norm_mcc.plot(self.ctx['calibrated_energies'], np.ones(len(self.ctx['calibrated_energies'])), 'b.-', lw=1.5, label="Normalized External I0 (=1.0)")
                 self.ext_i0_line_norm = l_ext_norm
 
             for ch in (self.ctx['mcc_channels'] or []):
@@ -2741,14 +2757,16 @@ class SummaryDashboard:
                     m_fmt = 's-' if self.ctx.get('show_markers', True) else '-'
                     base_label = MCC_NAMES.get(ch, f'mcc{ch}')
                     if is_ext_i0 and ch == 1:
-                        lbl = "Normalized mcc1 (Scan Mesh / I0)"
+                        lbl = "Normalized Scan Mesh (mcc1) / External I0"
                     elif ch == 1 and "Internal" in self.ctx.get('i0_source', ''):
-                        lbl = "Normalized mcc1 (Au Mesh I0 = 1.0)"
+                        lbl = "Normalized Au Mesh I0 = 1.0 (mcc1)"
+                    elif ch == 4:
+                        lbl = "Normalized TEY of Sample (mcc4)"
                     else:
                         lbl = f"Normalized {base_label}"
                     l, = ax_norm_mcc.plot(self.ctx['calibrated_energies'], norm_mcc, m_fmt, label=lbl)
                     self.mcc_lines_norm[ch] = l
-            title_norm_mcc = format_norm_title("Normalized I0 and TEY Spectra", self.ctx['scan_name'], None, i0_src)
+            title_norm_mcc = format_norm_title("Normalized Au Mesh I0 and TEY of Sample Spectra", self.ctx['scan_name'], None, i0_src)
             ax_norm_mcc.set_title(title_norm_mcc, fontsize=8.5, pad=6); ax_norm_mcc.legend(fontsize='xx-small')
             ax_norm_mcc.set_xlabel("Energy (eV)"); ax_norm_mcc.set_ylabel("Normalized Intensity")
             
@@ -3220,7 +3238,15 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                     
                     if dialog.result:
                         selected_e_col, selected_i_col, x_sorted, y_sorted, extra_str, cal_en, cal_val = dialog.result[:7]
-                        const_offset_val = getattr(dialog, 'const_val', 0.0)
+                        const_offset_val = dialog.result[7] if len(dialog.result) > 7 else getattr(dialog, 'const_val', 0.0)
+                        if const_offset_val == 0.0 and extra_str:
+                            import re
+                            m_const = re.search(r'\(\+\s*Constant:\s*([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\)', extra_str)
+                            if m_const:
+                                try:
+                                    const_offset_val = float(m_const.group(1))
+                                except Exception:
+                                    pass
                         path_pack['i0_const_offset'] = const_offset_val
                         
                         # Store raw sorted data for on-the-fly shift adjustments
@@ -3237,10 +3263,13 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                         path_pack['i0_energy_shift'] = cal_val
 
                         if const_offset_val != 0.0:
-                            print(f"\n  [I0 Configuration] I0 was modified by adding constant {const_offset_val:+.4g} (I0' = I0 + {const_offset_val:+.4g}).")
-                            print(f"  [I0 Configuration] Normalization Source: {i0_source}\n")
+                            console_log("\n" + "=" * 70)
+                            console_log(f"  [I0 CONFIGURATION] A constant was added to External I0: {const_offset_val:+.4g}")
+                            console_log(f"  [I0 CONFIGURATION] Formula: I0_modified = I0_original + ({const_offset_val:+.4g})")
+                            console_log(f"  [I0 CONFIGURATION] Normalization Source: {i0_source}")
+                            console_log("=" * 70 + "\n")
                         else:
-                            print(f"\n  [I0 Configuration] Normalization Source: {i0_source}\n")
+                            console_log(f"\n  [I0 CONFIGURATION] Normalization Source: {i0_source}\n")
                 except Exception as e:
                     messagebox.showerror("Error", f"Failed to load external I0: {e}")
         elif use_internal:
@@ -3294,7 +3323,15 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                     
                     if dialog.result:
                         selected_e_col, selected_i_col, x_sorted, y_sorted, extra_str, cal_en, cal_val = dialog.result[:7]
-                        const_offset_val = getattr(dialog, 'const_val', 0.0)
+                        const_offset_val = dialog.result[7] if len(dialog.result) > 7 else getattr(dialog, 'const_val', 0.0)
+                        if const_offset_val == 0.0 and extra_str:
+                            import re
+                            m_const = re.search(r'\(\+\s*Constant:\s*([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\)', extra_str)
+                            if m_const:
+                                try:
+                                    const_offset_val = float(m_const.group(1))
+                                except Exception:
+                                    pass
                         path_pack['i0_const_offset'] = const_offset_val
                         ext_i0_values = np.interp(calibrated_energies, x_sorted, y_sorted)
                         i0_source = f"Internal: mcc1 (Au Mesh){extra_str}"
@@ -3315,10 +3352,13 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                             path_pack['mcc_maps']['mcc1'] = mcc_maps['mcc1']
 
                         if const_offset_val != 0.0:
-                            print(f"\n  [I0 Configuration] I0 was modified by adding constant {const_offset_val:+.4g} (I0' = I0 + {const_offset_val:+.4g}).")
-                            print(f"  [I0 Configuration] Normalization Source: {i0_source}\n")
+                            console_log("\n" + "=" * 70)
+                            console_log(f"  [I0 CONFIGURATION] A constant was added to Au Mesh I0: {const_offset_val:+.4g}")
+                            console_log(f"  [I0 CONFIGURATION] Formula: I0_modified = I0_original + ({const_offset_val:+.4g})")
+                            console_log(f"  [I0 CONFIGURATION] Normalization Source: {i0_source}")
+                            console_log("=" * 70 + "\n")
                         else:
-                            print(f"\n  [I0 Configuration] Normalization Source: {i0_source}\n")
+                            console_log(f"\n  [I0 CONFIGURATION] Normalization Source: {i0_source}\n")
             except Exception as e:
                 print(f"Error previewing internal I0: {e}")
 
