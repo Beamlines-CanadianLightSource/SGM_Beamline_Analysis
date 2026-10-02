@@ -140,12 +140,15 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
                 dialog.mainloop()
                 
                 if dialog.result:
-                    selected_e_col, selected_i_col, x_s, y_s, extra_str, cal_en, cal_val = dialog.result
+                    selected_e_col, selected_i_col, x_s, y_s, extra_str, cal_en, cal_val = dialog.result[:7]
+                    const_offset_val = getattr(dialog, 'const_val', 0.0)
                     shift = cal_val if cal_en else 0.0
                     x_sorted = x_s + shift
                     y_sorted = y_s
                     i0_source_label = f"External: {os.path.basename(ext_path)} [{selected_i_col}]{extra_str}"
                     print(f"Loaded external I0 calibration from {ext_path} ({i0_source_label})")
+                    if const_offset_val != 0.0:
+                        print(f"  [Batch Normalization] I0 was modified by adding constant {const_offset_val:+.4g} (I0' = I0 + {const_offset_val:+.4g})")
                 else:
                     print("External I0 selection cancelled in dialog. Falling back to internal I0.", file=sys.stderr)
                     use_internal = True

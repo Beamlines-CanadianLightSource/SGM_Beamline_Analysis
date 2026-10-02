@@ -596,12 +596,14 @@ class ExternalI0PreviewDialog(tk.Toplevel):
     def on_apply(self):
         smoothed_str = f" (Smoothed w={self.spin_window.get()})" if self.do_smooth.get() else ""
         const_str = ""
+        c_val = 0.0
         if self.do_const_offset.get():
             try:
                 c_val = float(self.ent_const.get())
                 const_str = f" (+ Constant: {c_val:+.4g})"
             except Exception:
                 pass
+        self.const_val = c_val
         shift_str = f" (Energy Shift: {self.i0_energy_shift.get():+.2f} eV)" if self.i0_calib_enabled.get() else ""
         od_str = ""
         if self.do_od_divide.get():
@@ -2160,6 +2162,10 @@ class SummaryDashboard:
                     f"# {'Energy ROI' if self.sync.use_sdd_calib else 'Channels'}: {roi_str}",
                     f"# Normalization: {i0_source}",
                 ]
+                const_offset_meta = self.ctx.get('i0_const_offset', 0.0)
+                if const_offset_meta != 0.0:
+                    rows.append(f"# I0 Constant Offset: {const_offset_meta:+.4g} (I0 modified by adding constant {const_offset_meta:+.4g})")
+                    console_log(f"  [METADATA] I0 was modified by adding constant: {const_offset_meta:+.4g}")
                 rows += calib_meta_rows
                 rows += [
                     f"# Active SDD Selection for Selected Average: {sel_str}",
@@ -2655,17 +2661,19 @@ class SummaryDashboard:
 
             # 2. Plot Raw MCC
             is_ext_i0 = (self.ctx.get('ext_i0_values') is not None and "Internal" not in self.ctx.get('i0_source', ''))
+            const_offset = self.ctx.get('i0_const_offset', 0.0)
             
             # If external I0 is used, plot the active external I0 curve
             if is_ext_i0:
-                l_ext, = ax_raw_mcc.plot(self.ctx['calibrated_energies'], self.ctx['ext_i0_values'], 'b.-', lw=1.5, label="Raw External I0")
+                ext_lbl = f"Raw External I0 ({const_offset:+.4g})" if const_offset != 0.0 else "Raw External I0"
+                l_ext, = ax_raw_mcc.plot(self.ctx['calibrated_energies'], self.ctx['ext_i0_values'], 'b.-', lw=1.5, label=ext_lbl)
                 self.ext_i0_line_raw = l_ext
                 
             # If internal I0 has a constant offset or smoothing, plot original unmodified mcc1 for comparison
             if self.ctx.get('mcc_data', {}).get('mcc1_original') is not None:
                 orig_mcc1 = self.ctx['mcc_data']['mcc1_original']
                 if not np.allclose(orig_mcc1, self.ctx['mcc_data']['mcc1']):
-                    ax_raw_mcc.plot(self.ctx['calibrated_energies'], orig_mcc1, color='gray', alpha=0.5, linestyle=':', label='Raw mcc1 (Unmodified)')
+                    ax_raw_mcc.plot(self.ctx['calibrated_energies'], orig_mcc1, color='gray', alpha=0.5, linestyle=':', label='Original Au Mesh I0')
 
             for ch in (self.ctx['mcc_channels'] or []):
                 data = self.ctx['mcc_data'][f'mcc{ch}']
@@ -2675,7 +2683,10 @@ class SummaryDashboard:
                     if is_ext_i0 and ch == 1:
                         lbl = "Raw mcc1 (Scan Au Mesh)"
                     elif ch == 1 and "Internal" in self.ctx.get('i0_source', ''):
-                        lbl = "Raw mcc1 (Au Mesh I0)"
+                        if const_offset != 0.0:
+                            lbl = f"Raw mcc1 (Au Mesh I0 {const_offset:+.4g})"
+                        else:
+                            lbl = "Raw mcc1 (Au Mesh I0)"
                     else:
                         lbl = f"Raw {base_label}"
                     l, = ax_raw_mcc.plot(self.ctx['calibrated_energies'], data, m_fmt, label=lbl)
@@ -3208,7 +3219,9 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                     dialog.mainloop()
                     
                     if dialog.result:
-                        selected_e_col, selected_i_col, x_sorted, y_sorted, extra_str, cal_en, cal_val = dialog.result
+                        selected_e_col, selected_i_col, x_sorted, y_sorted, extra_str, cal_en, cal_val = dialog.result[:7]
+                        const_offset_val = getattr(dialog, 'const_val', 0.0)
+                        path_pack['i0_const_offset'] = const_offset_val
                         
                         # Store raw sorted data for on-the-fly shift adjustments
                         context_ext_i0_df = ext_df
@@ -3222,6 +3235,12 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                         # Set initial calibration state from dialog
                         path_pack['i0_calib_enabled'] = cal_en
                         path_pack['i0_energy_shift'] = cal_val
+
+                        if const_offset_val != 0.0:
+                            print(f"\n  [I0 Configuration] I0 was modified by adding constant {const_offset_val:+.4g} (I0' = I0 + {const_offset_val:+.4g}).")
+                            print(f"  [I0 Configuration] Normalization Source: {i0_source}\n")
+                        else:
+                            print(f"\n  [I0 Configuration] Normalization Source: {i0_source}\n")
                 except Exception as e:
                     messagebox.showerror("Error", f"Failed to load external I0: {e}")
         elif use_internal:
@@ -3274,7 +3293,9 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                     dialog.mainloop()
                     
                     if dialog.result:
-                        selected_e_col, selected_i_col, x_sorted, y_sorted, extra_str, cal_en, cal_val = dialog.result
+                        selected_e_col, selected_i_col, x_sorted, y_sorted, extra_str, cal_en, cal_val = dialog.result[:7]
+                        const_offset_val = getattr(dialog, 'const_val', 0.0)
+                        path_pack['i0_const_offset'] = const_offset_val
                         ext_i0_values = np.interp(calibrated_energies, x_sorted, y_sorted)
                         i0_source = f"Internal: mcc1 (Au Mesh){extra_str}"
                         path_pack['i0_calib_enabled'] = False
@@ -3292,6 +3313,12 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                             mcc_maps['mcc1_original'] = mcc_maps['mcc1'].copy()
                             mcc_maps['mcc1'] = np.tile(ext_i0_values[:, None], (1, n_pix)).astype(mcc_maps['mcc1'].dtype)
                             path_pack['mcc_maps']['mcc1'] = mcc_maps['mcc1']
+
+                        if const_offset_val != 0.0:
+                            print(f"\n  [I0 Configuration] I0 was modified by adding constant {const_offset_val:+.4g} (I0' = I0 + {const_offset_val:+.4g}).")
+                            print(f"  [I0 Configuration] Normalization Source: {i0_source}\n")
+                        else:
+                            print(f"\n  [I0 Configuration] Normalization Source: {i0_source}\n")
             except Exception as e:
                 print(f"Error previewing internal I0: {e}")
 
@@ -3318,6 +3345,7 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
             'avg_dependence': avg_dependence, 'mcc_channels': mcc_channels, 
             'mcc_data': mcc_data, 'mcc_maps': mcc_maps, 'show_markers': show_markers,
             'ext_i0_values': ext_i0_values, 'i0_source': i0_source,
+            'i0_const_offset': path_pack.get('i0_const_offset', 0.0),
             'ext_i0_df': context_ext_i0_df if use_ext else None,
             'ext_i0_cols': context_ext_i0_cols if use_ext else None,
             'ext_i0_raw_xy': context_ext_i0_raw_xy if use_ext else None

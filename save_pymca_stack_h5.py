@@ -582,6 +582,11 @@ def save_pymca_stack_h5(path_pack, output_path=None, channel_roi=None, xrf_roi=N
             sel_avg_ds.attrs['long_name'] = f"Average of Selected Detectors ({','.join(selected_dets)})"
             
             measurement.attrs['selected_detectors'] = str(','.join(selected_dets))
+            measurement.attrs['i0_source'] = str(i0_source)
+            const_offset_h5 = path_pack.get('i0_const_offset', 0.0)
+            if const_offset_h5 != 0.0:
+                measurement.attrs['i0_constant_offset'] = float(const_offset_h5)
+                measurement.attrs['i0_comment'] = f"I0 was modified by adding constant {const_offset_h5:+.4g}"
 
         print(f"\nSuccessfully saved PyMca-compatible HDF5 stack (multi-detector) to: {final_save_path}")
         print(f"Datasets: {', '.join(detector_names)}, sum, average, selected_average ({','.join(selected_dets)})")
