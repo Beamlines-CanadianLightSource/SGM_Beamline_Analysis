@@ -1830,6 +1830,9 @@ class SummaryDashboard:
                     line = self.mcc_lines_raw.get(ch)
                     if line: line.set_ydata(data)
 
+        if getattr(self, 'ext_i0_line_raw', None) is not None and self.ctx.get('ext_i0_values') is not None:
+            self.ext_i0_line_raw.set_ydata(self.ctx['ext_i0_values'])
+
         # 3. Update Normalized SDD Lines (Raw / MCC1 / Ext I0)
         active_i0 = None
         if self.ctx.get('ext_i0_values') is not None:
@@ -2202,21 +2205,29 @@ class SummaryDashboard:
                     rows.append(f"# Column {c_idx}: NORM_Average_SDD (All)"); c_idx += 1
                     rows.append(f"# Column {c_idx}: NORM_Selected_Average_SDD ({sel_str})"); c_idx += 1
                 
-                has_ext_i0 = (self.ctx.get('ext_i0_values') is not None)
-                if has_ext_i0:
+                is_ext_i0 = (self.ctx.get('ext_i0_values') is not None and "Internal" not in self.ctx.get('i0_source', ''))
+                if is_ext_i0:
                     ext_i0_vals = self.ctx['ext_i0_values']
 
                 if self.ctx['mcc_channels']:
                     for ch in self.ctx['mcc_channels']:
                         label = MCC_NAMES.get(ch, f"mcc{ch}")
-                        rows.append(f"# Column {c_idx}: RAW_{label}"); c_idx += 1
-                        if ch == 1 and has_ext_i0:
+                        if is_ext_i0 and ch == 1:
+                            rows.append(f"# Column {c_idx}: RAW_mcc1 (Scan Au Mesh)"); c_idx += 1
                             rows.append(f"# Column {c_idx}: RAW_External_I0 (from {i0_source})"); c_idx += 1
+                        else:
+                            rows.append(f"# Column {c_idx}: RAW_{label}"); c_idx += 1
                     for ch in self.ctx['mcc_channels']:
                         label = MCC_NAMES.get(ch, f"mcc{ch}")
-                        rows.append(f"# Column {c_idx}: NORM_{label} (by {i0_source})"); c_idx += 1
-                elif has_ext_i0:
+                        if is_ext_i0 and ch == 1:
+                            rows.append(f"# Column {c_idx}: NORM_mcc1 (Scan Mesh / Ext I0)"); c_idx += 1
+                        else:
+                            rows.append(f"# Column {c_idx}: NORM_{label} (by {i0_source})"); c_idx += 1
+                    if is_ext_i0:
+                        rows.append(f"# Column {c_idx}: NORM_External_I0 (=1.0)"); c_idx += 1
+                elif is_ext_i0:
                     rows.append(f"# Column {c_idx}: RAW_External_I0 (from {i0_source})"); c_idx += 1
+                    rows.append(f"# Column {c_idx}: NORM_External_I0 (=1.0)"); c_idx += 1
 
                 rows.append("#")
                 for i, energy in enumerate(self.sync.all_energies):
@@ -2233,11 +2244,14 @@ class SummaryDashboard:
                     if self.ctx['mcc_channels']:
                         for ch in self.ctx['mcc_channels']:
                             row_data.append(f"{current_mcc[f'mcc{ch}'][i]:.6f}")
-                            if ch == 1 and has_ext_i0:
+                            if ch == 1 and is_ext_i0:
                                 row_data.append(f"{ext_i0_vals[i]:.6f}")
                         for ch in self.ctx['mcc_channels']: row_data.append(f"{normalized_mcc[f'mcc{ch}'][i]:.6f}")
-                    elif has_ext_i0:
+                        if is_ext_i0:
+                            row_data.append("1.000000")
+                    elif is_ext_i0:
                         row_data.append(f"{ext_i0_vals[i]:.6f}")
+                        row_data.append("1.000000")
                     rows.append(",".join(row_data))
                 console_log(f"  Writing {len(rows)} rows to CSV...")
                 save_csv_idl(save_path, rows)
@@ -2640,12 +2654,31 @@ class SummaryDashboard:
             ax_raw_sdd.set_xlabel("Energy (eV)"); ax_raw_sdd.set_ylabel("Raw Counts")
 
             # 2. Plot Raw MCC
+            is_ext_i0 = (self.ctx.get('ext_i0_values') is not None and "Internal" not in self.ctx.get('i0_source', ''))
+            
+            # If external I0 is used, plot the active external I0 curve
+            if is_ext_i0:
+                l_ext, = ax_raw_mcc.plot(self.ctx['calibrated_energies'], self.ctx['ext_i0_values'], 'b.-', lw=1.5, label="Raw External I0")
+                self.ext_i0_line_raw = l_ext
+                
+            # If internal I0 has a constant offset or smoothing, plot original unmodified mcc1 for comparison
+            if self.ctx.get('mcc_data', {}).get('mcc1_original') is not None:
+                orig_mcc1 = self.ctx['mcc_data']['mcc1_original']
+                if not np.allclose(orig_mcc1, self.ctx['mcc_data']['mcc1']):
+                    ax_raw_mcc.plot(self.ctx['calibrated_energies'], orig_mcc1, color='gray', alpha=0.5, linestyle=':', label='Raw mcc1 (Unmodified)')
+
             for ch in (self.ctx['mcc_channels'] or []):
                 data = self.ctx['mcc_data'][f'mcc{ch}']
                 if not np.all(np.array(data) == 0):
                     m_fmt = 's-' if self.ctx.get('show_markers', True) else '-'
-                    label = MCC_NAMES.get(ch, f'mcc{ch}')
-                    l, = ax_raw_mcc.plot(self.ctx['calibrated_energies'], data, m_fmt, label=f"Raw {label}")
+                    base_label = MCC_NAMES.get(ch, f'mcc{ch}')
+                    if is_ext_i0 and ch == 1:
+                        lbl = "Raw mcc1 (Scan Au Mesh)"
+                    elif ch == 1 and "Internal" in self.ctx.get('i0_source', ''):
+                        lbl = "Raw mcc1 (Au Mesh I0)"
+                    else:
+                        lbl = f"Raw {base_label}"
+                    l, = ax_raw_mcc.plot(self.ctx['calibrated_energies'], data, m_fmt, label=lbl)
                     self.mcc_lines_raw[ch] = l
             ax_raw_mcc.set_title("Raw I0 and Total Electron Yield (TEY) Spectra"); ax_raw_mcc.legend(fontsize='xx-small')
             ax_raw_mcc.set_xlabel("Energy (eV)"); ax_raw_mcc.set_ylabel("Counts/Intensity")
@@ -2685,14 +2718,24 @@ class SummaryDashboard:
             ax_norm_sdd.set_xlabel("Energy (eV)"); ax_norm_sdd.set_ylabel("Normalized Intensity")
 
             # 4. Plot Normalized MCC
+            if is_ext_i0:
+                l_ext_norm, = ax_norm_mcc.plot(self.ctx['calibrated_energies'], np.ones(len(self.ctx['calibrated_energies'])), 'b.-', lw=1.5, label="Normalized Ext I0 (=1.0)")
+                self.ext_i0_line_norm = l_ext_norm
+
             for ch in (self.ctx['mcc_channels'] or []):
                 data = np.array(self.ctx['mcc_data'][f'mcc{ch}'])
                 if not np.all(data == 0):
                     i0_safe = np.where(i0_init <= 0, 1.0, i0_init)
                     norm_mcc = data / i0_safe
                     m_fmt = 's-' if self.ctx.get('show_markers', True) else '-'
-                    label = MCC_NAMES.get(ch, f'mcc{ch}')
-                    l, = ax_norm_mcc.plot(self.ctx['calibrated_energies'], norm_mcc, m_fmt, label=f"Normalized {label}")
+                    base_label = MCC_NAMES.get(ch, f'mcc{ch}')
+                    if is_ext_i0 and ch == 1:
+                        lbl = "Normalized mcc1 (Scan Mesh / I0)"
+                    elif ch == 1 and "Internal" in self.ctx.get('i0_source', ''):
+                        lbl = "Normalized mcc1 (Au Mesh I0 = 1.0)"
+                    else:
+                        lbl = f"Normalized {base_label}"
+                    l, = ax_norm_mcc.plot(self.ctx['calibrated_energies'], norm_mcc, m_fmt, label=lbl)
                     self.mcc_lines_norm[ch] = l
             title_norm_mcc = format_norm_title("Normalized I0 and TEY Spectra", self.ctx['scan_name'], None, i0_src)
             ax_norm_mcc.set_title(title_norm_mcc, fontsize=8.5, pad=6); ax_norm_mcc.legend(fontsize='xx-small')
@@ -3236,6 +3279,19 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                         i0_source = f"Internal: mcc1 (Au Mesh){extra_str}"
                         path_pack['i0_calib_enabled'] = False
                         path_pack['i0_energy_shift'] = 0.0
+
+                        # Preserve original raw mcc1 before modifications
+                        if 'mcc1' in mcc_data and len(mcc_data['mcc1']) > 0:
+                            mcc_data['mcc1_original'] = np.array(mcc_data['mcc1']).copy()
+                        
+                        # Update mcc1 in mcc_data, path_pack, and mcc_maps so mcc1 reflects the active I0
+                        # (including constant offset, smoothing, OD correction) everywhere
+                        mcc_data['mcc1'] = ext_i0_values
+                        if 'mcc1' in mcc_maps and mcc_maps['mcc1'] is not None:
+                            n_pix = mcc_maps['mcc1'].shape[1]
+                            mcc_maps['mcc1_original'] = mcc_maps['mcc1'].copy()
+                            mcc_maps['mcc1'] = np.tile(ext_i0_values[:, None], (1, n_pix)).astype(mcc_maps['mcc1'].dtype)
+                            path_pack['mcc_maps']['mcc1'] = mcc_maps['mcc1']
             except Exception as e:
                 print(f"Error previewing internal I0: {e}")
 
