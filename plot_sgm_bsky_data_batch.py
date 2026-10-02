@@ -110,7 +110,7 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
     # 3. Prompt for I0 normalization source
     use_internal = show_custom_dialog(
         title="I0 Selection",
-        message="Use INTERNAL mcc1 for I0 normalization?\n\n(Select 'No' to load an EXTERNAL I0 CSV)",
+        message="Use INTERNAL Au Mesh I0 (mcc1) for I0 normalization?\n\n(Select 'No' to load an EXTERNAL I0 CSV)",
         dialog_type="yesno"
     )
     if use_internal is None:
@@ -119,7 +119,7 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
         return
 
     x_sorted, y_sorted = None, None
-    i0_source_label = "mcc1"
+    i0_source_label = "Au Mesh I0 (mcc1)"
     if not use_internal:
         ext_path = safe_filedialog_call(
             filedialog.askopenfilename,

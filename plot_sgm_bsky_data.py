@@ -186,7 +186,16 @@ def format_norm_title(main_title, scan_name, roi_label, i0_src):
         else:
             line1 = f"{main_title}"
             
-    i0_str = f"Normalized by: {i0_src}" if i0_src else ""
+    if i0_src:
+        clean_src = str(i0_src)
+        clean_src = clean_src.replace("Internal: mcc1 (Au Mesh)", "Internal: Au Mesh I0 (mcc1)")
+        clean_src = clean_src.replace("Internal: mcc1", "Internal: Au Mesh I0 (mcc1)")
+        clean_src = clean_src.replace("mcc1 (Au Mesh)", "Au Mesh I0 (mcc1)")
+        if clean_src.strip() == "mcc1":
+            clean_src = "Internal: Au Mesh I0 (mcc1)"
+        i0_str = f"Normalized by: {clean_src}"
+    else:
+        i0_str = ""
     
     # If the I0 string is very long, break long clauses cleanly across lines
     if len(i0_str) > 60 and " (Divided by OD:" in i0_str:
@@ -238,11 +247,11 @@ class ExternalI0PreviewDialog(tk.Toplevel):
         self.title("External I0 Selection & Processing")
         self.df = dataframe.copy()
         
-        # Ensure mcc1 column is clearly displayed as 'mcc1 (Au Mesh)'
+        # Ensure mcc1 column is clearly displayed as 'Au Mesh I0 (mcc1)'
         renamed_cols = {}
         for c in self.df.columns:
             if str(c).lower() == 'mcc1':
-                renamed_cols[c] = 'mcc1 (Au Mesh)'
+                renamed_cols[c] = 'Au Mesh I0 (mcc1)'
         if renamed_cols:
             self.df = self.df.rename(columns=renamed_cols)
             if default_i_col in renamed_cols:
@@ -2013,7 +2022,7 @@ class SummaryDashboard:
                 mcc1_key = 'mcc1'
                 if mcc1_key in current_mcc and np.any(current_mcc[mcc1_key]):
                     i0_values = np.abs(np.array(current_mcc[mcc1_key]).copy())
-                    i0_source = "Internal: mcc1"
+                    i0_source = "Internal: Au Mesh I0 (mcc1)"
                 else:
                     i0_values = np.ones(len(self.sync.all_energies))
                     i0_source = "None (Raw Only)"
@@ -3200,7 +3209,7 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
         if len(all_energies) <= 1:
             use_internal = True
         else:
-            use_internal = messagebox.askyesno("I0 Selection", "Use INTERNAL mcc1 for I0 normalization?\n\n(Select 'No' to load an EXTERNAL I0 CSV)")
+            use_internal = messagebox.askyesno("I0 Selection", "Use INTERNAL Au Mesh I0 (mcc1) for I0 normalization?\n\n(Select 'No' to load an EXTERNAL I0 CSV)")
         
         use_ext = not use_internal
         
@@ -3208,7 +3217,7 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
         context_ext_i0_df = None
         context_ext_i0_cols = None
         context_ext_i0_raw_xy = None
-        i0_source = "mcc1" if (mcc_channels and 1 in mcc_channels) else "None (Raw Only)"
+        i0_source = "Internal: Au Mesh I0 (mcc1)" if (mcc_channels and 1 in mcc_channels) else "None (Raw Only)"
         
         if use_ext:
             ext_path = safe_filedialog_call(
@@ -3308,9 +3317,9 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
 
                 if mcc1_vals is not None and len(mcc1_vals) > 0:
                     min_len = min(len(calibrated_energies), len(mcc1_vals))
-                    int_df = pd.DataFrame({'Energy': calibrated_energies[:min_len], 'mcc1 (Au Mesh)': mcc1_vals[:min_len]})
-                    dialog = ExternalI0PreviewDialog(root_i0, int_df, 'Energy', 'mcc1 (Au Mesh)')
-                    dialog.title("Internal I0 (Au Mesh) Preview")
+                    int_df = pd.DataFrame({'Energy': calibrated_energies[:min_len], 'Au Mesh I0 (mcc1)': mcc1_vals[:min_len]})
+                    dialog = ExternalI0PreviewDialog(root_i0, int_df, 'Energy', 'Au Mesh I0 (mcc1)')
+                    dialog.title("Internal Au Mesh I0 (mcc1) Preview")
                     dialog.attributes("-topmost", True)
                     try:
                         dialog.deiconify()
@@ -3334,7 +3343,7 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                                     pass
                         path_pack['i0_const_offset'] = const_offset_val
                         ext_i0_values = np.interp(calibrated_energies, x_sorted, y_sorted)
-                        i0_source = f"Internal: mcc1 (Au Mesh){extra_str}"
+                        i0_source = f"Internal: Au Mesh I0 (mcc1){extra_str}"
                         path_pack['i0_calib_enabled'] = False
                         path_pack['i0_energy_shift'] = 0.0
 
