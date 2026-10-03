@@ -1968,6 +1968,23 @@ class SummaryDashboard:
                     ax.set_ylim(ymin - pad_bot if ymin < 0 else 0.0, ymax + pad_top if ymax > ymin else 1.0)
             else:
                 ax.set_ylim(0, 1.0)
+
+        # Autoscale secondary right Y-axis (External I0) if present
+        if getattr(self, 'ax_raw_ext', None) is not None and autoscale_y:
+            ext_lines = self.ax_raw_ext.get_lines()
+            if ext_lines:
+                eymax, eymin = 0.0, 0.0
+                e_has = False
+                for eline in ext_lines:
+                    eydata = eline.get_ydata()
+                    if len(eydata) > 0:
+                        eymax = max(eymax, np.nanmax(eydata))
+                        eymin = min(eymin, np.nanmin(eydata))
+                        e_has = True
+                if e_has:
+                    epad_top = abs(eymax) * 0.15
+                    epad_bot = abs(eymax) * 0.05
+                    self.ax_raw_ext.set_ylim(eymin - epad_bot if eymin < 0 else 0.0, eymax + epad_top if eymax > 0 else 1.0)
         
         self.fig.canvas.draw_idle()
 
@@ -2654,8 +2671,9 @@ class SummaryDashboard:
             chk_y = 0.45
         else:
             # Each plot is ~6.375 wide by ~9.6 tall to satisfy "50% smaller width, height 1.5x width"
+            is_ext_i0 = (self.ctx.get('ext_i0_values') is not None and "Internal" not in self.ctx.get('i0_source', ''))
             self.fig, self.ax = plt.subplots(rows, cols, figsize=(12.75, 19.2), squeeze=False, num=fig_id)
-            self.fig.subplots_adjust(hspace=0.3, wspace=0.2, bottom=0.15, top=0.92, left=0.08, right=0.95)
+            self.fig.subplots_adjust(hspace=0.3, wspace=0.25 if is_ext_i0 else 0.2, bottom=0.15, top=0.92, left=0.08, right=0.91 if is_ext_i0 else 0.95)
             btn_y = 0.015
             btn_h = 0.04
             chk_y = 0.06
@@ -2683,14 +2701,18 @@ class SummaryDashboard:
             ax_raw_sdd.set_xlabel("Energy (eV)"); ax_raw_sdd.set_ylabel("Raw Counts")
 
             # 2. Plot Raw MCC
-            is_ext_i0 = (self.ctx.get('ext_i0_values') is not None and "Internal" not in self.ctx.get('i0_source', ''))
+            self.ax_raw_ext = None
             const_offset = self.ctx.get('i0_const_offset', 0.0)
             
-            # If external I0 is used, plot the active external I0 curve
+            # If external I0 is used, plot on a secondary right-hand Y-axis (twinx) so differences in scale
+            # (e.g. 0-10 vs 6000-11000) don't squash internal I0 & TEY to flat lines at zero
             if is_ext_i0:
+                self.ax_raw_ext = ax_raw_mcc.twinx()
                 ext_lbl = f"Raw External I0 ({const_offset:+.4g})" if const_offset != 0.0 else "Raw External I0"
-                l_ext, = ax_raw_mcc.plot(self.ctx['calibrated_energies'], self.ctx['ext_i0_values'], 'b.-', lw=1.5, label=ext_lbl)
+                l_ext, = self.ax_raw_ext.plot(self.ctx['calibrated_energies'], self.ctx['ext_i0_values'], 'b.-', lw=1.5, label=ext_lbl)
                 self.ext_i0_line_raw = l_ext
+                self.ax_raw_ext.set_ylabel("Raw External I0 (Counts)", color='b', fontsize=8.5)
+                self.ax_raw_ext.tick_params(axis='y', labelcolor='b', labelsize=8)
                 
             # If internal I0 has a constant offset or smoothing, plot original unmodified mcc1 for comparison
             if self.ctx.get('mcc_data', {}).get('mcc1_original') is not None:
@@ -2716,8 +2738,19 @@ class SummaryDashboard:
                         lbl = f"Raw {base_label}"
                     l, = ax_raw_mcc.plot(self.ctx['calibrated_energies'], data, m_fmt, label=lbl)
                     self.mcc_lines_raw[ch] = l
-            ax_raw_mcc.set_title("Raw Au Mesh I0 and TEY of Sample Spectra"); ax_raw_mcc.legend(fontsize='xx-small')
-            ax_raw_mcc.set_xlabel("Energy (eV)"); ax_raw_mcc.set_ylabel("Counts/Intensity")
+
+            ax_raw_mcc.set_title("Raw Au Mesh I0 and TEY of Sample Spectra")
+            ax_raw_mcc.set_xlabel("Energy (eV)")
+            if is_ext_i0:
+                ax_raw_mcc.set_ylabel("Raw Au Mesh I0 & TEY (Counts)")
+                ax_raw_mcc.relim()
+                ax_raw_mcc.autoscale_view(scalex=False, scaley=True)
+                lines1, labels1 = ax_raw_mcc.get_legend_handles_labels()
+                lines2, labels2 = self.ax_raw_ext.get_legend_handles_labels()
+                ax_raw_mcc.legend(lines1 + lines2, labels1 + labels2, fontsize='xx-small', loc='upper right')
+            else:
+                ax_raw_mcc.set_ylabel("Counts/Intensity")
+                ax_raw_mcc.legend(fontsize='xx-small')
 
             # 3. Plot Normalized Fluorescence
             if self.ctx.get('ext_i0_values') is not None:
@@ -2788,6 +2821,8 @@ class SummaryDashboard:
 
             for m, l in self.mcc_lines_raw.items():
                 if l is not None: all_xanes_lines.append(l)
+            if getattr(self, 'ext_i0_line_raw', None) is not None:
+                all_xanes_lines.append(self.ext_i0_line_raw)
 
             for d, l in self.det_lines_norm.items():
                 if l is not None: all_xanes_lines.append(l)
@@ -2796,6 +2831,8 @@ class SummaryDashboard:
 
             for m, l in self.mcc_lines_norm.items():
                 if l is not None: all_xanes_lines.append(l)
+            if getattr(self, 'ext_i0_line_norm', None) is not None:
+                all_xanes_lines.append(self.ext_i0_line_norm)
 
             if all_xanes_lines:
                 try:
