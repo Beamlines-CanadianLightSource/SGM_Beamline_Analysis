@@ -1985,6 +1985,23 @@ class SummaryDashboard:
                     epad_top = abs(eymax) * 0.15
                     epad_bot = abs(eymax) * 0.05
                     self.ax_raw_ext.set_ylim(eymin - epad_bot if eymin < 0 else 0.0, eymax + epad_top if eymax > 0 else 1.0)
+
+        # Autoscale secondary right Y-axis (Normalized External I0) if present
+        if getattr(self, 'ax_norm_ext', None) is not None and autoscale_y:
+            ext_norm_lines = self.ax_norm_ext.get_lines()
+            if ext_norm_lines:
+                eymax, eymin = 0.0, 0.0
+                e_has = False
+                for eline in ext_norm_lines:
+                    eydata = eline.get_ydata()
+                    if len(eydata) > 0:
+                        eymax = max(eymax, np.nanmax(eydata))
+                        eymin = min(eymin, np.nanmin(eydata))
+                        e_has = True
+                if e_has:
+                    epad_top = abs(eymax) * 0.15
+                    epad_bot = abs(eymax) * 0.05
+                    self.ax_norm_ext.set_ylim(eymin - epad_bot if eymin < 0 else 0.0, eymax + epad_top if eymax > 0 else 1.2)
         
         self.fig.canvas.draw_idle()
 
@@ -2787,9 +2804,14 @@ class SummaryDashboard:
             ax_norm_sdd.set_xlabel("Energy (eV)"); ax_norm_sdd.set_ylabel("Normalized Intensity")
 
             # 4. Plot Normalized MCC
+            self.ax_norm_ext = None
             if is_ext_i0:
-                l_ext_norm, = ax_norm_mcc.plot(self.ctx['calibrated_energies'], np.ones(len(self.ctx['calibrated_energies'])), 'b.-', lw=1.5, label="Normalized External I0 (=1.0)")
+                self.ax_norm_ext = ax_norm_mcc.twinx()
+                l_ext_norm, = self.ax_norm_ext.plot(self.ctx['calibrated_energies'], np.ones(len(self.ctx['calibrated_energies'])), 'b.-', lw=1.5, label="Normalized External I0 (=1.0)")
                 self.ext_i0_line_norm = l_ext_norm
+                self.ax_norm_ext.set_ylabel("Normalized External I0", color='b', fontsize=8.5)
+                self.ax_norm_ext.tick_params(axis='y', labelcolor='b', labelsize=8)
+                self.ax_norm_ext.set_ylim(0.0, 1.2)
 
             for ch in (self.ctx['mcc_channels'] or []):
                 data = np.array(self.ctx['mcc_data'][f'mcc{ch}'])
@@ -2809,8 +2831,18 @@ class SummaryDashboard:
                     l, = ax_norm_mcc.plot(self.ctx['calibrated_energies'], norm_mcc, m_fmt, label=lbl)
                     self.mcc_lines_norm[ch] = l
             title_norm_mcc = format_norm_title("Normalized Au Mesh I0 and TEY of Sample Spectra", self.ctx['scan_name'], None, i0_src)
-            ax_norm_mcc.set_title(title_norm_mcc, fontsize=8.5, pad=6); ax_norm_mcc.legend(fontsize='xx-small')
-            ax_norm_mcc.set_xlabel("Energy (eV)"); ax_norm_mcc.set_ylabel("Normalized Intensity")
+            ax_norm_mcc.set_title(title_norm_mcc, fontsize=8.5, pad=6)
+            ax_norm_mcc.set_xlabel("Energy (eV)")
+            if is_ext_i0:
+                ax_norm_mcc.set_ylabel("Normalized TEY & Au Mesh")
+                ax_norm_mcc.relim()
+                ax_norm_mcc.autoscale_view(scalex=False, scaley=True)
+                lines1, labels1 = ax_norm_mcc.get_legend_handles_labels()
+                lines2, labels2 = self.ax_norm_ext.get_legend_handles_labels()
+                ax_norm_mcc.legend(lines1 + lines2, labels1 + labels2, fontsize='xx-small', loc='upper right')
+            else:
+                ax_norm_mcc.set_ylabel("Normalized Intensity")
+                ax_norm_mcc.legend(fontsize='xx-small')
             
             # Enable interactive hover tooltips for all XANES summary spectrum lines
             all_xanes_lines = []
