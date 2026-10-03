@@ -170,43 +170,18 @@ MCC_NAMES = {
 # --- GUI Helpers ---
 # Removed local get_safe_save_path - now imported from alignment_utils
 
-def format_norm_title(main_title, scan_name, roi_label, i0_src):
+def format_norm_title(main_title, scan_name=None, roi_label=None, i0_src=None):
     """
-    Formats plot titles for normalized spectra into clean, compact, multi-line text
-    so that long titles and I0 normalization details never overlap horizontally or vertically.
+    Formats plot titles for normalized spectra into clean, compact text.
+    The I0 source is omitted from the title per user preference (already shown in console & legend).
     """
     header = f"{main_title} ({roi_label})" if roi_label else main_title
     if scan_name:
-        if len(header) + len(scan_name) > 36:
-            line1 = f"{header}\n{scan_name}"
+        if len(header) + len(scan_name) > 40:
+            return f"{header}\n{scan_name}"
         else:
-            line1 = f"{header}: {scan_name}"
-    else:
-        line1 = header
-            
-    if i0_src:
-        clean_src = str(i0_src)
-        clean_src = clean_src.replace("Internal: mcc1 (Au Mesh)", "Internal: Au Mesh I0 (mcc1)")
-        clean_src = clean_src.replace("Internal: mcc1", "Internal: Au Mesh I0 (mcc1)")
-        clean_src = clean_src.replace("mcc1 (Au Mesh)", "Au Mesh I0 (mcc1)")
-        if clean_src.strip() == "mcc1":
-            clean_src = "Internal: Au Mesh I0 (mcc1)"
-            
-        i0_str = f"Norm by: {clean_src}"
-        
-        # Break long clauses cleanly so each line remains compact and under 40 chars
-        if len(i0_str) > 40:
-            if " (+ Constant:" in i0_str:
-                i0_str = i0_str.replace(" (+ Constant:", "\n  (+ Constant:")
-            if " (Divided by OD:" in i0_str:
-                i0_str = i0_str.replace(" (Divided by OD:", "\n  OD: ")
-            if " (Smoothed" in i0_str:
-                i0_str = i0_str.replace(" (Smoothed", "\n  (Smoothed")
-            if " (Energy Shift:" in i0_str:
-                i0_str = i0_str.replace(" (Energy Shift:", "\n  (Shift:")
-                
-        return f"{line1}\n({i0_str})"
-    return line1
+            return f"{header}: {scan_name}"
+    return header
 
 
 class MetadataDialog(simpledialog.Dialog):
@@ -1927,17 +1902,17 @@ class SummaryDashboard:
             if self.sync.i0_calib_enabled and "Internal" not in i0_src and "Energy Shift:" not in i0_src:
                 i0_src += f" (Energy Shift: {self.sync.i0_energy_shift:+.2f} eV)"
             
-            title_sdd = format_norm_title("Normalized Fluorescence", self.ctx['scan_name'], roi_label, i0_src)
-            title_mcc = format_norm_title("Normalized Au Mesh I0 & TEY", self.ctx['scan_name'], None, i0_src)
+            title_sdd = format_norm_title("Normalized Fluorescence Spectra", self.ctx.get('scan_name'), roi_label)
+            title_mcc = format_norm_title("Normalized Au Mesh I0 and TEY of Sample Spectra", self.ctx.get('scan_name'), None)
             try:
                 # Handle both 1D and 2D axis arrays
                 if self.ax.ndim == 2 and self.ax.shape == (2, 2):
-                    self.ax[1, 0].set_title(title_sdd, fontsize=8, pad=5)
-                    self.ax[1, 1].set_title(title_mcc, fontsize=8, pad=5)
+                    self.ax[1, 0].set_title(title_sdd, fontsize=8.5, pad=5)
+                    self.ax[1, 1].set_title(title_mcc, fontsize=8.5, pad=5)
                 elif self.ax.ndim == 2:
-                    self.ax[2, 0].set_title(title_sdd, fontsize=8, pad=5)
+                    self.ax[2, 0].set_title(title_sdd, fontsize=8.5, pad=5)
                 else:
-                    self.ax[2].set_title(title_sdd, fontsize=8, pad=5)
+                    self.ax[2].set_title(title_sdd, fontsize=8.5, pad=5)
             except Exception as e:
                 print(f"  [Title Update Error] {e}")
 
@@ -2799,8 +2774,8 @@ class SummaryDashboard:
                 i0_src += f" (Energy Shift: {self.sync.i0_energy_shift:+.2f} eV)"
             
             roi_str = f"{self.sync.energy_roi[0]:.1f}-{self.sync.energy_roi[1]:.1f} eV" if self.sync.use_sdd_calib else f"Ch{self.sync.channel_roi[0]}-{self.sync.channel_roi[1]}"
-            title_norm_sdd = format_norm_title("Normalized Fluorescence", self.ctx['scan_name'], roi_str, i0_src)
-            ax_norm_sdd.set_title(title_norm_sdd, fontsize=8, pad=5)
+            title_norm_sdd = format_norm_title("Normalized Fluorescence Spectra", self.ctx.get('scan_name'), roi_str)
+            ax_norm_sdd.set_title(title_norm_sdd, fontsize=8.5, pad=5)
             ax_norm_sdd.legend(fontsize='xx-small')
             ax_norm_sdd.set_xlabel("Energy (eV)"); ax_norm_sdd.set_ylabel("Normalized Intensity")
 
@@ -2836,8 +2811,8 @@ class SummaryDashboard:
                         lbl = f"Normalized {base_label}"
                     l, = ax_norm_mcc.plot(self.ctx['calibrated_energies'], norm_mcc, m_fmt, label=lbl)
                     self.mcc_lines_norm[ch] = l
-            title_norm_mcc = format_norm_title("Normalized Au Mesh I0 & TEY", self.ctx['scan_name'], None, i0_src)
-            ax_norm_mcc.set_title(title_norm_mcc, fontsize=8, pad=5)
+            title_norm_mcc = format_norm_title("Normalized Au Mesh I0 and TEY of Sample Spectra", self.ctx.get('scan_name'), None)
+            ax_norm_mcc.set_title(title_norm_mcc, fontsize=8.5, pad=5)
             ax_norm_mcc.set_xlabel("Energy (eV)")
             if is_ext_i0:
                 ax_norm_mcc.set_ylabel("Normalized TEY & Au Mesh")
