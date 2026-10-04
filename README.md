@@ -7,12 +7,13 @@ A collection of Jupyter notebooks and Python utility scripts for the end-to-end 
 - **Data Parsing:** Extract metadata, spatial coordinates, and spectral data from raw HDF5 files.
 - **Interactive Alignment:** Align spatial drift and select spectral ROIs via integrated GUIs.
 - **4D Hypercube Exploration:** Real-time XANES extraction and visualization.
-- **Normalization:** Support for internal `mcc1` reference signals and external I0 standards.
+- **Normalization:** Support for internal `mcc1` (Au mesh) reference signals and external I0 standards, with live preview, Savitzky-Golay smoothing, constant operations (Add, Multiply, Divide), energy shifts, and compound optical density (OD) division via the Henke database.
+- **Data & Spectrum Export:** Automated CSV spectra export embedding clean sample names alongside collection timestamps, dual-axis external I0 scaling, and PyMca-compatible 3D (`_PCA-CA.h5`) and 4D (`_Elemental_PyMca.h5`) HDF5 export.
 - **Advanced Analysis:** 
     - Principal Component Analysis (PCA) for dimensionality reduction.
     - K-Means Clustering for spatial mapping of chemical species.
     - Interactive cluster merging for high-quality XANES extraction.
-- **Nexus Export:** Generate PyMca-compatible 4D HDF5 files.
+    - SDD energy calibration and selective detector averaging.
 
 ## Getting Started
 

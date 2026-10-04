@@ -125,8 +125,8 @@ run_calibration()
      - **Click Cancel:** Cancels export without altering any existing files.
    - **Save Normalized XANES Spectra for PCA/CA:** (Formerly "Save PyMca Stack"). This exports a compact **3D HDF5 stack** (`_PCA-CA.h5`) where the spectrum is reduced to a single intensity value (from your ROI) per pixel. This is the format required for **PCA and Clustering** analysis.
    - **Save XRF Spectra for Elemental Analysis using PyMca:** (Formerly "Save 4D PyMca Stack"). This exports a massive **4D HDF5 hypercube** (`_Elemental_PyMca.h5`) containing the full raw spectrum for every pixel. Use this for **elemental peak fitting** in PyMca.
-   - **Save XRD/XANES Spectra:** Exports your currently extracted 1D spectra (Intensity vs Energy) to a CSV file.
-   - **Save XRD Spectra:** Exports the consolidated 1D fluorescence spectrum for the selected spatial area to a CSV file. **Column 1** is **`Energy_eV`** (Calibrated Energy in eV) for direct X-axis plotting in Excel/PyMca, **Column 2** is **`Channel`** (0-255), followed by individual detector counts (`sdd1`, `sdd2`, `sdd3`, `sdd4`) and **`Average_SDD`**. The header dynamically displays calibrated energy range `# SDD ROI Energy: min-max eV (ChStart-ChEnd)` when active.
+    - **Save XRD/XANES Spectra:** Exports your currently extracted 1D spectra (Intensity vs Energy) to a CSV file. The default filename automatically embeds the clean sample name alongside the collection date and identifier stamp (`<Date-Identifier>_<SampleName>_<ScanDescriptor>_<Mode>_<ROI>_summary.csv`, e.g., `2026-07-21-154341_BN_ctape_stack_data_Rect_150.0-250.0_summary.csv`).
+    - **Save XRD Spectra:** Exports the consolidated 1D fluorescence spectrum for the selected spatial area to a CSV file (`<Date-Identifier>_<SampleName>_<ScanDescriptor>_Consolidated_<Mode>_ROI_<ROI>_XRF.csv`). **Column 1** is **`Energy_eV`** (Calibrated Energy in eV) for direct X-axis plotting in Excel/PyMca, **Column 2** is **`Channel`** (0-255), followed by individual detector counts (`sdd1`, `sdd2`, `sdd3`, `sdd4`) and **`Average_SDD`**. The header dynamically displays calibrated energy range `# SDD ROI Energy: min-max eV (ChStart-ChEnd)` when active.
 
 7. **Sync Map ROI:**
    - The light green **"Sync Map ROI"** button is located directly above the energy maps on each individual detector's dashboard row. If you draw an ROI on one map and the summary spectrum doesn't automatically update, or if the visual regions get out of sync, click this button on the active map to force all other maps to align perfectly with your drawn ROI.
@@ -146,17 +146,23 @@ run_calibration()
      - **CSV Files:** All exported CSV summary files contain header lines detailing active and excluded detectors (`# Active SDD Selection for Selected Average: sdd1+sdd2+sdd4`, `# Excluded SDD Detectors: sdd3`), and include both `RAW_Average_SDD` / `RAW_Selected_Average_SDD` and `NORM_Average_SDD` / `NORM_Selected_Average_SDD` columns.
      - **3D HDF5 Stacks (`_PCA-CA.h5`):** The stack exporter automatically generates both `entry/measurement/average` (all detectors) and `entry/measurement/selected_average` (selected detectors) with metadata attributes (`selected_detectors = 'sdd1,sdd2,sdd4'`).
 
-**I0 Normalization, Smoothing, Constant Offset & OD Division:**
+**I0 Normalization, Smoothing, Constant Operations (Add, Multiply, Divide) & OD Division:**
 - At the beginning of plotting, you will be prompted to select the normalization source:
-  - **Internal I0 (`mcc1`):** Uses the Au mesh reference current collected during your scan.
+  - **Internal I0 (`mcc1` / Au Mesh):** Uses the Au mesh reference current collected during your scan. Opening the preview lets you inspect, smooth, and adjust the Au mesh baseline.
   - **External I0 CSV:** Uses a previously collected standard (e.g., BN for Carbon C K-edge analysis).
-- An **I0 Preview Dialog** opens to configure processing parameters:
+- An interactive **I0 Preview Dialog** opens to configure processing parameters:
   - **Column Selection:** Select Energy (X) and Intensity (Y) columns.
   - **Smoothing:** Enable Savitzky-Golay smoothing with an adjustable window size to filter out noise in your $I_0$ standard.
-  - **I0 Constant Offset:** Add or subtract a baseline constant ($I_0' = I_0 + C$) to correct for detector dark currents, amplifier zero-offsets, or baseline drift. The plot provides real-time visual feedback comparing the baseline **Raw I0** curve (gray) directly with the **Modified I0** curve (blue), exactly like the compound optical density correction.
+  - **Constant Operations (Add, Multiply, Divide):** A pull-down menu lets you select the mathematical operation applied to $I_0$:
+    - **Add (`+`) (Default):** Adds or subtracts a baseline constant ($I_0' = I_0 + C$) to correct for detector dark currents, amplifier zero-offsets, or baseline drift.
+    - **Multiply (`*`):** Multiplies $I_0$ by a constant scale factor ($I_0' = I_0 \times C$) for unit conversions or gain matching.
+    - **Divide (`/`):** Divides $I_0$ by a constant ($I_0' = I_0 / C$) with division-by-zero protection.
+    - **Real-Time Visual Feedback:** The preview plot dynamically compares the **Original I0** curve (gray dotted line) with the **Modified I0** curve (blue line), showing dynamic formula feedback `(I0' = I0 + C)`, `(I0' = I0 * C)`, or `(I0' = I0 / C)`.
   - **Energy Shift:** Apply an energy calibration offset (eV) to align the $I_0$ standard with your scan energies.
   - **Compound Optical Density (SF) Correction:** Optionally divide the $I_0$ signal by the Optical Density of a compound (e.g., BN) using the Henke database (`sf.py`), with custom density (g/cm³), thickness (µm), and auto-scaling.
-- **Normalized Plot Titles & Metadata:** Applied constant offsets are documented in the normalization string (`(+ Constant: +0.05)`), formatted into compact plot headers, and recorded into CSV comment headers and HDF5 stack metadata attributes.
+- **Dual Y-Axis for External I0 Scaling:** When External $I_0$ is used in the Summary Dashboard, it is automatically plotted on an independent right-hand Y-axis (`twinx`). This prevents large differences in scale (e.g. counts in the range $0\text{--}10$ vs $6{,}000\text{--}11{,}000$) from squashing internal $I_0$ and TEY curves to flat lines near zero.
+- **Sample Name in Figure Titles:** Figure titles automatically feature the human-meaningful sample name (e.g. `Raw MCC Spectra - BN_ctape`) rather than long raw timestamp identifiers, with full file location details documented in the console.
+- **Comprehensive Logging & Metadata Tracking:** The exact operation and formula applied (e.g., `I0_modified = I0_original * (C)`) are printed to the console, documented in CSV comment headers, and recorded into PyMca HDF5 attributes (`i0_constant_op`, `i0_constant_offset`, `i0_comment`).
 
 **IPFY Mode (Inverse Partial Fluorescence Yield):**
 - **Purpose & Inversion Math:** When **"IPFY Mode (Invert for PCA)"** is checked, the normalized spectra $N(E) = \text{RAW}(E) / I_0(E)$ are inverted by multiplying by $-1$ and shifted by a baseline constant:
@@ -190,15 +196,16 @@ run_calibration()
 **Batch Workflow & Features:**
 1. **Interactive XRF ROI Inspector (Tab 0):** The batch dashboard includes an integrated XRF spectrum inspector. You can click and drag the mouse on the peak (or use the interactive span selector) to dynamically adjust your spectral ROI (`xrf_roi` in eV or `channel_roi`), or type exact bounds into the `ROI Start` and `ROI End` input fields.
 2. **Live Batch Refresh:** Click the green **REFRESH BATCH PLOTS** button to instantly re-calculate and update all raw and normalized XANES spectra across every loaded scan.
-3. **$I_0$ Selection & Interactive Preview Dialog:** Prompts whether to use Internal $I_0$ (`mcc1`) or load an External $I_0$ CSV file. For external files, the interactive **I0 Preview Dialog** lets you:
+3. **$I_0$ Selection & Interactive Preview Dialog:** Prompts whether to use Internal $I_0$ (`mcc1` / Au Mesh) or load an External $I_0$ CSV file. The interactive **I0 Preview Dialog** lets you:
    - Select Energy (X) and Intensity (Y) columns.
    - Apply **Savitzky-Golay smoothing** with an adjustable window size.
+   - Apply **Constant Operations (Add, Multiply, Divide)** with live formula feedback `(I0' = I0 + C)`, `(I0' = I0 * C)`, or `(I0' = I0 / C)`.
    - Apply an **Energy Shift (eV)** to align the $I_0$ standard with your scan energies.
    - Divide by **Compound Optical Density (OD)** using the Henke database (`sf.py`), with configurable chemical formula, density (g/cm³), thickness (µm), and auto-scaling.
 4. **SDD Energy Calibration:** Prompts whether to apply `sdd_calibration.json` calibration. When active, it uses energy-equivalent physical bounds (eV) to ensure precise cross-detector alignment.
 5. **Waterfall Offset Option:** Offers an optional vertical offset to separate and stagger spectral lines for clear comparison.
 6. **Comparative Figures:** Generates multi-panel comparative figures for both **RAW** and **NORMALIZED** XANES spectra across all scans. Normalized titles use compact multi-line formatting so long $I_0$ parameters never overlap the plots.
-7. **Automatic CSV Export:** Click the yellow **Save XANES Spectra CSVs** button to export individual XANES summary CSV files (`<ScanName>_Rect_<ROI>_summary.csv`) with complete metadata headers directly into each scan's original folder.
+7. **Automatic CSV Export:** Click the yellow **Save XANES Spectra CSVs** button to export individual XANES summary CSV files with complete metadata headers directly into each scan's original folder. Exported filenames automatically embed the sample name alongside the date and identifier (`<Date-Identifier>_<SampleName>_<ScanDescriptor>_Rect_<ROI>_summary.csv`, e.g., `2026-07-21-154341_BN_ctape_stack_data_Rect_150.0-250.0_summary.csv`).
 
 ### 3.2 `plot_2d_rixs_map.py` (2D Incident vs. Emission RIXS Maps)
 **Purpose:** Generates 2D heatmaps of Incident Energy (X-axis) vs. Emission Energy/Channel (Y-axis) for RIXS and 2D XRF map visualization.
