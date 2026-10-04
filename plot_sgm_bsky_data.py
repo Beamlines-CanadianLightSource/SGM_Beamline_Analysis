@@ -14,7 +14,7 @@ _GLOBAL_SYNC_OBJ = None
 
 import tkinter as tk
 from tkinter import messagebox, simpledialog, filedialog
-from analyze_sgm_bsky_data import analyze_sgm_bsky_data, extract_sample_name, resolve_sample_name
+from analyze_sgm_bsky_data import analyze_sgm_bsky_data, extract_sample_name, resolve_sample_name, build_scan_filename_base
 from alignment_utils import grid_interpolate_map, get_safe_save_path, get_tk_root, get_masked_triangulation, safe_filedialog_call, console_log, safe_metadata_dialog_call, format_num_val
 import sdd_calibration_utils as sdd_calib
 try:
@@ -2170,7 +2170,11 @@ class SummaryDashboard:
                 roi_ch = self.ctx.get('channel_roi', (0, 255))
                 roi_str = f"Ch{roi_ch[0]}-{roi_ch[1]}"
             mode_str = "Poly" if mode=='poly' else "Rect"
-            default_name = f"{self.ctx['scan_name']}_{mode_str}_{roi_str}_summary.csv"
+            sample_for_name = (self.sync.user_metadata.get('Name') if self.sync.user_metadata else None) or self.ctx.get('sample_name')
+            if not sample_for_name or str(sample_for_name).strip() in ('N/A', 'None', '', 'Sample'):
+                sample_for_name = resolve_sample_name(self.ctx.get('save_dir'), scan_name=self.ctx.get('scan_name'))
+            base_filename = build_scan_filename_base(self.ctx['scan_name'], sample_for_name)
+            default_name = f"{base_filename}_{mode_str}_{roi_str}_summary.csv"
             
             if event is not None:
                 console_log(f"  Calling safe_filedialog_call: default={default_name}")
@@ -2435,7 +2439,11 @@ class SummaryDashboard:
                 roi_str = roi_ch_str
                 sdd_roi_str = f"# SDD ROI Channels: {roi_ch_str}"
             mode_str = "Poly" if mode=='poly' else "Rect"
-            default_name = f"{self.ctx['scan_name']}_Consolidated_{mode_str}_ROI_{roi_str}_XRF.csv"
+            sample_for_name = (self.sync.user_metadata.get('Name') if self.sync.user_metadata else None) or self.ctx.get('sample_name')
+            if not sample_for_name or str(sample_for_name).strip() in ('N/A', 'None', '', 'Sample'):
+                sample_for_name = resolve_sample_name(self.ctx.get('save_dir'), scan_name=self.ctx.get('scan_name'))
+            base_filename = build_scan_filename_base(self.ctx['scan_name'], sample_for_name)
+            default_name = f"{base_filename}_Consolidated_{mode_str}_ROI_{roi_str}_XRF.csv"
             
             # Determine calibration parameters for energy axis
             if self.sync.use_sdd_calib:

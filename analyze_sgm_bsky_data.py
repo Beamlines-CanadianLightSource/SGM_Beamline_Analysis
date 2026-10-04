@@ -125,6 +125,47 @@ def resolve_sample_name(file_path=None, h5_obj=None, scan_name=None):
     return scan_name or "Sample"
 
 
+def build_scan_filename_base(scan_name, sample_name=None):
+    """
+    Constructs a descriptive filename base containing the date/identifier,
+    sample name, and scan descriptor.
+    
+    Examples:
+        scan_name='2026-07-21-154341_stack_data', sample_name='BN_ctape'
+        -> '2026-07-21-154341_BN_ctape_stack_data'
+        
+        scan_name='2026-07-19_133033_stack_data', sample_name='TiON_sheet_30min'
+        -> '2026-07-19_133033_TiON_sheet_30min_stack_data'
+        
+        scan_name='154339_BN_ctape_o_k_fine_stack', sample_name='BN_ctape'
+        -> '154339_BN_ctape_o_k_fine_stack' (already contains sample name)
+        
+        scan_name='scan1', sample_name='SampleA'
+        -> 'scan1_SampleA'
+    """
+    if not scan_name:
+        return sample_name or "scan"
+    if not sample_name or str(sample_name).strip() in ('N/A', 'None', '', 'Sample'):
+        return scan_name
+
+    s_clean = re.sub(r'[^\w\-.]', '_', str(sample_name).strip())
+    s_clean = re.sub(r'_+', '_', s_clean).strip('_')
+    if not s_clean or s_clean.lower() in scan_name.lower():
+        return scan_name
+
+    # If scan_name starts with date/identifier (e.g. '2026-07-21-154341_' or '2026-07-21_154341_' or '154339_')
+    m = re.match(r'^((?:\d{4}[-_]\d{2}[-_]\d{2}[-_])?\d{4,8})(?:_(.*))?$', scan_name)
+    if m:
+        prefix = m.group(1)
+        rest = m.group(2)
+        if rest:
+            return f"{prefix}_{s_clean}_{rest}"
+        else:
+            return f"{prefix}_{s_clean}"
+
+    return f"{scan_name}_{s_clean}"
+
+
 def detect_energy_regions(energies):
     """
     Identifies continuous energy regions with constant spacing.

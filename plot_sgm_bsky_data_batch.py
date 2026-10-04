@@ -21,6 +21,7 @@ from sdd_calibration_utils import (
     get_calibrated_bounds
 )
 from plot_sgm_bsky_data import read_csv_with_comments, ExternalI0PreviewDialog, get_tk_root
+from analyze_sgm_bsky_data import build_scan_filename_base, resolve_sample_name
 
 def get_mcc_val(path_pack, energy, channel, spatial_mask):
     """
@@ -309,6 +310,10 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
             h5_path = path_pack.get('h5_file_path') or path_pack.get('h5_dir')
             save_dir = os.path.dirname(os.path.abspath(h5_path)) if h5_path and os.path.isfile(h5_path) else (os.path.abspath(h5_path) if h5_path and os.path.isdir(h5_path) else os.getcwd())
             scan_name = path_pack.get('scan_name', f"Scan_{scan_idx + 1}")
+            sample_name = path_pack.get('sample_name')
+            if not sample_name or str(sample_name).strip() in ('N/A', 'None', '', 'Sample'):
+                sample_name = resolve_sample_name(h5_path, scan_name=scan_name)
+            base_filename = build_scan_filename_base(scan_name, sample_name)
             scan_energies = np.array(sorted(path_pack['energies']))
             
             if use_calibration and curr_e_min is not None and curr_e_max is not None:
@@ -316,7 +321,7 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
             else:
                 roi_str = f"Ch{curr_ch_roi[0]}-{curr_ch_roi[1]}"
                 
-            csv_filename = f"{scan_name}_Rect_{roi_str}_summary.csv"
+            csv_filename = f"{base_filename}_Rect_{roi_str}_summary.csv"
             csv_filepath = os.path.join(save_dir, csv_filename)
             
             if os.path.exists(csv_filepath):
