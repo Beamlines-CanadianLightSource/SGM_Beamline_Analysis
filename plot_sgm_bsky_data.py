@@ -3543,7 +3543,14 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                             n_pix = mcc_maps['mcc1'].shape[1]
                             mcc_maps['mcc1_original'] = mcc_maps['mcc1'].copy()
                             mcc_maps['mcc1'] = np.tile(ext_i0_values[:, None], (1, n_pix)).astype(mcc_maps['mcc1'].dtype)
-                            path_pack['mcc_maps']['mcc1'] = mcc_maps['mcc1']
+                            if 'mcc_maps' not in path_pack or not isinstance(path_pack['mcc_maps'], dict):
+                                path_pack['mcc_maps'] = mcc_maps.copy()
+                            else:
+                                path_pack['mcc_maps']['mcc1'] = mcc_maps['mcc1']
+                        if 'mcc_data' not in path_pack or not isinstance(path_pack['mcc_data'], dict):
+                            path_pack['mcc_data'] = mcc_data.copy()
+                        else:
+                            path_pack['mcc_data']['mcc1'] = ext_i0_values
 
                         if const_offset_val != 0.0:
                             console_log("\n" + "=" * 70)
@@ -3561,13 +3568,17 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                         else:
                             console_log(f"\n  [I0 CONFIGURATION] Normalization Source: {i0_source}\n")
             except Exception as e:
-                print(f"Error previewing internal I0: {e}")
+                import traceback
+                print(f"Error previewing internal I0: {type(e).__name__}: {e}")
+                traceback.print_exc()
 
         # Save selection to path_pack for downstream modules (e.g. save_pymca_stack_h5, PCA, clustering)
         path_pack['ext_i0_values'] = ext_i0_values
         path_pack['i0_source'] = i0_source
         path_pack['channel_roi'] = channel_roi
         path_pack['xrf_roi'] = xrf_roi
+        path_pack['mcc_data'] = mcc_data
+        path_pack['mcc_maps'] = mcc_maps
 
         # 3. Class Instantiation (Fresh State)
         sync = Synchronizer(all_energies, representative_energy, map_roi, use_color=use_color, use_full_metadata=use_full_metadata, calibrated_energies=calibrated_energies, channel_roi=channel_roi, xrf_roi=xrf_roi)
