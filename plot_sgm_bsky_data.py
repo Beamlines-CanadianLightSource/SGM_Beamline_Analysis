@@ -14,7 +14,7 @@ _GLOBAL_SYNC_OBJ = None
 
 import tkinter as tk
 from tkinter import messagebox, simpledialog, filedialog
-from analyze_sgm_bsky_data import analyze_sgm_bsky_data
+from analyze_sgm_bsky_data import analyze_sgm_bsky_data, extract_sample_name, resolve_sample_name
 from alignment_utils import grid_interpolate_map, get_safe_save_path, get_tk_root, get_masked_triangulation, safe_filedialog_call, console_log, safe_metadata_dialog_call, format_num_val
 import sdd_calibration_utils as sdd_calib
 try:
@@ -172,15 +172,20 @@ MCC_NAMES = {
 
 def format_norm_title(main_title, scan_name=None, roi_label=None, i0_src=None):
     """
-    Formats plot titles for normalized spectra into clean, compact text.
+    Formats plot titles for spectra into clean, compact text.
+    Extracts and displays the human-meaningful sample name rather than raw file identifiers.
     The I0 source is omitted from the title per user preference (already shown in console & legend).
     """
+    display_name = extract_sample_name(scan_name) if scan_name else None
+    if not display_name:
+        display_name = scan_name
+        
     header = f"{main_title} ({roi_label})" if roi_label else main_title
-    if scan_name:
-        if len(header) + len(scan_name) > 40:
-            return f"{header}\n{scan_name}"
+    if display_name:
+        if len(header) + len(display_name) > 40:
+            return f"{header}\n{display_name}"
         else:
-            return f"{header}: {scan_name}"
+            return f"{header}: {display_name}"
     return header
 
 
@@ -1902,8 +1907,9 @@ class SummaryDashboard:
             if self.sync.i0_calib_enabled and "Internal" not in i0_src and "Energy Shift:" not in i0_src:
                 i0_src += f" (Energy Shift: {self.sync.i0_energy_shift:+.2f} eV)"
             
-            title_sdd = format_norm_title("Normalized Fluorescence Spectra", self.ctx.get('scan_name'), roi_label)
-            title_mcc = format_norm_title("Normalized Au Mesh I0 and TEY of Sample Spectra", self.ctx.get('scan_name'), None)
+            s_name = (self.sync.user_metadata.get('Name') if self.sync.user_metadata else None) or self.ctx.get('sample_name') or self.ctx.get('scan_name')
+            title_sdd = format_norm_title("Normalized Fluorescence Spectra", s_name, roi_label)
+            title_mcc = format_norm_title("Normalized Au Mesh I0 and TEY of Sample Spectra", s_name, None)
             try:
                 # Handle both 1D and 2D axis arrays
                 if self.ax.ndim == 2 and self.ax.shape == (2, 2):
@@ -1983,10 +1989,12 @@ class SummaryDashboard:
 
     def edit_metadata_call(self, event=None):
         """Opens metadata dialog pre-filled with last/current metadata for editing."""
-        init_d = dict(self.sync.user_metadata) if self.sync.user_metadata else {"Name": self.ctx['scan_name']}
+        default_name = self.ctx.get('sample_name') or self.ctx.get('scan_name')
+        init_d = dict(self.sync.user_metadata) if self.sync.user_metadata else {"Name": default_name}
         res = safe_metadata_dialog_call(initial_data=init_d)
         if res:
             self.sync.user_metadata = res
+            self.update_plots()
         return self.sync.user_metadata or {}
 
     def get_metadata(self):
@@ -2690,7 +2698,9 @@ class SummaryDashboard:
                 self.det_lines_raw[det] = l
             self.avg_line_raw, = ax_raw_sdd.plot(self.ctx['calibrated_energies'], self.ctx['avg_dependence'], 'k-', lw=2, label='All Average')
             self.selected_avg_line_raw, = ax_raw_sdd.plot(self.ctx['calibrated_energies'], self.ctx['avg_dependence'], 'r--', lw=2, label='Selected Average')
-            ax_raw_sdd.set_title(f"Raw Fluorescence Spectra: {self.ctx['scan_name']}"); ax_raw_sdd.legend(fontsize='xx-small')
+            s_name = (self.sync.user_metadata.get('Name') if self.sync.user_metadata else None) or self.ctx.get('sample_name') or self.ctx.get('scan_name')
+            title_raw_sdd = format_norm_title("Raw Fluorescence Spectra", s_name)
+            ax_raw_sdd.set_title(title_raw_sdd, fontsize=8.5, pad=5); ax_raw_sdd.legend(fontsize='xx-small')
             ax_raw_sdd.set_xlabel("Energy (eV)"); ax_raw_sdd.set_ylabel("Raw Counts")
 
             # 2. Plot Raw MCC
@@ -2732,7 +2742,8 @@ class SummaryDashboard:
                     l, = ax_raw_mcc.plot(self.ctx['calibrated_energies'], data, m_fmt, label=lbl)
                     self.mcc_lines_raw[ch] = l
 
-            ax_raw_mcc.set_title("Raw Au Mesh I0 and TEY of Sample Spectra")
+            title_raw_mcc = format_norm_title("Raw Au Mesh I0 and TEY of Sample Spectra", s_name)
+            ax_raw_mcc.set_title(title_raw_mcc, fontsize=8.5, pad=5)
             ax_raw_mcc.set_xlabel("Energy (eV)")
             if is_ext_i0:
                 ax_raw_mcc.set_ylabel("Raw Au Mesh I0 & TEY (Counts)")
@@ -2774,7 +2785,7 @@ class SummaryDashboard:
                 i0_src += f" (Energy Shift: {self.sync.i0_energy_shift:+.2f} eV)"
             
             roi_str = f"{self.sync.energy_roi[0]:.1f}-{self.sync.energy_roi[1]:.1f} eV" if self.sync.use_sdd_calib else f"Ch{self.sync.channel_roi[0]}-{self.sync.channel_roi[1]}"
-            title_norm_sdd = format_norm_title("Normalized Fluorescence Spectra", self.ctx.get('scan_name'), roi_str)
+            title_norm_sdd = format_norm_title("Normalized Fluorescence Spectra", s_name, roi_str)
             ax_norm_sdd.set_title(title_norm_sdd, fontsize=8.5, pad=5)
             ax_norm_sdd.legend(fontsize='xx-small')
             ax_norm_sdd.set_xlabel("Energy (eV)"); ax_norm_sdd.set_ylabel("Normalized Intensity")
@@ -2811,7 +2822,7 @@ class SummaryDashboard:
                         lbl = f"Normalized {base_label}"
                     l, = ax_norm_mcc.plot(self.ctx['calibrated_energies'], norm_mcc, m_fmt, label=lbl)
                     self.mcc_lines_norm[ch] = l
-            title_norm_mcc = format_norm_title("Normalized Au Mesh I0 and TEY of Sample Spectra", self.ctx.get('scan_name'), None)
+            title_norm_mcc = format_norm_title("Normalized Au Mesh I0 and TEY of Sample Spectra", s_name, None)
             ax_norm_mcc.set_title(title_norm_mcc, fontsize=8.5, pad=5)
             ax_norm_mcc.set_xlabel("Energy (eV)")
             if is_ext_i0:
@@ -3046,6 +3057,12 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
             else:
                 save_dir = os.getcwd()
         scan_name = path_pack.get('scan_name', 'sdd_stack')
+        sample_name = path_pack.get('sample_name')
+        if not sample_name or sample_name == 'N/A':
+            h5_ref = path_pack.get('h5_file_path') or path_pack.get('h5_dir')
+            sample_name = resolve_sample_name(h5_ref, scan_name=scan_name)
+        if not sample_name or sample_name == 'N/A':
+            sample_name = extract_sample_name(scan_name) or scan_name
         
         # Override alignment params if present in path_pack (e.g. from interactive_roll_align)
         if roll_shift == 0 and 'roll_shift' in path_pack:
@@ -3114,6 +3131,8 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                    max(min(map_roi[2], map_roi[3]), eb_y1), min(max(map_roi[2], map_roi[3]), eb_y2)]
 
         print(f"--- SDD Stack Dashboard: {scan_name} ---")
+        if sample_name and sample_name != scan_name:
+            print(f"  Sample:   {sample_name}")
         print(f"  [Metadata] Full Headers: {'Enabled' if use_full_metadata else 'Disabled'}")
         print(f"  Location: {save_dir}")
         print(f"  [Alignment] Roll Shift: {roll_shift} | Trim: X={x_trim:.3f} mm, Y={y_trim:.3f} mm")
@@ -3437,7 +3456,7 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
         context = {
             'path_pack': path_pack, 'x_coords': x_coords, 'y_coords': y_coords,
             'x_trim': x_trim, 'y_trim': y_trim, 'save_dir': save_dir,
-            'scan_name': scan_name, 'project_name': path_pack.get('project', 'N/A'),
+            'scan_name': scan_name, 'sample_name': sample_name, 'project_name': path_pack.get('project', 'N/A'),
             'channel_roi': channel_roi, 'xrf_roi': xrf_roi, 'detector_names': detector_names,
             'avg_maps': avg_maps, 'stack_maps': stack_maps, 'roll_shift': roll_shift,
             'calibrated_energies': calibrated_energies, 'summary_data': summary_data,

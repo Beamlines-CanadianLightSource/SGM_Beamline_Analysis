@@ -42,6 +42,89 @@ def browse_for_file():
     )
     return file_path
 
+def extract_sample_name(identifier):
+    """
+    Extracts the clean sample name from a scan identifier, directory name, or filename.
+    
+    Examples:
+        '032433_TiON_sheet_30min_oK_fine_stack' -> 'TiON_sheet_30min'
+        '032433_TiON_sheet_30min_o_k_fine_stack' -> 'TiON_sheet_30min'
+        'TiON_sheet_30min_o_k_fine' -> 'TiON_sheet_30min'
+        '083357_LMFP82_nocarbon_fe_l3l2_fine_stack' -> 'LMFP82_nocarbon'
+        '123159_Na_molybdate_Infoil_mo_m32_semifine_stack' -> 'Na_molybdate_Infoil'
+        '141438_Ca_silicate_Ctape_si_k_fine_stack' -> 'Ca_silicate_Ctape'
+    """
+    if not identifier:
+        return ""
+    s = str(identifier).strip()
+    if s.endswith('.h5') or s.endswith('.hdf5'):
+        s = s.rsplit('.', 1)[0]
+    
+    # 1. Strip leading timestamp or scan number (e.g., '032433_' or '2026-07-20_032434_')
+    s = re.sub(r'^(?:\d{4}[-_]\d{2}[-_]\d{2}_)?\d{4,8}_', '', s)
+    
+    # 2. Strip absorption edge & scan mode suffixes
+    edge_pattern = r'_(?:[a-zA-Z]{1,3}_(?:[kKLMNOklmno]\d*(?:[kKLMNOklmno]\d*)*)|[a-zA-Z]{1,3}(?:[kKLMNOklmno]\d*(?:[kKLMNOklmno]\d*)*))(?i:_(?:semi)?fine|_coarse|_fast|_slow)?(?i:_(?:fine|stack|map)(?:_data)?)*$'
+    m = re.search(edge_pattern, s)
+    if m:
+        s = s[:m.start()]
+    else:
+        # Fallback: remove general trailing scan mode keywords
+        s = re.sub(r'(?i:_(?:semi)?fine|_coarse|_fast|_slow)?(?i:_(?:fine|stack|map)(?:_data)?)+$', '', s)
+        
+    return s.strip('_')
+
+
+def resolve_sample_name(file_path=None, h5_obj=None, scan_name=None):
+    """
+    Robustly resolves the human-meaningful sample name from HDF5 metadata,
+    parent directory name, or filename.
+    """
+    # 1. Check explicit HDF5 attributes
+    if h5_obj is not None:
+        search_groups = [
+            h5_obj, h5_obj.get('scan_metadata'), h5_obj.get('stack_metadata'),
+            h5_obj.get('entry'), h5_obj.get('map_data')
+        ]
+        for grp in search_groups:
+            if grp is not None and hasattr(grp, 'attrs'):
+                for key in ['sample_name', 'sample']:
+                    val = grp.attrs.get(key)
+                    if val and str(val).strip() not in ('N/A', 'None', ''):
+                        return str(val).strip()
+
+    # 2. Try h5 stack_metadata/scan_metadata scan_name attribute
+    if h5_obj is not None:
+        for grp_name in ['stack_metadata', 'scan_metadata']:
+            if grp_name in h5_obj and 'scan_name' in h5_obj[grp_name].attrs:
+                cand = h5_obj[grp_name].attrs['scan_name']
+                s = extract_sample_name(cand)
+                if s and s.lower() not in ('stack', 'map', 'stack_data', 'map_data'):
+                    return s
+
+    # 3. Try parent directory of file_path (e.g. 032433_TiON_sheet_30min_o_k_fine_stack)
+    if file_path:
+        parent_dir = os.path.basename(os.path.dirname(os.path.abspath(file_path)))
+        s = extract_sample_name(parent_dir)
+        if s and s.lower() not in ('stack', 'map', 'stack_data', 'map_data'):
+            return s
+
+    # 4. Try scan_name parameter
+    if scan_name:
+        s = extract_sample_name(scan_name)
+        if s and s.lower() not in ('stack', 'map', 'stack_data', 'map_data'):
+            return s
+
+    # 5. Try file stem
+    if file_path:
+        fname = os.path.basename(file_path)
+        s = extract_sample_name(fname)
+        if s and s.lower() not in ('stack', 'map', 'stack_data', 'map_data'):
+            return s
+
+    return scan_name or "Sample"
+
+
 def detect_energy_regions(energies):
     """
     Identifies continuous energy regions with constant spacing.
@@ -127,6 +210,7 @@ def analyze_sgm_bsky_data(file_path=None, verbose=True):
         "ny": "N/A",
         "date": "N/A",
         "scan_name": "N/A",
+        "sample_name": "N/A",
         "project": "N/A",
         "grating": "N/A",
         "harmonic": "N/A",
@@ -211,7 +295,7 @@ def analyze_sgm_bsky_data(file_path=None, verbose=True):
         # --- Robust Metadata Extraction ---
         for key in ['project', 'scan_type', 'grating', 'harmonic', 'strip', 'command', 
                     'coordinates', 'beamline', 'polarization', 'exit_slit_gap', 
-                    'xps_z', 'time_per_map', 'number_of_points', 'scan_name']:
+                    'xps_z', 'time_per_map', 'number_of_points', 'scan_name', 'sample_name']:
             if key not in data_pack:
                 data_pack[key] = 'N/A'
 
@@ -238,10 +322,18 @@ def analyze_sgm_bsky_data(file_path=None, verbose=True):
                 if data_pack['xps_z'] == 'N/A': data_pack['xps_z'] = attrs.get('vaz', attrs.get('xps_z', 'N/A'))
                 if data_pack['time_per_map'] == 'N/A': data_pack['time_per_map'] = attrs.get('time_per_map', attrs.get('time_per_image', 'N/A'))
                 if data_pack['number_of_points'] == 'N/A': data_pack['number_of_points'] = attrs.get('number_of_points', attrs.get('num_points', 'N/A'))
-                if data_pack['scan_name'] == 'N/A' and 'scan_name' in attrs: data_pack['scan_name'] = attrs['scan_name']
+                if data_pack['scan_name'] in ('N/A', '') and 'scan_name' in attrs: data_pack['scan_name'] = attrs['scan_name']
+                if data_pack['sample_name'] in ('N/A', ''):
+                    if 'sample_name' in attrs: data_pack['sample_name'] = attrs['sample_name']
+                    elif 'sample' in attrs: data_pack['sample_name'] = attrs['sample']
 
         if 'stitching_metadata' in f and 'stitched_tag' in f['stitching_metadata'].attrs:
             data_pack['scan_name'] = f"Stitched_{f['stitching_metadata'].attrs['stitched_tag']}"
+
+        # Resolve sample name robustly (from attributes, parent folder, or scan name)
+        resolved_sample = resolve_sample_name(file_path, f, data_pack.get('scan_name'))
+        if resolved_sample and resolved_sample != 'N/A':
+            data_pack['sample_name'] = resolved_sample
 
         for k in data_pack:
             if isinstance(data_pack[k], (bytes, np.bytes_)):
@@ -418,6 +510,8 @@ def analyze_sgm_bsky_data(file_path=None, verbose=True):
         print("----------------------------")
         print(f"Date:                  {data_pack['date']}")
         print(f"Scan Name:             {data_pack['scan_name']}")
+        if data_pack.get('sample_name') and data_pack['sample_name'] != 'N/A':
+            print(f"Sample Name:           {data_pack['sample_name']}")
         print(f"Project:               {data_pack['project']}")
         print(f"Scan Type:             {data_pack['scan_type']}")
         print(f"Endstation:            {data_pack['beamline']}")
