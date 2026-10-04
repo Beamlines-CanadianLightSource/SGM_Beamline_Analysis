@@ -271,9 +271,16 @@ def save_pymca_4d_stack_h5(path_pack, output_path=None, normalize=True, channel_
             full_meas.attrs['channels_indices'] = np.array([3], dtype=np.int32)
             full_meas.attrs['i0_source'] = i0_source
             const_offset_4d = path_pack.get('i0_const_offset', 0.0)
+            const_op_4d = path_pack.get('i0_const_op', 'Add')
             if const_offset_4d != 0.0:
                 full_meas.attrs['i0_constant_offset'] = float(const_offset_4d)
-                full_meas.attrs['i0_comment'] = f"I0 was modified by adding constant {const_offset_4d:+.4g}"
+                full_meas.attrs['i0_constant_op'] = str(const_op_4d)
+                if const_op_4d == "Multiply":
+                    full_meas.attrs['i0_comment'] = f"I0 was modified by multiplying constant *{const_offset_4d:.4g}"
+                elif const_op_4d == "Divide":
+                    full_meas.attrs['i0_comment'] = f"I0 was modified by dividing constant /{const_offset_4d:.4g}"
+                else:
+                    full_meas.attrs['i0_comment'] = f"I0 was modified by adding constant {const_offset_4d:+.4g}"
             full_meas.attrs['nx'] = int(nx)
             full_meas.attrs['ny'] = int(ny)
             full_meas.attrs['rows'] = int(ny)

@@ -310,27 +310,35 @@ class ExternalI0PreviewDialog(tk.Toplevel):
         self.ent_calib.bind("<Return>", self.update_plot)
         self.ent_calib.bind("<FocusOut>", self.update_plot)
         
-        # Constant Offset UI
-        const_frame = tk.LabelFrame(ctrl_frame, text="I0 Constant Offset")
+        # Constant Modification UI (Add, Multiply, Divide)
+        const_frame = tk.LabelFrame(ctrl_frame, text="I0 Constant Modification")
         const_frame.grid(row=4, column=0, columnspan=2, padx=5, pady=4, sticky="ew")
         
         self.do_const_offset = tk.BooleanVar(value=False)
         self.i0_const_offset = tk.DoubleVar(value=0.0)
+        self.const_op = tk.StringVar(value="Add")
         
         self.chk_const = tk.Checkbutton(
-            const_frame, text="Add Constant to I0",
+            const_frame, text="Apply Constant:",
             variable=self.do_const_offset, command=self.update_plot,
             font=('TkDefaultFont', 9, 'bold')
         )
         self.chk_const.grid(row=0, column=0, padx=5, pady=3, sticky="w")
         
-        tk.Label(const_frame, text="Constant (+/-):").grid(row=0, column=1, padx=5, pady=3, sticky="w")
-        self.ent_const = ttk.Entry(const_frame, textvariable=self.i0_const_offset, width=12)
-        self.ent_const.grid(row=0, column=2, padx=5, pady=3, sticky="w")
+        self.cb_const_op = ttk.Combobox(const_frame, textvariable=self.const_op, values=["Add", "Multiply", "Divide"], state="readonly", width=9)
+        self.cb_const_op.set("Add")
+        self.cb_const_op.grid(row=0, column=1, padx=4, pady=3, sticky="w")
+        self.cb_const_op.bind("<<ComboboxSelected>>", self._on_const_op_change)
+        
+        tk.Label(const_frame, text="Value:").grid(row=0, column=2, padx=(8, 2), pady=3, sticky="w")
+        self.ent_const = ttk.Entry(const_frame, textvariable=self.i0_const_offset, width=10)
+        self.ent_const.grid(row=0, column=3, padx=2, pady=3, sticky="w")
         self.ent_const.bind("<Return>", self._on_const_return)
         self.ent_const.bind("<FocusOut>", self.update_plot)
         self.ent_const.bind("<KeyRelease>", self._on_const_key)
-        tk.Label(const_frame, text="(I0' = I0 + C)", font=('TkDefaultFont', 8, 'italic'), fg='gray').grid(row=0, column=3, padx=5, pady=3, sticky="w")
+        
+        self.lbl_const_formula = tk.Label(const_frame, text="(I0' = I0 + C)", font=('TkDefaultFont', 8, 'italic'), fg='gray')
+        self.lbl_const_formula.grid(row=0, column=4, padx=6, pady=3, sticky="w")
 
         # Optical Density (SF) Correction UI
         od_frame = tk.LabelFrame(ctrl_frame, text="Compound Optical Density (SF) Correction")
@@ -381,6 +389,26 @@ class ExternalI0PreviewDialog(tk.Toplevel):
         
         self.update_plot()
         
+    def _on_const_op_change(self, event=None):
+        op = self.cb_const_op.get()
+        if op == "Multiply":
+            self.lbl_const_formula.config(text="(I0' = I0 * C)")
+            try:
+                if float(self.ent_const.get()) == 0.0:
+                    self.i0_const_offset.set(1.0)
+            except Exception:
+                pass
+        elif op == "Divide":
+            self.lbl_const_formula.config(text="(I0' = I0 / C)")
+            try:
+                if float(self.ent_const.get()) == 0.0:
+                    self.i0_const_offset.set(1.0)
+            except Exception:
+                pass
+        else:
+            self.lbl_const_formula.config(text="(I0' = I0 + C)")
+        self.update_plot()
+
     def _on_const_key(self, event=None):
         if self.do_const_offset.get():
             self.update_plot()
@@ -388,7 +416,7 @@ class ExternalI0PreviewDialog(tk.Toplevel):
     def _on_const_return(self, event=None):
         try:
             val = float(self.ent_const.get())
-            if val != 0.0 and not self.do_const_offset.get():
+            if not self.do_const_offset.get():
                 self.do_const_offset.set(True)
         except Exception:
             pass
@@ -424,14 +452,23 @@ class ExternalI0PreviewDialog(tk.Toplevel):
                     self.lbl_status.config(text=f"Smoothing error: {e}")
 
             const_val = 0.0
+            const_op = self.cb_const_op.get() if hasattr(self, 'cb_const_op') else "Add"
             if self.do_const_offset.get():
                 try:
                     const_val = float(self.ent_const.get())
-                    y_proc = y_proc + const_val
+                    if const_op == "Multiply":
+                        y_proc = y_proc * const_val
+                    elif const_op == "Divide":
+                        if const_val != 0.0:
+                            y_proc = y_proc / const_val
+                        else:
+                            self.lbl_status.config(text="Constant division error: Cannot divide by zero")
+                    else:
+                        y_proc = y_proc + const_val
                 except (ValueError, TypeError):
                     pass
                 except Exception as e:
-                    self.lbl_status.config(text=f"Constant offset error: {e}")
+                    self.lbl_status.config(text=f"Constant modification error: {e}")
 
             od_vals = None
             od_error = None
@@ -481,7 +518,12 @@ class ExternalI0PreviewDialog(tk.Toplevel):
                 if self.do_smooth.get():
                     mod_desc.append(f"Smoothed (w={self.spin_window.get()})")
                 if self.do_const_offset.get() and const_val != 0.0:
-                    mod_desc.append(f"Offset: {const_val:+.4g}")
+                    if const_op == "Multiply":
+                        mod_desc.append(f"Scale: *{const_val:.4g}")
+                    elif const_op == "Divide":
+                        mod_desc.append(f"Scale: /{const_val:.4g}")
+                    else:
+                        mod_desc.append(f"Offset: {const_val:+.4g}")
                 mod_desc.append(f"OD-Div ({compound_str})")
                 top_label = " & ".join(mod_desc) if mod_desc else "Modified I0"
                 
@@ -494,7 +536,15 @@ class ExternalI0PreviewDialog(tk.Toplevel):
                     except: pass
                     
                 ax_top.set_ylabel(i_col)
-                title_extra = f", Offset: {const_val:+.4g}" if (self.do_const_offset.get() and const_val != 0.0) else ""
+                if self.do_const_offset.get() and const_val != 0.0:
+                    if const_op == "Multiply":
+                        title_extra = f", Scale: *{const_val:.4g}"
+                    elif const_op == "Divide":
+                        title_extra = f", Scale: /{const_val:.4g}"
+                    else:
+                        title_extra = f", Offset: {const_val:+.4g}"
+                else:
+                    title_extra = ""
                 ax_top.set_title(f"I0 Preview: {i_col} (OD Divided by {compound_str}{title_extra})")
                 ax_top.legend(loc='upper right', fontsize=8)
                 ax_top.grid(True, linestyle='--', alpha=0.6)
@@ -518,7 +568,12 @@ class ExternalI0PreviewDialog(tk.Toplevel):
                     if self.do_smooth.get():
                         mod_desc.append(f"Smoothed (w={self.spin_window.get()})")
                     if self.do_const_offset.get():
-                        mod_desc.append(f"Offset: {const_val:+.4g}")
+                        if const_op == "Multiply":
+                            mod_desc.append(f"Scale: *{const_val:.4g}")
+                        elif const_op == "Divide":
+                            mod_desc.append(f"Scale: /{const_val:.4g}")
+                        else:
+                            mod_desc.append(f"Offset: {const_val:+.4g}")
                     
                     mod_label = "Modified I0 (" + ", ".join(mod_desc) + ")"
                     ax.plot(x_sorted, y_proc, 'b.-', label=mod_label, linewidth=1.5)
@@ -531,7 +586,12 @@ class ExternalI0PreviewDialog(tk.Toplevel):
                 
                 title_mods = []
                 if self.do_const_offset.get():
-                    title_mods.append(f"Offset: {const_val:+.4g}")
+                    if const_op == "Multiply":
+                        title_mods.append(f"Scale: *{const_val:.4g}")
+                    elif const_op == "Divide":
+                        title_mods.append(f"Scale: /{const_val:.4g}")
+                    else:
+                        title_mods.append(f"Offset: {const_val:+.4g}")
                 if self.do_smooth.get():
                     title_mods.append("Smoothed")
                 if self.i0_calib_enabled.get():
@@ -587,13 +647,20 @@ class ExternalI0PreviewDialog(tk.Toplevel):
         smoothed_str = f" (Smoothed w={self.spin_window.get()})" if self.do_smooth.get() else ""
         const_str = ""
         c_val = 0.0
+        c_op = self.cb_const_op.get() if hasattr(self, 'cb_const_op') else "Add"
         if self.do_const_offset.get():
             try:
                 c_val = float(self.ent_const.get())
-                const_str = f" (+ Constant: {c_val:+.4g})"
+                if c_op == "Multiply":
+                    const_str = f" (* Constant: {c_val:.4g})"
+                elif c_op == "Divide":
+                    const_str = f" (/ Constant: {c_val:.4g})"
+                else:
+                    const_str = f" (+ Constant: {c_val:+.4g})"
             except Exception:
                 pass
         self.const_val = c_val
+        self.const_op = c_op
         shift_str = f" (Energy Shift: {self.i0_energy_shift.get():+.2f} eV)" if self.i0_calib_enabled.get() else ""
         od_str = ""
         if self.do_od_divide.get():
@@ -601,8 +668,14 @@ class ExternalI0PreviewDialog(tk.Toplevel):
             d_str = self.od_density.get()
             t_str = self.od_thickness.get()
             scale_str = " auto-scaled" if self.do_autoscale.get() else ""
+            od_str = f" (Divided by OD: {c_str} ρ={d_str} t={t_str}µm{scale_str})"
         if c_val != 0.0:
-            console_log(f"[I0 Preview] Constant offset applied: {c_val:+.4g}")
+            if c_op == "Multiply":
+                console_log(f"[I0 Preview] Constant multiplication applied: *{c_val:.4g}")
+            elif c_op == "Divide":
+                console_log(f"[I0 Preview] Constant division applied: /{c_val:.4g}")
+            else:
+                console_log(f"[I0 Preview] Constant offset applied: {c_val:+.4g}")
             
         self.result = (
             self.cb_e.get(), 
@@ -612,7 +685,8 @@ class ExternalI0PreviewDialog(tk.Toplevel):
             smoothed_str + const_str + shift_str + od_str, 
             self.i0_calib_enabled.get(), 
             self.i0_energy_shift.get(),
-            c_val
+            c_val,
+            c_op
         )
         self._close_dialog()
         
@@ -2200,9 +2274,17 @@ class SummaryDashboard:
                     f"# Normalization: {i0_source}",
                 ]
                 const_offset_meta = self.ctx.get('i0_const_offset', 0.0)
+                const_op_meta = self.ctx.get('i0_const_op', 'Add')
                 if const_offset_meta != 0.0:
-                    rows.append(f"# I0 Constant Offset: {const_offset_meta:+.4g} (I0 modified by adding constant {const_offset_meta:+.4g})")
-                    console_log(f"  [METADATA] I0 was modified by adding constant: {const_offset_meta:+.4g}")
+                    if const_op_meta == "Multiply":
+                        rows.append(f"# I0 Constant Modification: Multiply by {const_offset_meta:.4g} (Formula: I0_modified = I0_original * {const_offset_meta:.4g})")
+                        console_log(f"  [METADATA] I0 was modified by multiplying by constant: {const_offset_meta:.4g}")
+                    elif const_op_meta == "Divide":
+                        rows.append(f"# I0 Constant Modification: Divide by {const_offset_meta:.4g} (Formula: I0_modified = I0_original / {const_offset_meta:.4g})")
+                        console_log(f"  [METADATA] I0 was modified by dividing by constant: {const_offset_meta:.4g}")
+                    else:
+                        rows.append(f"# I0 Constant Offset: {const_offset_meta:+.4g} (I0 modified by adding constant {const_offset_meta:+.4g})")
+                        console_log(f"  [METADATA] I0 was modified by adding constant: {const_offset_meta:+.4g}")
                 rows += calib_meta_rows
                 rows += [
                     f"# Active SDD Selection for Selected Average: {sel_str}",
@@ -2687,8 +2769,14 @@ class SummaryDashboard:
             fmt = 'o-' if self.ctx.get('show_markers', True) else '-'
             
             const_offset_dashboard = self.ctx.get('i0_const_offset', 0.0)
+            const_op = self.ctx.get('i0_const_op', 'Add')
             if const_offset_dashboard != 0.0:
-                console_log(f"  [I0 CONFIGURATION] Summary Dashboard loaded with Au Mesh I0 constant offset: {const_offset_dashboard:+.4g}")
+                if const_op == "Multiply":
+                    console_log(f"  [I0 CONFIGURATION] Summary Dashboard loaded with Au Mesh I0 constant multiplication: *{const_offset_dashboard:.4g}")
+                elif const_op == "Divide":
+                    console_log(f"  [I0 CONFIGURATION] Summary Dashboard loaded with Au Mesh I0 constant division: /{const_offset_dashboard:.4g}")
+                else:
+                    console_log(f"  [I0 CONFIGURATION] Summary Dashboard loaded with Au Mesh I0 constant offset: {const_offset_dashboard:+.4g}")
             
             # 1. Plot Raw Fluorescence (Top)
             for det in self.ctx['detector_names']:
@@ -2711,7 +2799,15 @@ class SummaryDashboard:
             # (e.g. 0-10 vs 6000-11000) don't squash internal I0 & TEY to flat lines at zero
             if is_ext_i0:
                 self.ax_raw_ext = ax_raw_mcc.twinx()
-                ext_lbl = f"Raw External I0 ({const_offset:+.4g})" if const_offset != 0.0 else "Raw External I0"
+                if const_offset != 0.0:
+                    if const_op == "Multiply":
+                        ext_lbl = f"Raw External I0 (*{const_offset:.4g})"
+                    elif const_op == "Divide":
+                        ext_lbl = f"Raw External I0 (/{const_offset:.4g})"
+                    else:
+                        ext_lbl = f"Raw External I0 ({const_offset:+.4g})"
+                else:
+                    ext_lbl = "Raw External I0"
                 l_ext, = self.ax_raw_ext.plot(self.ctx['calibrated_energies'], self.ctx['ext_i0_values'], 'b.-', lw=1.5, label=ext_lbl)
                 self.ext_i0_line_raw = l_ext
                 self.ax_raw_ext.set_ylabel("Raw External I0 (Counts)", color='b', fontsize=8.5)
@@ -2732,7 +2828,12 @@ class SummaryDashboard:
                         lbl = "Raw Scan Au Mesh (mcc1)"
                     elif ch == 1 and "Internal" in self.ctx.get('i0_source', ''):
                         if const_offset != 0.0:
-                            lbl = f"Raw Au Mesh I0 {const_offset:+.4g} (mcc1)"
+                            if const_op == "Multiply":
+                                lbl = f"Raw Au Mesh I0 * {const_offset:.4g} (mcc1)"
+                            elif const_op == "Divide":
+                                lbl = f"Raw Au Mesh I0 / {const_offset:.4g} (mcc1)"
+                            else:
+                                lbl = f"Raw Au Mesh I0 {const_offset:+.4g} (mcc1)"
                         else:
                             lbl = "Raw Au Mesh I0 (mcc1)"
                     elif ch == 4:
@@ -3317,15 +3418,19 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                     if dialog.result:
                         selected_e_col, selected_i_col, x_sorted, y_sorted, extra_str, cal_en, cal_val = dialog.result[:7]
                         const_offset_val = dialog.result[7] if len(dialog.result) > 7 else getattr(dialog, 'const_val', 0.0)
+                        const_op = dialog.result[8] if len(dialog.result) > 8 else getattr(dialog, 'const_op', 'Add')
                         if const_offset_val == 0.0 and extra_str:
                             import re
-                            m_const = re.search(r'\(\+\s*Constant:\s*([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\)', extra_str)
+                            m_const = re.search(r'\(([+*\/])\s*Constant:\s*([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\)', extra_str)
                             if m_const:
                                 try:
-                                    const_offset_val = float(m_const.group(1))
+                                    op_char = m_const.group(1)
+                                    const_offset_val = float(m_const.group(2))
+                                    const_op = "Multiply" if op_char == "*" else ("Divide" if op_char == "/" else "Add")
                                 except Exception:
                                     pass
                         path_pack['i0_const_offset'] = const_offset_val
+                        path_pack['i0_const_op'] = const_op
                         
                         # Store raw sorted data for on-the-fly shift adjustments
                         context_ext_i0_df = ext_df
@@ -3342,8 +3447,15 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
 
                         if const_offset_val != 0.0:
                             console_log("\n" + "=" * 70)
-                            console_log(f"  [I0 CONFIGURATION] A constant was added to External I0: {const_offset_val:+.4g}")
-                            console_log(f"  [I0 CONFIGURATION] Formula: I0_modified = I0_original + ({const_offset_val:+.4g})")
+                            if const_op == "Multiply":
+                                console_log(f"  [I0 CONFIGURATION] A constant was multiplied with External I0: *{const_offset_val:.4g}")
+                                console_log(f"  [I0 CONFIGURATION] Formula: I0_modified = I0_original * ({const_offset_val:.4g})")
+                            elif const_op == "Divide":
+                                console_log(f"  [I0 CONFIGURATION] External I0 was divided by a constant: /{const_offset_val:.4g}")
+                                console_log(f"  [I0 CONFIGURATION] Formula: I0_modified = I0_original / ({const_offset_val:.4g})")
+                            else:
+                                console_log(f"  [I0 CONFIGURATION] A constant was added to External I0: {const_offset_val:+.4g}")
+                                console_log(f"  [I0 CONFIGURATION] Formula: I0_modified = I0_original + ({const_offset_val:+.4g})")
                             console_log(f"  [I0 CONFIGURATION] Normalization Source: {i0_source}")
                             console_log("=" * 70 + "\n")
                         else:
@@ -3402,15 +3514,19 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                     if dialog.result:
                         selected_e_col, selected_i_col, x_sorted, y_sorted, extra_str, cal_en, cal_val = dialog.result[:7]
                         const_offset_val = dialog.result[7] if len(dialog.result) > 7 else getattr(dialog, 'const_val', 0.0)
+                        const_op = dialog.result[8] if len(dialog.result) > 8 else getattr(dialog, 'const_op', 'Add')
                         if const_offset_val == 0.0 and extra_str:
                             import re
-                            m_const = re.search(r'\(\+\s*Constant:\s*([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\)', extra_str)
+                            m_const = re.search(r'\(([+*\/])\s*Constant:\s*([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\)', extra_str)
                             if m_const:
                                 try:
-                                    const_offset_val = float(m_const.group(1))
+                                    op_char = m_const.group(1)
+                                    const_offset_val = float(m_const.group(2))
+                                    const_op = "Multiply" if op_char == "*" else ("Divide" if op_char == "/" else "Add")
                                 except Exception:
                                     pass
                         path_pack['i0_const_offset'] = const_offset_val
+                        path_pack['i0_const_op'] = const_op
                         ext_i0_values = np.interp(calibrated_energies, x_sorted, y_sorted)
                         i0_source = f"Internal: Au Mesh I0 (mcc1){extra_str}"
                         path_pack['i0_calib_enabled'] = False
@@ -3431,8 +3547,15 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
 
                         if const_offset_val != 0.0:
                             console_log("\n" + "=" * 70)
-                            console_log(f"  [I0 CONFIGURATION] A constant was added to Au Mesh I0: {const_offset_val:+.4g}")
-                            console_log(f"  [I0 CONFIGURATION] Formula: I0_modified = I0_original + ({const_offset_val:+.4g})")
+                            if const_op == "Multiply":
+                                console_log(f"  [I0 CONFIGURATION] A constant was multiplied with Au Mesh I0 (mcc1): *{const_offset_val:.4g}")
+                                console_log(f"  [I0 CONFIGURATION] Formula: I0_modified = I0_original * ({const_offset_val:.4g})")
+                            elif const_op == "Divide":
+                                console_log(f"  [I0 CONFIGURATION] Au Mesh I0 (mcc1) was divided by a constant: /{const_offset_val:.4g}")
+                                console_log(f"  [I0 CONFIGURATION] Formula: I0_modified = I0_original / ({const_offset_val:.4g})")
+                            else:
+                                console_log(f"  [I0 CONFIGURATION] A constant was added to Au Mesh I0 (mcc1): {const_offset_val:+.4g}")
+                                console_log(f"  [I0 CONFIGURATION] Formula: I0_modified = I0_original + ({const_offset_val:+.4g})")
                             console_log(f"  [I0 CONFIGURATION] Normalization Source: {i0_source}")
                             console_log("=" * 70 + "\n")
                         else:
@@ -3464,6 +3587,7 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
             'mcc_data': mcc_data, 'mcc_maps': mcc_maps, 'show_markers': show_markers,
             'ext_i0_values': ext_i0_values, 'i0_source': i0_source,
             'i0_const_offset': path_pack.get('i0_const_offset', 0.0),
+            'i0_const_op': path_pack.get('i0_const_op', 'Add'),
             'ext_i0_df': context_ext_i0_df if use_ext else None,
             'ext_i0_cols': context_ext_i0_cols if use_ext else None,
             'ext_i0_raw_xy': context_ext_i0_raw_xy if use_ext else None
