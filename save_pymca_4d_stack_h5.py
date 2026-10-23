@@ -30,7 +30,9 @@ def save_pymca_4d_stack_h5(path_pack, output_path=None, normalize=True, channel_
     final_save_path = output_path
     if not final_save_path:
         h5_src = path_pack.get('h5_file_path', '')
-        initial_dir = os.path.dirname(h5_src) if h5_src else os.getcwd()
+        initial_dir = path_pack.get('save_dir') if path_pack.get('save_dir') and path_pack.get('save_dir') != 'N/A' else (os.path.dirname(h5_src) if h5_src else os.getcwd())
+        if initial_dir:
+            os.makedirs(initial_dir, exist_ok=True)
         initial_name = os.path.splitext(os.path.basename(h5_src))[0] + "_Elemental_PyMca.h5" if h5_src else "elemental_pymca.h5"
         
         final_save_path = safe_filedialog_call(
@@ -154,6 +156,7 @@ def save_pymca_4d_stack_h5(path_pack, output_path=None, normalize=True, channel_
 
     # --- Process and Save to HDF5 ---
     try:
+        os.makedirs(os.path.dirname(os.path.abspath(final_save_path)), exist_ok=True)
         with h5py.File(final_save_path, 'w') as f:
             f.attrs['NX_class'] = 'NXroot'
             f.attrs['default'] = 'entry/measurement'
@@ -260,6 +263,33 @@ def save_pymca_4d_stack_h5(path_pack, output_path=None, normalize=True, channel_
                 meta_group.attrs['sdd_calibration_edges_used'] = str(edges)
                 if 'last_updated' in meta_calib:
                     meta_group.attrs['sdd_calibration_date'] = str(meta_calib['last_updated'])
+
+            # Auto Element ROI metadata
+            auto_roi_meta = path_pack.get('auto_element_roi_info')
+            if auto_roi_meta:
+                meta_group.attrs['auto_element_roi_enabled'] = "Yes"
+                meta_group.attrs['auto_element'] = str(auto_roi_meta.get('element', 'N/A'))
+                meta_group.attrs['auto_element_edge'] = str(auto_roi_meta.get('edge', 'N/A'))
+                th_e = auto_roi_meta.get('theoretical_ev')
+                if th_e is not None:
+                    meta_group.attrs['theoretical_emission_energy_ev'] = float(th_e)
+                fit_d = auto_roi_meta.get('fit_details', {})
+                if 'peak_center_ev' in fit_d:
+                    meta_group.attrs['fitted_peak_center_ev'] = float(fit_d['peak_center_ev'])
+                if 'fwhm_ev' in fit_d:
+                    meta_group.attrs['fitted_fwhm_ev'] = float(fit_d['fwhm_ev'])
+                if 'sigma_ev' in fit_d:
+                    meta_group.attrs['fitted_sigma_ev'] = float(fit_d['sigma_ev'])
+                n_sig = auto_roi_meta.get('n_sigma')
+                if n_sig is not None:
+                    meta_group.attrs['roi_n_sigma'] = float(n_sig)
+                roi_bounds = auto_roi_meta.get('xrf_roi', ())
+                if len(roi_bounds) == 2:
+                    meta_group.attrs['xrf_roi_min_ev'] = float(roi_bounds[0])
+                    meta_group.attrs['xrf_roi_max_ev'] = float(roi_bounds[1])
+                meta_group.attrs['auto_element_fit_success'] = "Yes" if fit_d.get('fit_success') else "No"
+            else:
+                meta_group.attrs['auto_element_roi_enabled'] = "No"
 
             # --- 3. Full 4D Measurement (Y, X, Energy, Channels) ---
             full_meas = entry.create_group('full_4d_measurement')

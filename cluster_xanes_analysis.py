@@ -40,6 +40,7 @@ class MetadataDialog(simpledialog.Dialog):
             ("Temperature", "Temp"),
             ("Scan Mode", "Mode"),
             ("Chamber Conditions", "Chamber"),
+            ("Spot Size", "SpotSize"),
             ("Comments", "Comments")
         ]
         self.entries = {}
@@ -127,6 +128,7 @@ def save_csv_with_header(csv_path, df, scan_info, full_meta=None):
             f"# Temperature: {full_meta.get('Temp', 'N/A')}",
             f"# Scan Mode: {full_meta.get('Mode', 'N/A')}",
             f"# Chamber Conditions: {full_meta.get('Chamber', 'N/A')}",
+            f"# Spot Size: {full_meta.get('SpotSize', full_meta.get('Spot Size', 'N/A'))}",
             f"# Comments: {full_meta.get('Comments', 'N/A')}",
             "#"
         ]
@@ -174,7 +176,7 @@ def save_csv_with_header(csv_path, df, scan_info, full_meta=None):
     rows.append("#")
     
     try:
-        with open(csv_path, 'w') as f:
+        with open(csv_path, 'w', encoding='utf-8-sig') as f:
             for row in rows:
                 f.write(row + "\n")
             df.to_csv(f, index=False, header=False)

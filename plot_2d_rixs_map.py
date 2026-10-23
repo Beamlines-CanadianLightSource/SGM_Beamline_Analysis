@@ -153,12 +153,16 @@ def plot_incident_vs_emission_2d(
     def trigger_save(event=None):
         if output_dir:
             save_directory = os.path.abspath(output_dir)
+        elif data_pack.get('save_dir') and data_pack['save_dir'] != 'N/A':
+            save_directory = data_pack['save_dir']
         else:
             h5_path = data_pack.get('h5_file_path') or data_pack.get('h5_dir')
             if h5_path and os.path.isfile(h5_path):
-                save_directory = os.path.dirname(os.path.abspath(h5_path))
+                from analyze_sgm_bsky_data import resolve_preprocessed_save_dir
+                save_directory = resolve_preprocessed_save_dir(os.path.dirname(os.path.abspath(h5_path)))
             elif h5_path and os.path.isdir(h5_path):
-                save_directory = os.path.abspath(h5_path)
+                from analyze_sgm_bsky_data import resolve_preprocessed_save_dir
+                save_directory = resolve_preprocessed_save_dir(os.path.abspath(h5_path))
             else:
                 save_directory = None
                 for d_name, en_dict in data_pack.get('sdd_files', {}).items():

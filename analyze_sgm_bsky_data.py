@@ -42,6 +42,29 @@ def browse_for_file():
     )
     return file_path
 
+def resolve_preprocessed_save_dir(raw_dir):
+    r"""
+    If the directory path contains a 'raw' folder component (e.g. from beamline storage like
+    V:\projects\prj41S15109\raw\2026-08-13\042855_CuO_cu_l3l2_fine_stack),
+    maps it to the corresponding 'preprocessed' directory:
+    V:\projects\prj41S15109\preprocessed\2026-08-13\042855_CuO_cu_l3l2_fine_stack.
+    Otherwise, returns the raw_dir unchanged.
+    """
+    if not raw_dir or raw_dir == 'N/A':
+        return raw_dir
+    norm_dir = os.path.abspath(raw_dir)
+    is_unc = norm_dir.startswith('\\\\') or norm_dir.startswith('//')
+    parts = norm_dir.split(os.sep)
+    raw_indices = [i for i, part in enumerate(parts) if part.lower() == 'raw']
+    if raw_indices:
+        idx = raw_indices[-1]
+        parts[idx] = 'preprocessed'
+        res = os.sep.join(parts)
+        if is_unc and not res.startswith('\\\\'):
+            res = '\\\\' + res.lstrip('\\')
+        return res
+    return norm_dir
+
 def extract_sample_name(identifier):
     """
     Extracts the clean sample name from a scan identifier, directory name, or filename.
@@ -249,6 +272,11 @@ def analyze_sgm_bsky_data(file_path=None, verbose=True):
         "y": np.array([]),
         "nx": "N/A",
         "ny": "N/A",
+        "pixel_size": "N/A",
+        "pixel_size_x_um": "N/A",
+        "pixel_size_y_um": "N/A",
+        "image_size_x_mm": "N/A",
+        "image_size_y_mm": "N/A",
         "date": "N/A",
         "scan_name": "N/A",
         "sample_name": "N/A",
@@ -268,6 +296,7 @@ def analyze_sgm_bsky_data(file_path=None, verbose=True):
         "mcc_channel_names": [],
         "sdd_files": {},
         "h5_dir": "N/A",
+        "save_dir": "N/A",
         "h5_file_path": os.path.abspath(file_path),
     }
 
@@ -332,6 +361,7 @@ def analyze_sgm_bsky_data(file_path=None, verbose=True):
     with f:
         stack_dir = os.path.dirname(file_path)
         data_pack['h5_dir'] = stack_dir
+        data_pack['save_dir'] = resolve_preprocessed_save_dir(stack_dir)
 
         # --- Robust Metadata Extraction ---
         for key in ['project', 'scan_type', 'grating', 'harmonic', 'strip', 'command', 
@@ -431,14 +461,59 @@ def analyze_sgm_bsky_data(file_path=None, verbose=True):
             
             # Infer grid dimensions
             if data_pack['x'].size > 0 and data_pack['y'].size > 0:
-                data_pack['nx'] = len(np.unique(np.round(data_pack['x'], 4)))
-                data_pack['ny'] = len(np.unique(np.round(data_pack['y'], 4)))
-            
-            if data_pack['coordinates'] == 'N/A':
-                 data_pack['coordinates'] = f"X: {np.min(data_pack['x']):.2f} to {np.max(data_pack['x']):.2f}, Y: {np.min(data_pack['y']):.2f} to {np.max(data_pack['y']):.2f}"
+                nx = len(np.unique(np.round(data_pack['x'], 4)))
+                ny = len(np.unique(np.round(data_pack['y'], 4)))
+                data_pack['nx'] = nx
+                data_pack['ny'] = ny
+
+                min_x = float(np.min(data_pack['x']))
+                max_x = float(np.max(data_pack['x']))
+                size_x = abs(max_x - min_x)
+
+                min_y = float(np.min(data_pack['y']))
+                max_y = float(np.max(data_pack['y']))
+                size_y = abs(max_y - min_y)
+
+                data_pack['image_size_x_mm'] = round(size_x, 4)
+                data_pack['image_size_y_mm'] = round(size_y, 4)
+
+                data_pack['coordinates'] = (
+                    f"X: {min_x:.2f} to {max_x:.2f} mm ({size_x:.2f} mm), "
+                    f"Y: {min_y:.2f} to {max_y:.2f} mm ({size_y:.2f} mm)"
+                )
+
+                if nx > 0 and ny > 0:
+                    px_x_um = (size_x / float(nx)) * 1000.0
+                    px_y_um = (size_y / float(ny)) * 1000.0
+                    data_pack['pixel_size_x_um'] = round(px_x_um, 2)
+                    data_pack['pixel_size_y_um'] = round(px_y_um, 2)
+                    data_pack['pixel_size'] = f"{px_x_um:.2f} µm x {px_y_um:.2f} µm"
 
         else:
             print("Warning: Coordinate data (hexapod_waves/x or y) not found.", file=sys.stderr)
+
+        # Fallback if coordinates were loaded from metadata group without image size
+        if data_pack['coordinates'] != 'N/A' and data_pack['pixel_size'] == 'N/A':
+            coords_str = str(data_pack['coordinates']).strip()
+            match = re.search(r'X:\s*([-\d.]+)\s*to\s*([-\d.]+),\s*Y:\s*([-\d.]+)\s*to\s*([-\d.]+)', coords_str)
+            if match:
+                min_x, max_x = float(match.group(1)), float(match.group(2))
+                min_y, max_y = float(match.group(3)), float(match.group(4))
+                size_x = abs(max_x - min_x)
+                size_y = abs(max_y - min_y)
+                data_pack['image_size_x_mm'] = round(size_x, 4)
+                data_pack['image_size_y_mm'] = round(size_y, 4)
+                data_pack['coordinates'] = (
+                    f"X: {min_x:.2f} to {max_x:.2f} mm ({size_x:.2f} mm), "
+                    f"Y: {min_y:.2f} to {max_y:.2f} mm ({size_y:.2f} mm)"
+                )
+                nx, ny = data_pack.get('nx'), data_pack.get('ny')
+                if isinstance(nx, (int, float, np.integer)) and isinstance(ny, (int, float, np.integer)) and nx > 0 and ny > 0:
+                    px_x_um = (size_x / float(nx)) * 1000.0
+                    px_y_um = (size_y / float(ny)) * 1000.0
+                    data_pack['pixel_size_x_um'] = round(px_x_um, 2)
+                    data_pack['pixel_size_y_um'] = round(px_y_um, 2)
+                    data_pack['pixel_size'] = f"{px_x_um:.2f} µm x {px_y_um:.2f} µm"
 
         # --- Pre-scan Subdirectories for Fuzzy Matching ---
         subdirs = [d for d in os.listdir(stack_dir) if os.path.isdir(os.path.join(stack_dir, d))]
@@ -535,8 +610,30 @@ def analyze_sgm_bsky_data(file_path=None, verbose=True):
     else:
         data_pack['representative_energy'] = -1.0
 
-    data_pack['exit_slit_gap'] = format_num_val(data_pack.get('exit_slit_gap'))
+    raw_gap = data_pack.get('exit_slit_gap')
+    gap_val = format_num_val(raw_gap)
+    if gap_val != 'N/A':
+        if not any(u in str(gap_val).lower() for u in ['µm', 'um', 'micron', 'microns']):
+            gap_val = f"{gap_val} µm"
+    data_pack['exit_slit_gap'] = gap_val
     data_pack['xps_z'] = format_num_val(data_pack.get('xps_z'))
+
+    t_per_img = data_pack.get('time_per_map') or data_pack.get('time_per_image')
+    if t_per_img and str(t_per_img).strip() not in ('N/A', 'None', ''):
+        val_str = str(t_per_img).strip()
+        if not any(u in val_str.lower() for u in ['s', 'sec', 'second', 'seconds']):
+            try:
+                f_val = float(val_str)
+                if f_val.is_integer():
+                    formatted_t = f"{int(f_val)} s"
+                else:
+                    formatted_t = f"{f_val:.2f} s"
+            except (ValueError, TypeError):
+                formatted_t = f"{val_str} s"
+        else:
+            formatted_t = val_str
+        data_pack['time_per_map'] = formatted_t
+        data_pack['time_per_image'] = formatted_t
 
     # --- Print Summary if requested ---
     if verbose:
@@ -546,8 +643,12 @@ def analyze_sgm_bsky_data(file_path=None, verbose=True):
         print(f"Energy Regions:        {data_pack['Energy Regions']}")
         print(f"X array (shape):       {data_pack['x'].shape} (Nx: {data_pack['nx']})")
         print(f"Y array (shape):       {data_pack['y'].shape} (Ny: {data_pack['ny']})")
-        pts = data_pack['nx'] * data_pack['ny']
-        print(f"Grid Dimensions:       {data_pack['nx']} x {data_pack['ny']} ({pts} points)")
+        if isinstance(data_pack['nx'], (int, np.integer)) and isinstance(data_pack['ny'], (int, np.integer)):
+            pts = data_pack['nx'] * data_pack['ny']
+            print(f"Grid Dimensions:       {data_pack['nx']} x {data_pack['ny']} ({pts} points)")
+        else:
+            print(f"Grid Dimensions:       {data_pack['nx']} x {data_pack['ny']}")
+        print(f"Pixel Size:            {data_pack['pixel_size']}")
         print("----------------------------")
         print(f"Date:                  {data_pack['date']}")
         print(f"Scan Name:             {data_pack['scan_name']}")
@@ -570,6 +671,9 @@ def analyze_sgm_bsky_data(file_path=None, verbose=True):
         print("\nSDD Files Found:")
         for detector, sdd_dict in data_pack['sdd_files'].items():
             print(f"  Detector {detector}: {len(sdd_dict)} files")
+        if data_pack.get('save_dir') and data_pack['save_dir'] != 'N/A':
+            if data_pack['save_dir'] != data_pack.get('h5_dir'):
+                print(f"\n[OUTPUT REDIRECTION] Preprocessed Save Dir:\n  {data_pack['save_dir']}")
         print("-----------------------------------")
 
     return data_pack

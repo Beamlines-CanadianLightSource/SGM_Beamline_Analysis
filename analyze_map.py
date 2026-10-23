@@ -79,6 +79,11 @@ def analyze_map(file_path=None, verbose=True):
         "y": np.array([]),
         "nx": 0,
         "ny": 0,
+        "pixel_size": "N/A",
+        "pixel_size_x_um": "N/A",
+        "pixel_size_y_um": "N/A",
+        "image_size_x_mm": "N/A",
+        "image_size_y_mm": "N/A",
         "scan_name": "N/A",
         "project": "N/A",
         "date": "N/A",
@@ -199,10 +204,58 @@ def analyze_map(file_path=None, verbose=True):
             
             # Inferred Grid Calculation
             if data_pack['x'].size > 0 and data_pack['y'].size > 0:
-                data_pack['nx'] = len(np.unique(np.round(data_pack['x'], 4)))
-                data_pack['ny'] = len(np.unique(np.round(data_pack['y'], 4)))
+                nx = len(np.unique(np.round(data_pack['x'], 4)))
+                ny = len(np.unique(np.round(data_pack['y'], 4)))
+                data_pack['nx'] = nx
+                data_pack['ny'] = ny
+
+                min_x = float(np.min(data_pack['x']))
+                max_x = float(np.max(data_pack['x']))
+                size_x = abs(max_x - min_x)
+
+                min_y = float(np.min(data_pack['y']))
+                max_y = float(np.max(data_pack['y']))
+                size_y = abs(max_y - min_y)
+
+                data_pack['image_size_x_mm'] = round(size_x, 4)
+                data_pack['image_size_y_mm'] = round(size_y, 4)
+
+                data_pack['coordinates'] = (
+                    f"X: {min_x:.2f} to {max_x:.2f} mm ({size_x:.2f} mm), "
+                    f"Y: {min_y:.2f} to {max_y:.2f} mm ({size_y:.2f} mm)"
+                )
+
+                if nx > 0 and ny > 0:
+                    px_x_um = (size_x / float(nx)) * 1000.0
+                    px_y_um = (size_y / float(ny)) * 1000.0
+                    data_pack['pixel_size_x_um'] = round(px_x_um, 2)
+                    data_pack['pixel_size_y_um'] = round(px_y_um, 2)
+                    data_pack['pixel_size'] = f"{px_x_um:.2f} µm x {px_y_um:.2f} µm"
+
         else:
             print("Warning: Coordinate data (hexapod_waves/x or y) not found.", file=sys.stderr)
+
+        if data_pack.get('coordinates', 'N/A') != 'N/A' and data_pack.get('pixel_size', 'N/A') == 'N/A':
+            coords_str = str(data_pack['coordinates']).strip()
+            match = re.search(r'X:\s*([-\d.]+)\s*to\s*([-\d.]+),\s*Y:\s*([-\d.]+)\s*to\s*([-\d.]+)', coords_str)
+            if match:
+                min_x, max_x = float(match.group(1)), float(match.group(2))
+                min_y, max_y = float(match.group(3)), float(match.group(4))
+                size_x = abs(max_x - min_x)
+                size_y = abs(max_y - min_y)
+                data_pack['image_size_x_mm'] = round(size_x, 4)
+                data_pack['image_size_y_mm'] = round(size_y, 4)
+                data_pack['coordinates'] = (
+                    f"X: {min_x:.2f} to {max_x:.2f} mm ({size_x:.2f} mm), "
+                    f"Y: {min_y:.2f} to {max_y:.2f} mm ({size_y:.2f} mm)"
+                )
+                nx, ny = data_pack.get('nx'), data_pack.get('ny')
+                if isinstance(nx, (int, float, np.integer)) and isinstance(ny, (int, float, np.integer)) and nx > 0 and ny > 0:
+                    px_x_um = (size_x / float(nx)) * 1000.0
+                    px_y_um = (size_y / float(ny)) * 1000.0
+                    data_pack['pixel_size_x_um'] = round(px_x_um, 2)
+                    data_pack['pixel_size_y_um'] = round(px_y_um, 2)
+                    data_pack['pixel_size'] = f"{px_x_um:.2f} µm x {px_y_um:.2f} µm"
 
         # --- Find Raw Data Files ---
         # MCC Data File
@@ -231,14 +284,41 @@ def analyze_map(file_path=None, verbose=True):
         print(f"Energy:                {data_pack['energy']} eV")
         data_pack['Energy Regions'] = f"{data_pack['energy']:.2f}: 0.0 eV"
         data_pack['representative_energy'] = data_pack['energy']
-        data_pack['exit_slit_gap'] = format_num_val(data_pack.get('exit_slit_gap'))
+        raw_gap = data_pack.get('exit_slit_gap')
+        gap_val = format_num_val(raw_gap)
+        if gap_val != 'N/A':
+            if not any(u in str(gap_val).lower() for u in ['µm', 'um', 'micron', 'microns']):
+                gap_val = f"{gap_val} µm"
+        data_pack['exit_slit_gap'] = gap_val
         data_pack['xps_z'] = format_num_val(data_pack.get('xps_z'))
+
+        t_per_img = data_pack.get('time_per_map') or data_pack.get('time_per_image')
+        if t_per_img and str(t_per_img).strip() not in ('N/A', 'None', ''):
+            val_str = str(t_per_img).strip()
+            if not any(u in val_str.lower() for u in ['s', 'sec', 'second', 'seconds']):
+                try:
+                    f_val = float(val_str)
+                    if f_val.is_integer():
+                        formatted_t = f"{int(f_val)} s"
+                    else:
+                        formatted_t = f"{f_val:.2f} s"
+                except (ValueError, TypeError):
+                    formatted_t = f"{val_str} s"
+            else:
+                formatted_t = val_str
+            data_pack['time_per_map'] = formatted_t
+            data_pack['time_per_image'] = formatted_t
+
         print(f"Number of Images:      1")
         print(f"Energy Regions:        {data_pack['Energy Regions']}")
         print(f"X array (shape):       {data_pack['x'].shape} (Nx: {data_pack['nx']})")
         print(f"Y array (shape):       {data_pack['y'].shape} (Ny: {data_pack['ny']})")
-        pts = data_pack['nx'] * data_pack['ny']
-        print(f"Grid Dimensions:       {data_pack['nx']} x {data_pack['ny']} ({pts} points)")
+        if isinstance(data_pack['nx'], (int, np.integer)) and isinstance(data_pack['ny'], (int, np.integer)):
+            pts = data_pack['nx'] * data_pack['ny']
+            print(f"Grid Dimensions:       {data_pack['nx']} x {data_pack['ny']} ({pts} points)")
+        else:
+            print(f"Grid Dimensions:       {data_pack['nx']} x {data_pack['ny']}")
+        print(f"Pixel Size:            {data_pack.get('pixel_size', 'N/A')}")
         print("----------------------------")
         print(f"Date:                  {data_pack.get('date', 'N/A')}")
         print(f"Scan Name:             {data_pack.get('scan_name', 'N/A')}")

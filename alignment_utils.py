@@ -622,6 +622,7 @@ class MetadataDialog(simpledialog.Dialog):
             ("Temperature", "Temp"),
             ("Scan Mode", "Mode"),
             ("Chamber Conditions", "Chamber"),
+            ("Spot Size", "SpotSize"),
             ("Comments", "Comments")
         ]
         self.entries = {{}}
@@ -712,6 +713,7 @@ finally:
                     ("Temperature", "Temp"),
                     ("Scan Mode", "Mode"),
                     ("Chamber Conditions", "Chamber"),
+                    ("Spot Size", "SpotSize"),
                     ("Comments", "Comments")
                 ]
                 self.entries = {}
@@ -740,6 +742,8 @@ def get_safe_save_path(save_dir, default_name):
     Auto-increments the file suffix if the file already exists to prevent Jupyter freezes
     caused by Tkinter simpledialog.
     """
+    if save_dir:
+        os.makedirs(save_dir, exist_ok=True)
     save_path = os.path.join(save_dir, default_name)
     if not os.path.exists(save_path):
         return save_path

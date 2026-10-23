@@ -5,8 +5,15 @@ import os
 import traceback
 from analyze_sgm_bsky_data import analyze_sgm_bsky_data
 import mplcursors
-import dask.array as da
-from dask import delayed, compute
+try:
+    import dask.array as da
+    from dask import delayed, compute
+    HAS_DASK = True
+except ImportError:
+    da = None
+    delayed = None
+    compute = None
+    HAS_DASK = False
 
 def pca_stack_analysis(path_pack, n_components=5):
     """
@@ -18,6 +25,10 @@ def pca_stack_analysis(path_pack, n_components=5):
         path_pack (dict): The output from analyze_stack.
         n_components (int): The number of principal components to compute and plot.
     """
+    if not HAS_DASK:
+        print("Error: 'dask' is required for pca_stack_analysis. Please install it using 'pip install dask'.", file=sys.stderr)
+        return
+
     try:
         if not path_pack or not path_pack.get('sdd_files'):
             print("Error: Could not retrieve data paths or no SDD files found.", file=sys.stderr)

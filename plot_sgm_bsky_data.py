@@ -17,6 +17,7 @@ from tkinter import messagebox, simpledialog, filedialog
 from analyze_sgm_bsky_data import analyze_sgm_bsky_data, extract_sample_name, resolve_sample_name, build_scan_filename_base
 from alignment_utils import grid_interpolate_map, get_safe_save_path, get_tk_root, get_masked_triangulation, safe_filedialog_call, console_log, safe_metadata_dialog_call, format_num_val
 import sdd_calibration_utils as sdd_calib
+import sdd_element_roi_utils as elem_roi_utils
 try:
     from sf import sf, sf_init
     HAS_SF = True
@@ -207,6 +208,7 @@ class MetadataDialog(simpledialog.Dialog):
             ("Temperature", "Temp"),
             ("Scan Mode", "Mode"),
             ("Chamber Conditions", "Chamber"),
+            ("Spot Size", "SpotSize"),
             ("Comments", "Comments")
         ]
         self.entries = {}
@@ -696,13 +698,56 @@ class ExternalI0PreviewDialog(tk.Toplevel):
 
 
 def save_csv_idl(path, rows):
-    """Reliable binary write for IDL compatibility (no trailing newline)."""
+    """Reliable binary write for IDL & Excel compatibility (no trailing newline, UTF-8 BOM encoded)."""
     try:
+        data_bytes = "\r\n".join(rows).encode('utf-8-sig')
         with open(path, 'wb') as f:
-            f.write("\r\n".join(rows).encode('ascii'))
+            f.write(data_bytes)
         print(f"  -> [SAVE] CSV Exported: {path}")
     except Exception as e:
-        print(f"Error saving {path}: {e}")
+        print(f"Error saving {path}: {e}", file=sys.stderr)
+        raise e
+
+def format_auto_element_roi_metadata(auto_roi_meta, fallback_element=None, fallback_edge=None, fallback_n_sigma=2.0):
+    """Formats auto element ROI fitting details as a list of comment rows for CSV headers."""
+    if auto_roi_meta:
+        elem = auto_roi_meta.get('element') or fallback_element or 'N/A'
+        edge = auto_roi_meta.get('edge') or fallback_edge or 'N/A'
+        th_e = auto_roi_meta.get('theoretical_ev')
+        th_str = f"{th_e:.1f} eV" if th_e is not None else "N/A"
+        fit_d = auto_roi_meta.get('fit_details', {})
+        pk_c = fit_d.get('peak_center_ev')
+        pk_str = f"{pk_c:.1f} eV" if pk_c is not None else "N/A"
+        offset_val = (pk_c - th_e) if (pk_c is not None and th_e is not None) else None
+        off_str = f"{offset_val:+.1f} eV" if offset_val is not None else "N/A"
+        fwhm_val = fit_d.get('fwhm_ev')
+        fwhm_str = f"{fwhm_val:.1f} eV" if fwhm_val is not None else "N/A"
+        sig_val = fit_d.get('sigma_ev')
+        sig_str = f"{sig_val:.1f} eV" if sig_val is not None else "N/A"
+        n_sig = auto_roi_meta.get('n_sigma') or fallback_n_sigma or 2.0
+        roi_bounds = auto_roi_meta.get('xrf_roi', ())
+        bounds_str = f"{roi_bounds[0]:.1f}-{roi_bounds[1]:.1f} eV" if len(roi_bounds) == 2 else "N/A"
+        fit_ok = fit_d.get('fit_success', False)
+
+        return [
+            "# Auto Element ROI: Active",
+            f"# Auto Element: {elem} ({edge}-edge)",
+            f"# Theoretical Emission Energy: {th_str}",
+            f"# Fitted Peak Center: {pk_str} (Calibration Offset: {off_str})",
+            f"# Fitted Resolution: FWHM={fwhm_str} (sigma={sig_str})",
+            f"# Auto ROI Integration Limits (+/- {n_sig:.1f} sigma): {bounds_str}",
+            f"# Auto Fit Status: {'Converged (Gaussian)' if fit_ok else 'Fallback Centroid'}",
+        ]
+    elif fallback_element:
+        edge_str = f" ({fallback_edge}-edge)" if fallback_edge else ""
+        return [
+            "# Auto Element ROI: Disabled (Manual Selection)",
+            f"# Detected Element: {fallback_element}{edge_str}",
+        ]
+    else:
+        return [
+            "# Auto Element ROI: Disabled (Manual Selection)",
+        ]
 
 def get_dynamic_mask(cx, cy, xt, yt, roi=None, poly=None):
     if cx is None or cy is None or len(cx) == 0 or len(cy) == 0:
@@ -838,7 +883,7 @@ def apply_deconvolution_to_map(x, y, z, fwhm_um, num_iter=20, deconv_type='lucy'
 # --- Core Dashboard State & Synchronization ---
 
 class Synchronizer:
-    def __init__(self, all_energies, representative_energy, map_roi=None, use_color=True, use_full_metadata=False, calibrated_energies=None, channel_roi=(0, 255), xrf_roi=None):
+    def __init__(self, all_energies, representative_energy, map_roi=None, use_color=True, use_full_metadata=False, calibrated_energies=None, channel_roi=(0, 255), xrf_roi=None, auto_element_roi=False, element=None, edge=None, n_sigma=2.0):
         self.all_energies = all_energies
         self.calibrated_energies = calibrated_energies if calibrated_energies is not None else all_energies
         self.energy_idx = self._find_nearest_idx(representative_energy)
@@ -850,6 +895,12 @@ class Synchronizer:
         self.is_syncing = False
         self.channel_roi = channel_roi
         self.xrf_roi = xrf_roi
+        self.auto_element_roi = auto_element_roi
+        self.detected_element = element
+        self.detected_edge = edge
+        self.n_sigma = n_sigma
+        self.auto_element_roi_info = None
+        self.auto_roi_label = None
         self.contrast_percentiles = (0.0, 100.0)
         self.use_log = False 
         self.use_log_spec = False # New: Log scale for spectra
@@ -1126,6 +1177,133 @@ class Synchronizer:
         finally:
             for d in self.dashboards: d.fig.canvas.draw_idle()
             self.is_syncing = False
+
+    def refit_element_roi(self, element_override=None, edge_override=None, n_sigma=None):
+        """
+        Re-fits Gaussian peak to the element's emission line using the currently selected pixels
+        (or active image) and updates the synchronized energy ROI across all detectors and UI widgets.
+        """
+        elem = element_override or self.detected_element
+        edge = edge_override or self.detected_edge
+        
+        # If element is not set, try to extract from scan_name or sample_name
+        if not elem:
+            sd = self.summary_dash or _GLOBAL_SUMMARY_DASH
+            if sd and 'path_pack' in sd.ctx:
+                for key in ['scan_name', 'sample_name', 'h5_file_path', 'h5_dir']:
+                    val = sd.ctx['path_pack'].get(key)
+                    if val and val != 'N/A':
+                        e, ed = elem_roi_utils.extract_element_and_edge(val)
+                        if e:
+                            elem, edge = e, ed
+                            break
+                            
+        if not elem:
+            try:
+                root = get_tk_root()
+                user_in = simpledialog.askstring("Element ROI", "Enter element symbol (e.g. Si, Fe, O, Si-K):", parent=root)
+                if user_in:
+                    e, ed = elem_roi_utils.extract_element_and_edge(user_in)
+                    if e:
+                        elem, edge = e, ed
+            except Exception:
+                pass
+
+        if not elem:
+            print("  [Auto-ROI Warning] Could not determine element. Please specify an element (e.g. 'Si').")
+            if self.status_widget:
+                self.status_widget.value = "[Auto-ROI Warning] Could not determine element."
+            return None
+            
+        th_energy = elem_roi_utils.get_theoretical_emission_energy(elem, edge)
+        if th_energy is None:
+            print(f"  [Auto-ROI Warning] No emission line found for element: {elem}-{edge}")
+            if self.status_widget:
+                self.status_widget.value = f"[Auto-ROI Warning] No emission line for {elem}-{edge}."
+            return None
+            
+        self.detected_element = elem
+        self.detected_edge = edge
+        if hasattr(self, 'btn_fit_element') and self.btn_fit_element:
+            self.btn_fit_element.description = f"Auto-Fit {elem} ROI"
+        if n_sigma is not None:
+            self.n_sigma = n_sigma
+            
+        # Collect calibrated spectra for the currently active mask
+        e_grid = np.arange(max(0, th_energy - 100), th_energy + 100, 1.0)
+        combined_counts = np.zeros_like(e_grid, dtype=float)
+        detectors_used = 0
+        
+        for d in self.dashboards:
+            if d.is_mcc or not hasattr(d, 's2d_rep') or d.s2d_rep is None:
+                continue
+            if not self.sdd_calib_data or d.name not in self.sdd_calib_data:
+                continue
+                
+            m = get_dynamic_mask(
+                d.ctx['x_coords'][:len(d.s2d_rep)], 
+                d.ctx['y_coords'][:len(d.s2d_rep)], 
+                d.ctx['x_trim'], 
+                d.ctx['y_trim'], 
+                roi=self.current_roi, 
+                poly=self.current_poly if self.mode == 'poly' else None
+            )
+            spec = np.sum(d.s2d_rep[m], axis=0) if np.any(m) else np.sum(d.s2d_rep, axis=0)
+            
+            gain = self.sdd_calib_data[d.name].get('gain', 1.0)
+            offset = self.sdd_calib_data[d.name].get('offset', 0.0)
+            e_axis_det = sdd_calib.channel_to_energy(np.arange(256), gain, offset)
+            
+            interp_counts = np.interp(e_grid, e_axis_det, spec, left=0.0, right=0.0)
+            combined_counts += interp_counts
+            detectors_used += 1
+            
+        if detectors_used == 0 or np.max(combined_counts) <= 0:
+            print(f"  [Auto-ROI Warning] Insufficient counts on active pixels to fit {elem} peak.")
+            if self.status_widget:
+                self.status_widget.value = f"[Auto-ROI Warning] Insufficient counts for {elem}."
+            return None
+            
+        fit_res = elem_roi_utils.fit_gaussian_xrf_roi(
+            e_grid, combined_counts, th_energy, 
+            search_half_window_ev=40.0, n_sigma=self.n_sigma
+        )
+        roi_min = fit_res['roi_min_ev']
+        roi_max = fit_res['roi_max_ev']
+        
+        # Save structured auto element ROI metadata
+        auto_info = {
+            'element': elem,
+            'edge': edge,
+            'theoretical_ev': th_energy,
+            'xrf_roi': (roi_min, roi_max),
+            'fit_details': fit_res,
+            'n_sigma': self.n_sigma
+        }
+        self.auto_element_roi_info = auto_info
+        sd = self.summary_dash or _GLOBAL_SUMMARY_DASH
+        if sd and hasattr(sd, 'ctx') and 'path_pack' in sd.ctx:
+            sd.ctx['path_pack']['auto_element_roi_info'] = auto_info
+        for d in self.dashboards:
+            if hasattr(d, 'ctx') and 'path_pack' in d.ctx:
+                d.ctx['path_pack']['auto_element_roi_info'] = auto_info
+        
+        # Enable SDD energy calibration and broadcast new ROI
+        self.use_sdd_calib = True
+        self.broadcast_energy_roi(None, (roi_min, roi_max))
+        
+        shift = fit_res['peak_center_ev'] - th_energy
+        print(f"  [Auto Element ROI] Re-fitted {elem} ({edge}-edge):")
+        print(f"    Peak center: {fit_res['peak_center_ev']:.1f} eV (Theory: {th_energy:.1f} eV, Offset: {shift:+.1f} eV)")
+        print(f"    Resolution: FWHM = {fit_res['fwhm_ev']:.1f} eV (sigma = {fit_res['sigma_ev']:.1f} eV)")
+        print(f"    Applied ROI (+/- {self.n_sigma:.1f} sigma): {roi_min:.1f} - {roi_max:.1f} eV")
+        
+        if self.auto_roi_label:
+            self.auto_roi_label.value = f"{elem} peak: {fit_res['peak_center_ev']:.1f} eV (FWHM: {fit_res['fwhm_ev']:.1f} eV)"
+        if self.status_widget:
+            self.status_widget.value = f"[Auto-ROI] {elem}: {roi_min:.1f}-{roi_max:.1f} eV. Click REFRESH for Summary."
+            
+        return fit_res
 
     def broadcast_contrast(self, new_percentiles):
         """Updates contrast limits for all map plots based on percentiles."""
@@ -1540,7 +1718,14 @@ class DashboardRow:
         if self.is_mcc:
             m_rep = self.s2d_rep
         else:
-            m_rep = np.sum(self.s2d_rep[:, self.ctx['channel_roi'][0]:self.ctx['channel_roi'][1]], axis=1)
+            if self.sync.use_sdd_calib:
+                e1, e2 = self.sync.energy_roi
+                ch1, ch2 = sdd_calib.get_calibrated_bounds(e1, e2, self.name, self.sync.sdd_calib_data)
+                ch_slice = slice(ch1, ch2)
+            else:
+                ch1, ch2 = self.ctx['channel_roi']
+                ch_slice = slice(ch1, ch2)
+            m_rep = np.sum(self.s2d_rep[:, ch_slice], axis=1)
             
         tm = get_dynamic_mask(self.ctx['x_coords'][:len(m_rep)], self.ctx['y_coords'][:len(m_rep)], self.ctx['x_trim'], self.ctx['y_trim'])
         
@@ -1573,8 +1758,17 @@ class DashboardRow:
         fig_en = Figure(figsize=(6,6))
         canvas_en = FigureCanvasAgg(fig_en)
         ax_en = fig_en.add_subplot(111)
-        ax_en.tripcolor(self.ctx['x_coords'][:len(m_rep)][tm], self.ctx['y_coords'][:len(m_rep)][tm], m_rep[tm], 
-                         shading='gouraud', edgecolors='none', rasterized=True, cmap=cmap, norm=norm)
+        as_scatter = self.ctx.get('as_scatter_plot', False)
+        if as_scatter:
+            ax_en.scatter(self.ctx['x_coords'][:len(m_rep)][tm], self.ctx['y_coords'][:len(m_rep)][tm], c=m_rep[tm], 
+                          cmap=cmap, norm=norm, marker='s', edgecolors='none', rasterized=True)
+        else:
+            try:
+                ax_en.tripcolor(self.ctx['x_coords'][:len(m_rep)][tm], self.ctx['y_coords'][:len(m_rep)][tm], m_rep[tm], 
+                                 shading='gouraud', edgecolors='none', rasterized=True, cmap=cmap, norm=norm)
+            except Exception:
+                ax_en.scatter(self.ctx['x_coords'][:len(m_rep)][tm], self.ctx['y_coords'][:len(m_rep)][tm], c=m_rep[tm], 
+                              cmap=cmap, norm=norm, marker='s', edgecolors='none', rasterized=True)
         ax_en.set_aspect('equal'); ax_en.axis('off')
         fig_en.savefig(path_en_png, bbox_inches='tight', pad_inches=0, transparent=True)
         try:
@@ -1611,8 +1805,16 @@ class DashboardRow:
         fig_avg = Figure(figsize=(6,6))
         canvas_avg = FigureCanvasAgg(fig_avg)
         ax_avg = fig_avg.add_subplot(111)
-        ax_avg.tripcolor(self.ctx['x_coords'][:len(m_avg)][tm], self.ctx['y_coords'][:len(m_avg)][tm], m_avg[tm], 
-                         shading='gouraud', edgecolors='none', rasterized=True, cmap=cmap, norm=norm)
+        if as_scatter:
+            ax_avg.scatter(self.ctx['x_coords'][:len(m_avg)][tm], self.ctx['y_coords'][:len(m_avg)][tm], c=m_avg[tm], 
+                           cmap=cmap, norm=norm, marker='s', edgecolors='none', rasterized=True)
+        else:
+            try:
+                ax_avg.tripcolor(self.ctx['x_coords'][:len(m_avg)][tm], self.ctx['y_coords'][:len(m_avg)][tm], m_avg[tm], 
+                                 shading='gouraud', edgecolors='none', rasterized=True, cmap=cmap, norm=norm)
+            except Exception:
+                ax_avg.scatter(self.ctx['x_coords'][:len(m_avg)][tm], self.ctx['y_coords'][:len(m_avg)][tm], c=m_avg[tm], 
+                               cmap=cmap, norm=norm, marker='s', edgecolors='none', rasterized=True)
         ax_avg.set_aspect('equal'); ax_avg.axis('off')
         fig_avg.savefig(path_avg_png, bbox_inches='tight', pad_inches=0, transparent=True)
         try:
@@ -1624,7 +1826,7 @@ class DashboardRow:
     def plot(self):
         # Use a unique but persistent figure ID for each detector
         fig_id = f"dash_{self.name}_{id(self.sync)}"
-        self.fig, self.ax = plt.subplots(1, 3, figsize=(15.0, 4.8), num=fig_id)
+        self.fig, self.ax = plt.subplots(1, 3, figsize=(10.5, 3.36), num=fig_id)
         cmap = 'viridis' if self.sync.use_color else 'gray'
         
         if self.is_mcc:
@@ -1644,13 +1846,22 @@ class DashboardRow:
                 self.sync.deconv_type
             )
             
-        tri_en = get_masked_triangulation(self.ctx['x_coords'][:len(m_rep)][tm], self.ctx['y_coords'][:len(m_rep)][tm])
-        if tri_en is not None:
-            self.sc_en = self.ax[0].tripcolor(tri_en, m_rep_plot, 
-                                        shading='gouraud', edgecolors='none', rasterized=True, cmap=cmap)
+        as_scatter = self.ctx.get('as_scatter_plot', False)
+        if as_scatter:
+            self.sc_en = self.ax[0].scatter(self.ctx['x_coords'][:len(m_rep)][tm], self.ctx['y_coords'][:len(m_rep)][tm],
+                                            c=m_rep_plot, cmap=cmap, marker='s', edgecolors='none', rasterized=True)
         else:
-            self.sc_en = self.ax[0].tripcolor(self.ctx['x_coords'][:len(m_rep)][tm], self.ctx['y_coords'][:len(m_rep)][tm], m_rep_plot,
-                                        shading='gouraud', edgecolors='none', rasterized=True, cmap=cmap)
+            tri_en = get_masked_triangulation(self.ctx['x_coords'][:len(m_rep)][tm], self.ctx['y_coords'][:len(m_rep)][tm])
+            if tri_en is not None:
+                self.sc_en = self.ax[0].tripcolor(tri_en, m_rep_plot, 
+                                            shading='gouraud', edgecolors='none', rasterized=True, cmap=cmap)
+            else:
+                try:
+                    self.sc_en = self.ax[0].tripcolor(self.ctx['x_coords'][:len(m_rep)][tm], self.ctx['y_coords'][:len(m_rep)][tm], m_rep_plot,
+                                                shading='gouraud', edgecolors='none', rasterized=True, cmap=cmap)
+                except Exception:
+                    self.sc_en = self.ax[0].scatter(self.ctx['x_coords'][:len(m_rep)][tm], self.ctx['y_coords'][:len(m_rep)][tm],
+                                                    c=m_rep_plot, cmap=cmap, marker='s', edgecolors='none', rasterized=True)
         plt.colorbar(self.sc_en, ax=self.ax[0]); self.ax[0].set_aspect('equal')
         
         # Explicitly set limits to the data range to avoid expansion from patches
@@ -1684,13 +1895,21 @@ class DashboardRow:
                 self.sync.deconv_type
             )
             
-        tri_avg = get_masked_triangulation(self.ctx['x_coords'][:len(m_avg)][tm], self.ctx['y_coords'][:len(m_avg)][tm])
-        if tri_avg is not None:
-            self.sc_avg = self.ax[1].tripcolor(tri_avg, m_avg_plot,
-                                         shading='gouraud', edgecolors='none', rasterized=True, cmap=cmap)
+        if as_scatter:
+            self.sc_avg = self.ax[1].scatter(self.ctx['x_coords'][:len(m_avg)][tm], self.ctx['y_coords'][:len(m_avg)][tm],
+                                             c=m_avg_plot, cmap=cmap, marker='s', edgecolors='none', rasterized=True)
         else:
-            self.sc_avg = self.ax[1].tripcolor(self.ctx['x_coords'][:len(m_avg)][tm], self.ctx['y_coords'][:len(m_avg)][tm], m_avg_plot,
-                                         shading='gouraud', edgecolors='none', rasterized=True, cmap=cmap)
+            tri_avg = get_masked_triangulation(self.ctx['x_coords'][:len(m_avg)][tm], self.ctx['y_coords'][:len(m_avg)][tm])
+            if tri_avg is not None:
+                self.sc_avg = self.ax[1].tripcolor(tri_avg, m_avg_plot,
+                                             shading='gouraud', edgecolors='none', rasterized=True, cmap=cmap)
+            else:
+                try:
+                    self.sc_avg = self.ax[1].tripcolor(self.ctx['x_coords'][:len(m_avg)][tm], self.ctx['y_coords'][:len(m_avg)][tm], m_avg_plot,
+                                                 shading='gouraud', edgecolors='none', rasterized=True, cmap=cmap)
+                except Exception:
+                    self.sc_avg = self.ax[1].scatter(self.ctx['x_coords'][:len(m_avg)][tm], self.ctx['y_coords'][:len(m_avg)][tm],
+                                                     c=m_avg_plot, cmap=cmap, marker='s', edgecolors='none', rasterized=True)
         plt.colorbar(self.sc_avg, ax=self.ax[1]); self.ax[1].set_aspect('equal')
         
         if np.any(tm):
@@ -2065,6 +2284,10 @@ class SummaryDashboard:
         """Opens metadata dialog pre-filled with last/current metadata for editing."""
         default_name = self.ctx.get('sample_name') or self.ctx.get('scan_name')
         init_d = dict(self.sync.user_metadata) if self.sync.user_metadata else {"Name": default_name}
+        if 'Element' not in init_d and getattr(self.sync, 'detected_element', None):
+            init_d['Element'] = self.sync.detected_element
+        if 'Edge' not in init_d and getattr(self.sync, 'detected_edge', None):
+            init_d['Edge'] = self.sync.detected_edge
         res = safe_metadata_dialog_call(initial_data=init_d)
         if res:
             self.sync.user_metadata = res
@@ -2177,6 +2400,7 @@ class SummaryDashboard:
             default_name = f"{base_filename}_{mode_str}_{roi_str}_summary.csv"
             
             if event is not None:
+                os.makedirs(self.ctx['save_dir'], exist_ok=True)
                 console_log(f"  Calling safe_filedialog_call: default={default_name}")
                 save_path = safe_filedialog_call(
                     filedialog.asksaveasfilename,
@@ -2195,6 +2419,7 @@ class SummaryDashboard:
                 console_log(f"  [Fallback] Saving directly to starting folder: {save_path}")
             
             if save_path:
+                os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
                 meta = self.get_metadata()
                 rows = []
                 if self.sync.full_metadata:
@@ -2207,14 +2432,15 @@ class SummaryDashboard:
                         f"# Beamline: Spherical Grating Monochromator (SGM) (11ID-1)",
                         f"# Mono: Spherical Grating Monochromator",
                         f"# Website: https://sgm.lightsource.ca",
-                        f"# Element: {meta.get('Element', 'N/A')}",
-                        f"# Edge: {meta.get('Edge', 'N/A')}",
+                        f"# Element: {meta.get('Element') if meta.get('Element') and meta.get('Element') != 'N/A' else getattr(self.sync, 'detected_element', 'N/A')}",
+                        f"# Edge: {meta.get('Edge') if meta.get('Edge') and meta.get('Edge') != 'N/A' else getattr(self.sync, 'detected_edge', 'N/A')}",
                         f"# Preparation Method: {meta.get('Prep', 'N/A')}",
                         f"# Calibrated To: {meta.get('Calib', 'N/A')}",
                         f"# Calibration Reference: {meta.get('CalibRef', 'N/A')}",
                         f"# Temperature: {meta.get('Temp', 'N/A')}",
                         f"# Scan Mode: {meta.get('Mode', 'N/A')}",
                         f"# Chamber Conditions: {meta.get('Chamber', 'N/A')}",
+                        f"# Spot Size: {meta.get('SpotSize', meta.get('Spot Size', 'N/A'))}",
                         f"# Comments: {meta.get('Comments', 'N/A')}",
                         "#"
                     ]
@@ -2262,6 +2488,8 @@ class SummaryDashboard:
                     f"# Number of Images: {len(self.sync.all_energies)}",
                     f"# Energy Regions: {self.ctx['path_pack'].get('Energy Regions', 'N/A')}",
                     f"# Grid Dimensions: {self.ctx['path_pack'].get('nx', 'N/A')} x {self.ctx['path_pack'].get('ny', 'N/A')} ({len(self.ctx['x_coords'])} points)",
+                    f"# Pixel Size: {self.ctx['path_pack'].get('pixel_size', 'N/A')}",
+                    f"# Coordinates: {self.ctx['path_pack'].get('coordinates', 'N/A')}",
                     f"# Grating: {self.ctx['path_pack'].get('grating', 'N/A')}",
                     f"# Harmonic: {self.ctx['path_pack'].get('harmonic', 'N/A')}",
                     f"# Strip: {self.ctx['path_pack'].get('strip', 'N/A')}",
@@ -2275,6 +2503,15 @@ class SummaryDashboard:
                 rows += [
                     f"# ROI Selection: {mode_str}",
                     f"# {'Energy ROI' if self.sync.use_sdd_calib else 'Channels'}: {roi_str}",
+                ]
+                auto_roi_meta = getattr(self.sync, 'auto_element_roi_info', None) or self.ctx.get('path_pack', {}).get('auto_element_roi_info', None)
+                rows += format_auto_element_roi_metadata(
+                    auto_roi_meta, 
+                    fallback_element=getattr(self.sync, 'detected_element', None),
+                    fallback_edge=getattr(self.sync, 'detected_edge', None),
+                    fallback_n_sigma=getattr(self.sync, 'n_sigma', 2.0)
+                )
+                rows += [
                     f"# Normalization: {i0_source}",
                 ]
                 const_offset_meta = self.ctx.get('i0_const_offset', 0.0)
@@ -2457,6 +2694,7 @@ class SummaryDashboard:
             else:
                 ref_gain, ref_offset = 10.0, 0.0
 
+            os.makedirs(self.ctx['save_dir'], exist_ok=True)
             console_log(f"  Calling safe_filedialog_call: default={default_name}")
             save_path = safe_filedialog_call(
                 filedialog.asksaveasfilename,
@@ -2469,13 +2707,30 @@ class SummaryDashboard:
             console_log(f"  safe_filedialog_call returned: {save_path}")
             
             if save_path:
+                os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
                 meta = self.get_metadata()
                 rows = []
                 if self.sync.full_metadata:
                     rows += [
-                        f"# Name: {meta.get('Name', 'N/A')}", f"# Formula: {meta.get('Formula', 'N/A')}",
-                        f"# Authors: {meta.get('Authors', 'N/A')}", f"# Affiliation: {meta.get('Affiliation', 'N/A')}",
-                        f"# Facility: Canadian Light Source (CLS)", f"# Beamline: Spherical Grating Monochromator (SGM) (11ID-1)", f"# Element: {meta.get('Element', 'N/A')}", f"# Edge: {meta.get('Edge', 'N/A')}", "#"
+                        f"# Name: {meta.get('Name', 'N/A')}",
+                        f"# Formula: {meta.get('Formula', 'N/A')}",
+                        f"# Authors: {meta.get('Authors', 'N/A')}",
+                        f"# Affiliation: {meta.get('Affiliation', 'N/A')}",
+                        f"# Facility: Canadian Light Source (CLS)",
+                        f"# Beamline: Spherical Grating Monochromator (SGM) (11ID-1)",
+                        f"# Mono: Spherical Grating Monochromator",
+                        f"# Website: https://sgm.lightsource.ca",
+                        f"# Element: {meta.get('Element') if meta.get('Element') and meta.get('Element') != 'N/A' else getattr(self.sync, 'detected_element', 'N/A')}",
+                        f"# Edge: {meta.get('Edge') if meta.get('Edge') and meta.get('Edge') != 'N/A' else getattr(self.sync, 'detected_edge', 'N/A')}",
+                        f"# Preparation Method: {meta.get('Prep', 'N/A')}",
+                        f"# Calibrated To: {meta.get('Calib', 'N/A')}",
+                        f"# Calibration Reference: {meta.get('CalibRef', 'N/A')}",
+                        f"# Temperature: {meta.get('Temp', 'N/A')}",
+                        f"# Scan Mode: {meta.get('Mode', 'N/A')}",
+                        f"# Chamber Conditions: {meta.get('Chamber', 'N/A')}",
+                        f"# Spot Size: {meta.get('SpotSize', meta.get('Spot Size', 'N/A'))}",
+                        f"# Comments: {meta.get('Comments', 'N/A')}",
+                        "#"
                     ]
                 
                 rows += [
@@ -2486,6 +2741,8 @@ class SummaryDashboard:
                     f"# Number of Images: {len(self.sync.all_energies)}",
                     f"# Energy Regions: {self.ctx['path_pack'].get('Energy Regions', 'N/A')}",
                     f"# Grid Dimensions: {self.ctx['path_pack'].get('nx', 'N/A')} x {self.ctx['path_pack'].get('ny', 'N/A')} ({len(self.ctx['x_coords'])} points)",
+                    f"# Pixel Size: {self.ctx['path_pack'].get('pixel_size', 'N/A')}",
+                    f"# Coordinates: {self.ctx['path_pack'].get('coordinates', 'N/A')}",
                     f"# Grating: {self.ctx['path_pack'].get('grating', 'N/A')}",
                     f"# Harmonic: {self.ctx['path_pack'].get('harmonic', 'N/A')}",
                     f"# Strip: {self.ctx['path_pack'].get('strip', 'N/A')}",
@@ -2538,6 +2795,15 @@ class SummaryDashboard:
                 rows += [
                     f"# ROI Selection: {mode_str}",
                     sdd_roi_str,
+                ]
+                auto_roi_meta = getattr(self.sync, 'auto_element_roi_info', None) or self.ctx.get('path_pack', {}).get('auto_element_roi_info', None)
+                rows += format_auto_element_roi_metadata(
+                    auto_roi_meta, 
+                    fallback_element=getattr(self.sync, 'detected_element', None),
+                    fallback_edge=getattr(self.sync, 'detected_edge', None),
+                    fallback_n_sigma=getattr(self.sync, 'n_sigma', 2.0)
+                )
+                rows += [
                     f"# Image Energy: {self.sync.all_energies[self.sync.energy_idx]:.2f} eV",
                     f"# Selection Coordinates: {roi if mode=='rect' else poly}",
                 ]
@@ -2659,6 +2925,7 @@ class SummaryDashboard:
             self.ctx['path_pack']['use_sdd_calib'] = getattr(self.sync, 'use_sdd_calib', False)
             self.ctx['path_pack']['energy_roi'] = getattr(self.sync, 'energy_roi', (1470.0, 1500.0))
             self.ctx['path_pack']['sdd_calib_data'] = getattr(self.sync, 'sdd_calib_data', {})
+            self.ctx['path_pack']['auto_element_roi_info'] = getattr(self.sync, 'auto_element_roi_info', None) or self.ctx.get('path_pack', {}).get('auto_element_roi_info', None)
             console_log("  Calling save_pymca_stack_h5...")
             save_path = save_pymca_stack_h5(self.ctx['path_pack'], channel_roi=roi_ch, map_roi=roi_map)
             console_log(f"  save_pymca_stack_h5 returned: {save_path}")
@@ -2701,6 +2968,7 @@ class SummaryDashboard:
             self.ctx['path_pack']['use_sdd_calib'] = getattr(self.sync, 'use_sdd_calib', False)
             self.ctx['path_pack']['energy_roi'] = getattr(self.sync, 'energy_roi', (1470.0, 1500.0))
             self.ctx['path_pack']['sdd_calib_data'] = getattr(self.sync, 'sdd_calib_data', {})
+            self.ctx['path_pack']['auto_element_roi_info'] = getattr(self.sync, 'auto_element_roi_info', None) or self.ctx.get('path_pack', {}).get('auto_element_roi_info', None)
             console_log("  Calling save_pymca_4d_stack_h5...")
             save_path = save_pymca_4d_stack_h5(self.ctx['path_pack'], normalize=True, channel_roi=roi_ch)
             console_log(f"  save_pymca_4d_stack_h5 returned: {save_path}")
@@ -2755,15 +3023,15 @@ class SummaryDashboard:
             # Create a thin empty axis for the plots area or just skip plot creation.
             rows, cols = 1, 1
             # Increased height from 2.0 to 4.0 to give buttons more room
-            self.fig, self.ax = plt.subplots(rows, cols, figsize=(12.75, 4.0), squeeze=False, num=fig_id)
+            self.fig, self.ax = plt.subplots(rows, cols, figsize=(8.9, 2.8), squeeze=False, num=fig_id)
             self.ax[0,0].axis('off')
             btn_y = 0.20 # Higher starting Y for buttons in a smaller figure
             btn_h = 0.15 # Taller buttons for the small figure
             chk_y = 0.45
         else:
-            # Each plot is ~6.375 wide by ~9.6 tall to satisfy "50% smaller width, height 1.5x width"
+            # Each plot is reduced by 30% to fit comfortably on screen
             is_ext_i0 = (self.ctx.get('ext_i0_values') is not None and "Internal" not in self.ctx.get('i0_source', ''))
-            self.fig, self.ax = plt.subplots(rows, cols, figsize=(12.75, 19.2), squeeze=False, num=fig_id)
+            self.fig, self.ax = plt.subplots(rows, cols, figsize=(8.9, 13.4), squeeze=False, num=fig_id)
             self.fig.subplots_adjust(hspace=0.38, wspace=0.30 if is_ext_i0 else 0.25, bottom=0.15, top=0.92, left=0.08, right=0.91 if is_ext_i0 else 0.95)
             btn_y = 0.015
             btn_h = 0.04
@@ -3136,7 +3404,7 @@ def read_csv_with_comments(filepath):
 
 # --- Main Entry Point ---
 
-def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 256), xrf_roi=None, roll_shift=0, as_scatter_plot: bool = False, map_roi=None, contrast=None, show_markers: bool = True, output_csv: bool = False, energy_shift=0.0, mcc_channels=None, mcc_to_map=None, x_trim=0.0, y_trim=0.0, save_images: bool = False, fixed_roi: bool = False, use_color: bool = True, use_full_metadata: bool = False):
+def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 256), xrf_roi=None, auto_element_roi: bool = False, element=None, n_sigma: float = 2.0, roll_shift=0, as_scatter_plot: bool = False, map_roi=None, contrast=None, show_markers: bool = True, output_csv: bool = False, energy_shift=0.0, mcc_channels=None, mcc_to_map=None, x_trim=0.0, y_trim=0.0, save_images: bool = False, fixed_roi: bool = False, use_color: bool = True, use_full_metadata: bool = False):
     """
     Beautiful Stack Dashboard (Refactored for Fresh Starts).
     """
@@ -3158,11 +3426,13 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
         
         # 1. Path Setup
         save_dir = path_pack.get('save_dir')
-        if not save_dir:
+        if not save_dir or save_dir == 'N/A':
             h5_path = path_pack.get('h5_file_path') or path_pack.get('h5_dir')
             if h5_path:
                 abs_h5 = os.path.abspath(h5_path)
-                save_dir = os.path.dirname(abs_h5) if os.path.isfile(abs_h5) or not os.path.isdir(abs_h5) else abs_h5
+                raw_dir = os.path.dirname(abs_h5) if os.path.isfile(abs_h5) or not os.path.isdir(abs_h5) else abs_h5
+                from analyze_sgm_bsky_data import resolve_preprocessed_save_dir
+                save_dir = resolve_preprocessed_save_dir(raw_dir)
             else:
                 save_dir = os.getcwd()
         scan_name = path_pack.get('scan_name', 'sdd_stack')
@@ -3194,18 +3464,6 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
         x_coords_raw, y_coords_raw = path_pack.get('x', np.array([])), path_pack.get('y', np.array([]))
         detector_names = sorted(path_pack['sdd_files'].keys())
         calibrated_energies = all_energies + energy_shift
-        
-        # Resolve xrf_roi (energy in eV) vs channel_roi (detector channels)
-        calib_data_tmp = sdd_calib.load_calibration()
-        if xrf_roi is not None:
-            xrf_roi = (float(min(xrf_roi)), float(max(xrf_roi)))
-            if calib_data_tmp and detector_names:
-                first_det = detector_names[0]
-                ch1, ch2 = sdd_calib.get_calibrated_bounds(xrf_roi[0], xrf_roi[1], first_det, calib_data_tmp)
-                channel_roi = (ch1, ch2)
-            print(f"  [ROI Init] Specified xrf_roi: {xrf_roi[0]:.1f}-{xrf_roi[1]:.1f} eV (derived channel_roi: {channel_roi})")
-        else:
-            print(f"  [ROI Init] Specified channel_roi: {channel_roi}")
         
         # 2.5 Determine actual data point count and ensure coordinate lengths match
         # Check first available detector/energy to find the real number of scanned points
@@ -3239,11 +3497,53 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
         map_roi = [max(min(map_roi[0], map_roi[1]), eb_x1), min(max(map_roi[0], map_roi[1]), eb_x2),
                    max(min(map_roi[2], map_roi[3]), eb_y1), min(max(map_roi[2], map_roi[3]), eb_y2)]
 
+        # --- Automatic Element Region of Interest (ROI) Detection & Peak Fitting ---
+        detected_element = element
+        detected_edge = None
+        if auto_element_roi or (element is not None):
+            fit_res = elem_roi_utils.auto_detect_and_fit_stack_roi(
+                path_pack,
+                representative_energy=representative_energy,
+                map_roi=map_roi,
+                element_override=element,
+                n_sigma=n_sigma,
+                verbose=True
+            )
+            if fit_res and 'xrf_roi' in fit_res:
+                xrf_roi = fit_res['xrf_roi']
+                detected_element = fit_res['element']
+                detected_edge = fit_res['edge']
+                path_pack['auto_element_roi_info'] = fit_res
+        elif element is None:
+            # Detect element for UI label if filename contains it
+            for key in ['scan_name', 'sample_name', 'h5_file_path', 'h5_dir']:
+                val = path_pack.get(key)
+                if val and val != 'N/A':
+                    e, ed = elem_roi_utils.extract_element_and_edge(val)
+                    if e:
+                        detected_element, detected_edge = e, ed
+                        break
+
+        # Resolve xrf_roi (energy in eV) vs channel_roi (detector channels)
+        calib_data_tmp = sdd_calib.load_calibration()
+        if xrf_roi is not None:
+            xrf_roi = (float(min(xrf_roi)), float(max(xrf_roi)))
+            if calib_data_tmp and detector_names:
+                first_det = detector_names[0]
+                ch1, ch2 = sdd_calib.get_calibrated_bounds(xrf_roi[0], xrf_roi[1], first_det, calib_data_tmp)
+                channel_roi = (ch1, ch2)
+            print(f"  [ROI Init] Specified xrf_roi: {xrf_roi[0]:.1f}-{xrf_roi[1]:.1f} eV (derived channel_roi: {channel_roi})")
+        else:
+            print(f"  [ROI Init] Specified channel_roi: {channel_roi}")
+
         print(f"--- SDD Stack Dashboard: {scan_name} ---")
         if sample_name and sample_name != scan_name:
             print(f"  Sample:   {sample_name}")
         print(f"  [Metadata] Full Headers: {'Enabled' if use_full_metadata else 'Disabled'}")
         print(f"  Location: {save_dir}")
+        if path_pack.get('h5_dir') and save_dir != path_pack.get('h5_dir'):
+            print(f"  [Output Redirection] Raw read from: {path_pack['h5_dir']}")
+            print(f"  [Output Redirection] Results save to: {save_dir}")
         print(f"  [Alignment] Roll Shift: {roll_shift} | Trim: X={x_trim:.3f} mm, Y={y_trim:.3f} mm")
         
         # Load and display SDD calibration metadata
@@ -3576,7 +3876,6 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                         else:
                             console_log(f"\n  [I0 CONFIGURATION] Normalization Source: {i0_source}\n")
             except Exception as e:
-                import traceback
                 print(f"Error previewing internal I0: {type(e).__name__}: {e}")
                 traceback.print_exc()
 
@@ -3589,11 +3888,12 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
         path_pack['mcc_maps'] = mcc_maps
 
         # 3. Class Instantiation (Fresh State)
-        sync = Synchronizer(all_energies, representative_energy, map_roi, use_color=use_color, use_full_metadata=use_full_metadata, calibrated_energies=calibrated_energies, channel_roi=channel_roi, xrf_roi=xrf_roi)
+        sync = Synchronizer(all_energies, representative_energy, map_roi, use_color=use_color, use_full_metadata=use_full_metadata, calibrated_energies=calibrated_energies, channel_roi=channel_roi, xrf_roi=xrf_roi, auto_element_roi=auto_element_roi, element=detected_element, edge=detected_edge, n_sigma=n_sigma)
         
         # Load initial calibration state from path_pack if set by dialog
         sync.i0_calib_enabled = path_pack.get('i0_calib_enabled', False)
         sync.i0_energy_shift = path_pack.get('i0_energy_shift', 0.0)
+        sync.auto_element_roi_info = path_pack.get('auto_element_roi_info')
         
         context = {
             'path_pack': path_pack, 'x_coords': x_coords, 'y_coords': y_coords,
@@ -3609,7 +3909,12 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
             'i0_const_op': path_pack.get('i0_const_op', 'Add'),
             'ext_i0_df': context_ext_i0_df if use_ext else None,
             'ext_i0_cols': context_ext_i0_cols if use_ext else None,
-            'ext_i0_raw_xy': context_ext_i0_raw_xy if use_ext else None
+            'ext_i0_raw_xy': context_ext_i0_raw_xy if use_ext else None,
+            'auto_element_roi': auto_element_roi,
+            'detected_element': detected_element,
+            'detected_edge': detected_edge,
+            'n_sigma': n_sigma,
+            'as_scatter_plot': as_scatter_plot
         }
 
         for det in detector_names:
@@ -3753,34 +4058,76 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
         roi_start_input.observe(on_roi_input_change, names='value')
         roi_end_input.observe(on_roi_input_change, names='value')
 
+        contrast_hbox = widgets.HBox([contrast_slider, log_toggle, log_spec_toggle])
+        calib_hbox = widgets.HBox([
+            widgets.Label("Calibration Toggles:", layout=widgets.Layout(width='200px')),
+            widgets.Checkbox(value=sync.i0_calib_enabled, description='Enable I0 Shift', indent=False),
+            widgets.FloatText(value=sync.i0_energy_shift, description='I0 Shift (eV):', layout=widgets.Layout(width='180px')),
+            widgets.Label("|", layout=widgets.Layout(width='20px')),
+            widgets.Checkbox(value=sync.use_sdd_calib, description='Enable  SDD Energy Calibration (run_calibration() script must have been run in order for this to take effect)', indent=False, tooltip='Sync ROIs by Energy instead of Channels'),
+        ])
+        # Auto-Fit ROI Button and Status Label
+        btn_elem_name = f"Auto-Fit {sync.detected_element or 'Element'} ROI"
+        btn_fit_element = widgets.Button(
+            description=btn_elem_name, 
+            button_style='info', 
+            tooltip="Automatically fit Gaussian peak to element emission line for active pixels/map area", 
+            layout=widgets.Layout(width='180px')
+        )
+        sync.btn_fit_element = btn_fit_element
+        
+        initial_fit_info = path_pack.get('auto_element_roi_info')
+        init_lbl_val = ""
+        if initial_fit_info and 'fit_details' in initial_fit_info:
+            f = initial_fit_info['fit_details']
+            init_lbl_val = f"Peak: {f['peak_center_ev']:.1f} eV | FWHM: {f['fwhm_ev']:.1f} eV (+/- {sync.n_sigma:.1f} sigma)"
+        elif sync.detected_element:
+            init_lbl_val = f"Element: {sync.detected_element}" + (f" ({sync.detected_edge}-edge)" if sync.detected_edge else "")
+            
+        auto_roi_lbl = widgets.Label(value=init_lbl_val, layout=widgets.Layout(margin='0 0 0 10px'))
+        sync.auto_roi_label = auto_roi_lbl
+
+        roi_hbox = widgets.HBox([
+            widgets.Label("Spectral ROI Limits:", layout=widgets.Layout(width='200px')),
+            roi_start_input,
+            roi_end_input,
+            btn_fit_element,
+            auto_roi_lbl,
+        ])
+        deconv_hbox = widgets.HBox([
+            widgets.Label("Deconvolution (Live):", layout=widgets.Layout(width='200px')),
+            widgets.Checkbox(value=sync.use_deconv, description='Enable Deconv', indent=False),
+            widgets.Dropdown(options=[('Richardson-Lucy', 'lucy'), ('Wiener Filter', 'wiener')], value=sync.deconv_type, layout=widgets.Layout(width='150px')),
+            widgets.FloatSlider(value=sync.deconv_fwhm_um, min=0.5, max=50.0, step=0.5, description='PSF FWHM (µm):', layout=widgets.Layout(width='300px'), style={'description_width': 'initial'}, continuous_update=False),
+            widgets.IntSlider(value=sync.deconv_iterations, min=5, max=100, step=1, description='Iterations:', layout=widgets.Layout(width='250px'), style={'description_width': 'initial'}, continuous_update=False),
+        ])
+
         energy_controls = widgets.VBox([
             top_energy_bar,
-            widgets.HBox([contrast_slider, log_toggle, log_spec_toggle]),
-            widgets.HBox([
-                widgets.Label("Calibration Toggles:", layout=widgets.Layout(width='200px')),
-                widgets.Checkbox(value=sync.i0_calib_enabled, description='Enable I0 Shift', indent=False),
-                widgets.FloatText(value=sync.i0_energy_shift, description='I0 Shift (eV):', layout=widgets.Layout(width='180px')),
-                widgets.Label("|", layout=widgets.Layout(width='20px')),
-                widgets.Checkbox(value=sync.use_sdd_calib, description='Enable  SDD Energy Calibration (run_calibration() script must have been run in order for this to take effect)', indent=False, tooltip='Sync ROIs by Energy instead of Channels'),
-            ]),
-            widgets.HBox([
-                widgets.Label("Spectral ROI Limits:", layout=widgets.Layout(width='200px')),
-                roi_start_input,
-                roi_end_input,
-            ]),
-            widgets.HBox([
-                widgets.Label("Deconvolution (Live):", layout=widgets.Layout(width='200px')),
-                widgets.Checkbox(value=sync.use_deconv, description='Enable Deconv', indent=False),
-                widgets.Dropdown(options=[('Richardson-Lucy', 'lucy'), ('Wiener Filter', 'wiener')], value=sync.deconv_type, layout=widgets.Layout(width='150px')),
-                widgets.FloatSlider(value=sync.deconv_fwhm_um, min=0.5, max=50.0, step=0.5, description='PSF FWHM (µm):', layout=widgets.Layout(width='300px'), style={'description_width': 'initial'}, continuous_update=False),
-                widgets.IntSlider(value=sync.deconv_iterations, min=5, max=100, step=1, description='Iterations:', layout=widgets.Layout(width='250px'), style={'description_width': 'initial'}, continuous_update=False),
-            ]),
+            contrast_hbox,
+            calib_hbox,
+            roi_hbox,
+            deconv_hbox,
         ])
         
         # Set up I0 & SDD Calibration Observers
-        i0_shift_chk = energy_controls.children[2].children[1]
-        i0_shift_val = energy_controls.children[2].children[2]
-        sdd_cal_chk = energy_controls.children[2].children[4]
+        i0_shift_chk = calib_hbox.children[1]
+        i0_shift_val = calib_hbox.children[2]
+        sdd_cal_chk = calib_hbox.children[4]
+        
+        def on_fit_element_clicked(b):
+            b.disabled = True
+            try:
+                res = sync.refit_element_roi()
+                if res and 'fit_details' in res:
+                    f = res['fit_details']
+                    auto_roi_lbl.value = f"Peak: {f['peak_center_ev']:.1f} eV | FWHM: {f['fwhm_ev']:.1f} eV (+/- {sync.n_sigma:.1f} sigma)"
+                if sdd_cal_chk.value != sync.use_sdd_calib:
+                    sdd_cal_chk.value = sync.use_sdd_calib
+            finally:
+                b.disabled = False
+                
+        btn_fit_element.on_click(on_fit_element_clicked)
         
         i0_shift_chk.observe(lambda c: sync.broadcast_i0_calib(enabled=c['new']), names='value')
         i0_shift_val.observe(lambda c: sync.broadcast_i0_calib(shift=c['new']), names='value')
@@ -3825,7 +4172,6 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
         sdd_cal_chk.observe(on_sdd_cal_change, names='value')
 
         # Deconvolution Observers
-        deconv_hbox = energy_controls.children[4]
         deconv_enable_chk = deconv_hbox.children[1]
         deconv_type_dropdown = deconv_hbox.children[2]
         deconv_fwhm_slider = deconv_hbox.children[3]
@@ -3848,28 +4194,138 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
             
             # Place summary dashboard first so it appears above the maps
             if sync.summary_dash:
-                try: sync.summary_dash.fig.canvas.layout.min_width = '1450px'
+                try: 
+                    sync.summary_dash.fig.canvas.layout.min_width = '890px'
+                    sync.summary_dash.fig.canvas.layout.max_width = '100%'
                 except: pass
                 summary_canvases.append(sync.summary_dash.fig.canvas)
                 
             for d in sync.dashboards:
-                try: d.fig.canvas.layout.min_width = '1450px'
+                try: 
+                    d.fig.canvas.layout.min_width = '1015px'
+                    d.fig.canvas.layout.max_width = '1050px'
                 except: pass
                 map_row_widgets.append(d.fig.canvas)
             
             # Separate scrollable boxes for independent horizontal scrolling
             summary_scroll_box = widgets.VBox(summary_canvases, layout=widgets.Layout(width='100%', overflow_x='auto'))
             map_scroll_box = widgets.VBox(map_row_widgets, layout=widgets.Layout(width='100%', overflow_x='auto'))
+            map_scroll_box.add_class('sgm-map-scroll-box')
+
+            # Top horizontal scrollbar (simple grey slider) to scroll horizontally across maps & XRD spectra without scrolling to the bottom
+            top_map_scrollbar = widgets.HTML("""
+            <div class="sgm-top-scroll-container" style="margin: 6px 0 2px 0; padding: 4px 6px; background: #f8f9fa; border: 1px solid #ddd; border-radius: 4px;">
+                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
+                    <span style="font-weight: bold; font-size: 12px; color: #222;">
+                        Horizontal View Scroll (Detector Images ↔ XRD Spectra)
+                    </span>
+                    <div>
+                        <button type="button" onclick="
+                            var root = this.closest('.sgm-top-scroll-container');
+                            var top = root ? root.querySelector('.sgm-top-scrollbar') : null;
+                            var out = this.closest('.jp-OutputArea-child, .jp-OutputArea-output, .output_subarea, .output_area, .cell-output, .output') || document;
+                            var map = out.querySelector('.sgm-map-scroll-box') || document.querySelector('.sgm-map-scroll-box');
+                            if (map) map.scrollLeft = 0;
+                            if (top) top.scrollLeft = 0;
+                        " style="cursor: pointer; padding: 2px 10px; font-size: 11px; margin-right: 6px; border-radius: 3px; border: 1px solid #bbb; background: #fff; font-weight: 500;">
+                            ◄ Show Maps (Left)
+                        </button>
+                        <button type="button" onclick="
+                            var root = this.closest('.sgm-top-scroll-container');
+                            var top = root ? root.querySelector('.sgm-top-scrollbar') : null;
+                            var out = this.closest('.jp-OutputArea-child, .jp-OutputArea-output, .output_subarea, .output_area, .cell-output, .output') || document;
+                            var map = out.querySelector('.sgm-map-scroll-box') || document.querySelector('.sgm-map-scroll-box');
+                            if (map) map.scrollLeft = map.scrollWidth;
+                            if (top) top.scrollLeft = top.scrollWidth;
+                        " style="cursor: pointer; padding: 2px 10px; font-size: 11px; border-radius: 3px; border: 1px solid #bbb; background: #fff; font-weight: 500;">
+                            Show XRD Spectra (Right) ►
+                        </button>
+                    </div>
+                </div>
+                <div class="sgm-top-scrollbar" style="width: 100%; overflow-x: auto; overflow-y: hidden; height: 16px;">
+                    <div class="sgm-top-scroll-dummy" style="width: 1050px; height: 1px;"></div>
+                </div>
+            </div>
+            <img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" style="width:0;height:0;opacity:0;position:absolute;pointer-events:none;" onload="(function(imgEl){
+                function initSync() {
+                    var root = imgEl.previousElementSibling;
+                    if (!root) {
+                        setTimeout(initSync, 200);
+                        return;
+                    }
+                    var top = root.querySelector('.sgm-top-scrollbar');
+                    var dummy = root.querySelector('.sgm-top-scroll-dummy');
+                    var out = imgEl.closest('.jp-OutputArea-child, .jp-OutputArea-output, .output_subarea, .output_area, .cell-output, .output') || document;
+                    var map = out.querySelector('.sgm-map-scroll-box') || document.querySelector('.sgm-map-scroll-box');
+
+                    if (!top || !map || !dummy) {
+                        setTimeout(initSync, 200);
+                        return;
+                    }
+
+                    function updateDummy() {
+                        if (map && dummy && map.scrollWidth > 0) {
+                            dummy.style.width = Math.max(map.scrollWidth, 1050) + 'px';
+                        }
+                    }
+                    updateDummy();
+
+                    if (window.ResizeObserver) {
+                        try {
+                            new ResizeObserver(updateDummy).observe(map);
+                        } catch(e) {}
+                    }
+
+                    var tries = 0;
+                    var interval = setInterval(function() {
+                        updateDummy();
+                        tries++;
+                        if (tries > 20) clearInterval(interval);
+                    }, 500);
+
+                    top.onmouseenter = updateDummy;
+
+                    var syncing = false;
+                    top.onscroll = function() {
+                        if (syncing) return;
+                        syncing = true;
+                        var maxTop = top.scrollWidth - top.clientWidth;
+                        var maxMap = map.scrollWidth - map.clientWidth;
+                        if (maxTop > 0 && maxMap > 0) {
+                            map.scrollLeft = (top.scrollLeft / maxTop) * maxMap;
+                        } else if (maxTop === 0) {
+                            map.scrollLeft = 0;
+                        }
+                        requestAnimationFrame(function() { syncing = false; });
+                    };
+
+                    map.onscroll = function() {
+                        if (syncing) return;
+                        syncing = true;
+                        var maxTop = top.scrollWidth - top.clientWidth;
+                        var maxMap = map.scrollWidth - map.clientWidth;
+                        if (maxTop > 0 && maxMap > 0) {
+                            top.scrollLeft = (map.scrollLeft / maxMap) * maxTop;
+                        } else if (maxMap === 0) {
+                            top.scrollLeft = 0;
+                        }
+                        requestAnimationFrame(function() { syncing = false; });
+                    };
+                }
+                initSync();
+            })(this);" onerror="this.onload();" />
+            """)
 
             # Create a bottom energy slider bar as well for convenience when scrolled to the end
             bottom_energy_bar = create_energy_slider_bar('Select Image Energy for Display (Bottom):')
 
-            # RE-ORDERED DISPLAY as requested
+            # RE-ORDERED DISPLAY:
             display(controls)             # 1. REFRESH button / ROI engine
-            display(summary_scroll_box)   # 2. XANES spectra
-            display(energy_controls)      # 3. Top Energy selector & controls
-            display(map_scroll_box)       # 4. Images with per-row energy sliders
-            display(bottom_energy_bar)    # 5. Bottom Energy selector
+            display(summary_scroll_box)   # 2. XANES spectra (with its own horizontal scrollbar)
+            display(energy_controls)      # 3. Settings & Top Image Energy selector
+            display(top_map_scrollbar)    # 4. Top Horizontal Scrollbar (simple grey slider) to slide between images and XRD spectra
+            display(map_scroll_box)       # 5. Images with native bottom scrollbar
+            display(bottom_energy_bar)    # 6. Bottom Energy selector
         else:
             plt.show()  # Trigger display in CLI
 
@@ -3882,7 +4338,8 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
         
     except Exception as e:
         plt.ion() # Safety restore
-        print(f"Error in plot_sgm_bsky_data: {e}"); traceback.print_exc()
+        print(f"Error in plot_sgm_bsky_data: {e}")
+        traceback.print_exc()
 
 if __name__ == '__main__':
     import argparse
@@ -3892,6 +4349,9 @@ if __name__ == '__main__':
     parser.add_argument("--roi_s", type=int, default=0)
     parser.add_argument("--roi_e", type=int, default=255)
     parser.add_argument("--xrf_roi", type=float, nargs=2, help="Emission energy ROI in eV (min_eV max_eV)")
+    parser.add_argument("--auto_element_roi", action="store_true", help="Auto-detect element from file/scan name and fit Gaussian ROI")
+    parser.add_argument("--element", type=str, default=None, help="Explicit element name (e.g. Si, Fe, O)")
+    parser.add_argument("--n_sigma", type=float, default=2.0, help="ROI integration half-width in units of sigma (default 2.0)")
     parser.add_argument("--roll_shift", type=int, default=0)
     parser.add_argument("--x_trim", type=float, default=0.0)
     parser.add_argument("--map_roi", type=float, nargs=4, required=True)
@@ -3902,4 +4362,4 @@ if __name__ == '__main__':
     pp = analyze_sgm_bsky_data(args.h5)
     if pp:
         pp['h5_dir'] = os.path.dirname(args.h5)
-        plot_sgm_bsky_data(pp, args.energy, channel_roi=(args.roi_s, args.roi_e), xrf_roi=args.xrf_roi, roll_shift=args.roll_shift, x_trim=args.x_trim, map_roi=args.map_roi, save_images=args.save_images, use_full_metadata=args.full_metadata)
+        plot_sgm_bsky_data(pp, args.energy, channel_roi=(args.roi_s, args.roi_e), xrf_roi=args.xrf_roi, auto_element_roi=args.auto_element_roi, element=args.element, n_sigma=args.n_sigma, roll_shift=args.roll_shift, x_trim=args.x_trim, map_roi=args.map_roi, save_images=args.save_images, use_full_metadata=args.full_metadata)

@@ -307,8 +307,9 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
         curr_e_max = current_state['energy_max']
 
         for scan_idx, path_pack in enumerate(data_packs):
-            h5_path = path_pack.get('h5_file_path') or path_pack.get('h5_dir')
-            save_dir = os.path.dirname(os.path.abspath(h5_path)) if h5_path and os.path.isfile(h5_path) else (os.path.abspath(h5_path) if h5_path and os.path.isdir(h5_path) else os.getcwd())
+            save_dir = path_pack.get('save_dir') if path_pack.get('save_dir') and path_pack.get('save_dir') != 'N/A' else (
+                os.path.dirname(os.path.abspath(h5_path)) if h5_path and os.path.isfile(h5_path) else (
+                    os.path.abspath(h5_path) if h5_path and os.path.isdir(h5_path) else os.getcwd()))
             scan_name = path_pack.get('scan_name', f"Scan_{scan_idx + 1}")
             sample_name = path_pack.get('sample_name')
             if not sample_name or str(sample_name).strip() in ('N/A', 'None', '', 'Sample'):
@@ -379,6 +380,8 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
                 f"# Number of Images: {len(scan_energies)}",
                 f"# Energy Regions: {path_pack.get('Energy Regions', 'N/A')}",
                 f"# Grid Dimensions: {path_pack.get('nx', 'N/A')} x {path_pack.get('ny', 'N/A')} ({path_pack.get('x', np.array([])).size} points)",
+                f"# Pixel Size: {path_pack.get('pixel_size', 'N/A')}",
+                f"# Coordinates: {path_pack.get('coordinates', 'N/A')}",
                 f"# Grating: {path_pack.get('grating', 'N/A')}",
                 f"# Harmonic: {path_pack.get('harmonic', 'N/A')}",
                 f"# Strip: {path_pack.get('strip', 'N/A')}",
@@ -454,7 +457,7 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
                 rows.append(",".join(row_vals))
                 
             try:
-                with open(csv_filepath, 'w', encoding='utf-8') as f_out:
+                with open(csv_filepath, 'w', encoding='utf-8-sig') as f_out:
                     f_out.write("\n".join(rows) + "\n")
                 print(f"  Saved XANES CSV: {csv_filename}")
                 saved_count += 1

@@ -497,7 +497,7 @@ class SDDCalibrationGUI:
 
         try:
             with open(save_path, 'wb') as f:
-                f.write("\r\n".join(rows).encode('utf-8'))
+                f.write("\r\n".join(rows).encode('utf-8-sig'))
             self.status.value = f"<b>Status:</b> <font color='green'>Successfully exported XRF spectra to:<br><b>{save_path}</b></font>"
             print(f"  -> [EXPORT] SDD XRF spectra successfully exported to: {save_path}")
         except Exception as e:
