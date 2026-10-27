@@ -361,10 +361,14 @@ class SDDCalibrationGUI:
 
         save_path = None
         try:
-            from alignment_utils import safe_filedialog_call
-            from tkinter import filedialog
+            from alignment_utils import safe_filedialog_call, HAS_GUI
+            try:
+                from tkinter import filedialog
+            except (ImportError, ModuleNotFoundError):
+                filedialog = None
+            func = getattr(filedialog, 'asksaveasfilename', 'asksaveasfilename') if filedialog else 'asksaveasfilename'
             save_path = safe_filedialog_call(
-                filedialog.asksaveasfilename,
+                func,
                 title="Export SDD XRF Spectra (CSV)",
                 initialdir=h5_dir,
                 initialfile=default_name,
@@ -372,22 +376,10 @@ class SDDCalibrationGUI:
                 filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
             )
         except Exception:
-            try:
-                import tkinter as tk
-                from tkinter import filedialog
-                root = tk.Tk()
-                root.withdraw()
-                root.attributes("-topmost", True)
-                save_path = filedialog.asksaveasfilename(
-                    title="Export SDD XRF Spectra (CSV)",
-                    initialdir=h5_dir,
-                    initialfile=default_name,
-                    defaultextension=".csv",
-                    filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
-                )
-                root.destroy()
-            except Exception:
-                save_path = os.path.join(h5_dir, default_name)
+            save_path = None
+
+        if not save_path:
+            save_path = os.path.join(h5_dir, default_name)
 
         if not save_path:
             self.status.value = "<b>Status:</b> Export cancelled."

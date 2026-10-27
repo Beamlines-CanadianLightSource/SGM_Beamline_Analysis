@@ -4,10 +4,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
 from matplotlib.widgets import Button
-from tkinter import filedialog
+try:
+    from tkinter import filedialog
+except (ImportError, ModuleNotFoundError):
+    filedialog = None
 from analyze_sgm_bsky_data import analyze_sgm_bsky_data
 import sdd_calibration_utils as sdd_calib
-from alignment_utils import safe_filedialog_call
+from alignment_utils import safe_filedialog_call, HAS_GUI
 
 def plot_incident_vs_emission_2d(
     data_pack=None,
@@ -190,8 +193,9 @@ def plot_incident_vs_emission_2d(
         ax_save_btn.set_visible(False)
         fig.canvas.draw_idle()
 
+        func = getattr(filedialog, 'asksaveasfilename', 'asksaveasfilename') if filedialog else 'asksaveasfilename'
         out_filename = safe_filedialog_call(
-            filedialog.asksaveasfilename,
+            func,
             title="Save 2D Emission Map",
             initialdir=save_directory,
             initialfile=initial_name,

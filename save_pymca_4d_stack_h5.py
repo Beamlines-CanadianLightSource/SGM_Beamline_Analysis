@@ -2,10 +2,15 @@ import numpy as np
 import h5py
 import sys
 import os
-import tkinter as tk
-from tkinter import messagebox, filedialog
+try:
+    import tkinter as tk
+    from tkinter import messagebox, filedialog
+except (ImportError, ModuleNotFoundError):
+    tk = None
+    messagebox = None
+    filedialog = None
 from analyze_sgm_bsky_data import analyze_sgm_bsky_data
-from alignment_utils import safe_filedialog_call, format_num_val
+from alignment_utils import safe_filedialog_call, format_num_val, HAS_GUI
 
 def save_pymca_4d_stack_h5(path_pack, output_path=None, normalize=True, channel_roi=None, xrf_roi=None):
     """
@@ -35,14 +40,17 @@ def save_pymca_4d_stack_h5(path_pack, output_path=None, normalize=True, channel_
             os.makedirs(initial_dir, exist_ok=True)
         initial_name = os.path.splitext(os.path.basename(h5_src))[0] + "_Elemental_PyMca.h5" if h5_src else "elemental_pymca.h5"
         
+        func = getattr(filedialog, 'asksaveasfilename', 'asksaveasfilename') if filedialog else 'asksaveasfilename'
         final_save_path = safe_filedialog_call(
-            filedialog.asksaveasfilename,
+            func,
             title="Save 4D PyMca HDF5 Stack",
             initialdir=initial_dir,
             initialfile=initial_name,
             defaultextension=".h5",
             filetypes=[("HDF5 files", "*.h5"), ("All files", "*.*")]
         )
+        if not final_save_path:
+            final_save_path = os.path.join(initial_dir, initial_name)
         if not final_save_path:
             print("    -> Save operation cancelled.")
             return

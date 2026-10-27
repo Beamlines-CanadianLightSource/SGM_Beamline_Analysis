@@ -1,9 +1,12 @@
 import os
 import sys
 import glob
-from tkinter import filedialog
+try:
+    from tkinter import filedialog
+except (ImportError, ModuleNotFoundError):
+    filedialog = None
 from analyze_sgm_bsky_data import analyze_sgm_bsky_data
-from alignment_utils import safe_filedialog_call, show_custom_dialog
+from alignment_utils import safe_filedialog_call, show_custom_dialog, HAS_GUI
 
 def analyze_sgm_bsky_data_batch(file_paths=None, verbose=True):
     """
@@ -28,8 +31,9 @@ def analyze_sgm_bsky_data_batch(file_paths=None, verbose=True):
         
         if choice is True:
             # Select Directory
+            func = getattr(filedialog, 'askdirectory', 'askdirectory') if filedialog else 'askdirectory'
             dir_path = safe_filedialog_call(
-                filedialog.askdirectory,
+                func,
                 title="Select Directory containing HDF5 scans"
             )
             if not dir_path:
@@ -51,8 +55,9 @@ def analyze_sgm_bsky_data_batch(file_paths=None, verbose=True):
                 return None
         elif choice is False:
             # Select Multiple Files
+            func = getattr(filedialog, 'askopenfilenames', 'askopenfilenames') if filedialog else 'askopenfilenames'
             file_paths = safe_filedialog_call(
-                filedialog.askopenfilenames,
+                func,
                 title="Select Multiple HDF5 Stack/Map Files",
                 filetypes=[("HDF5 files", "*.h5"), ("All files", "*.*")]
             )

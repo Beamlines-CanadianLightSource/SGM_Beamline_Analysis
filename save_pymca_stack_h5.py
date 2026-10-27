@@ -2,28 +2,50 @@ import numpy as np
 import h5py
 import sys
 import os
-import tkinter as tk
-from tkinter import messagebox, simpledialog, filedialog
+try:
+    import tkinter as tk
+    from tkinter import messagebox, simpledialog, filedialog
+except (ImportError, ModuleNotFoundError):
+    tk = None
+    messagebox = None
+    simpledialog = None
+    filedialog = None
 from analyze_sgm_bsky_data import analyze_sgm_bsky_data
-from alignment_utils import safe_filedialog_call, format_num_val
+from alignment_utils import (
+    safe_filedialog_call, format_num_val, HAS_GUI,
+    safe_messagebox_askyesno, safe_simpledialog_askstring, get_safe_save_path
+)
 
 def get_user_file_action(filename, output_path):
     """
     Pops up a GUI dialog to ask the user for action if a file exists.
     Returns 'overwrite', 'rename', 'skip', or None (if dialog is closed).
     """
-    root = tk.Tk()
-    root.withdraw() # Hide the main window
-    root.attributes('-topmost', True) # Try to bring the window to the front
+    if not HAS_GUI or tk is None or messagebox is None:
+        # In headless environment, auto-increment to prevent overwriting or hanging
+        new_path = get_safe_save_path(os.path.dirname(output_path), filename)
+        if new_path != output_path:
+            return ('rename', new_path)
+        return 'overwrite'
+
+    try:
+        root = tk.Tk()
+        root.withdraw() # Hide the main window
+        root.attributes('-topmost', True) # Try to bring the window to the front
+    except Exception:
+        root = None
 
     action = None
     msg = f"The file '{filename}' already exists.\n\nDo you want to overwrite it?"
-    response = messagebox.askyesnocancel("File Exists", msg)
+    try:
+        response = messagebox.askyesnocancel("File Exists", msg) if messagebox else True
+    except Exception:
+        response = True
 
     if response is True: # Yes (Overwrite)
         action = 'overwrite'
     elif response is False: # No (Rename)
-        new_filename = simpledialog.askstring("Rename File", "Enter new filename:", initialvalue=filename, parent=root)
+        new_filename = simpledialog.askstring("Rename File", "Enter new filename:", initialvalue=filename, parent=root) if (simpledialog and root) else None
         if new_filename:
             if not new_filename.lower().endswith(('.h5', '.hdf5')):
                 new_filename += '.h5'
@@ -33,7 +55,11 @@ def get_user_file_action(filename, output_path):
     else: # Cancel (or dialog closed)
         action = 'skip'
     
-    root.destroy() # Clean up the Tkinter window
+    if root:
+        try:
+            root.destroy() # Clean up the Tkinter window
+        except Exception:
+            pass
     return action
 
 def read_csv_with_comments(filepath):
@@ -165,8 +191,9 @@ def save_pymca_stack_h5(path_pack, output_path=None, channel_roi=None, xrf_roi=N
             os.makedirs(initial_dir, exist_ok=True)
         initial_name = os.path.splitext(os.path.basename(h5_src))[0] + "_PCA-CA.h5" if h5_src else "pca_ca_stack.h5"
         
+        func = getattr(filedialog, 'asksaveasfilename', 'asksaveasfilename') if filedialog else 'asksaveasfilename'
         final_save_path = safe_filedialog_call(
-            filedialog.asksaveasfilename,
+            func,
             title="Save PyMca-compatible HDF5 Stack",
             initialdir=initial_dir,
             initialfile=initial_name,

@@ -14,47 +14,59 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.cluster import KMeans
-import tkinter as tk
-from tkinter import simpledialog
-from alignment_utils import format_num_val, safe_metadata_dialog_call
+try:
+    import tkinter as tk
+    from tkinter import simpledialog
+    HAS_TK = True
+except (ImportError, ModuleNotFoundError):
+    tk = None
+    simpledialog = None
+    HAS_TK = False
+
+from alignment_utils import format_num_val, safe_metadata_dialog_call, HAS_GUI
 
 # Global cache to prevent multiple prompts during a multi-detector run
 _USER_METADATA_CACHE = None
 
-class MetadataDialog(simpledialog.Dialog):
-    def __init__(self, parent, title, initial_data=None):
-        self.initial_data = initial_data or {}
-        super().__init__(parent, title)
+if HAS_TK and simpledialog is not None:
+    class MetadataDialog(simpledialog.Dialog):
+        def __init__(self, parent, title, initial_data=None):
+            self.initial_data = initial_data or {}
+            super().__init__(parent, title)
 
-    def body(self, master):
-        fields = [
-            ("Sample Name", "Name"),
-            ("Sample Formula", "Formula"),
-            ("Authors", "Authors"),
-            ("Affiliation", "Affiliation"),
-            ("Element", "Element"),
-            ("Edge", "Edge"),
-            ("Preparation Method", "Prep"),
-            ("Calibrated To", "Calib"),
-            ("Calibration Reference", "CalibRef"),
-            ("Temperature", "Temp"),
-            ("Scan Mode", "Mode"),
-            ("Chamber Conditions", "Chamber"),
-            ("Spot Size", "SpotSize"),
-            ("Comments", "Comments")
-        ]
-        self.entries = {}
-        for i, (label_text, key) in enumerate(fields):
-            tk.Label(master, text=f"{label_text}:").grid(row=i, column=0, sticky='w', padx=5, pady=2)
-            entry = tk.Entry(master, width=40)
-            entry.grid(row=i, column=1, padx=5, pady=2)
-            if self.initial_data.get(key):
-                entry.insert(0, self.initial_data[key])
-            self.entries[key] = entry
-        return self.entries["Name"]
+        def body(self, master):
+            fields = [
+                ("Sample Name", "Name"),
+                ("Sample Formula", "Formula"),
+                ("Authors", "Authors"),
+                ("Affiliation", "Affiliation"),
+                ("Element", "Element"),
+                ("Edge", "Edge"),
+                ("Preparation Method", "Prep"),
+                ("Calibrated To", "Calib"),
+                ("Calibration Reference", "CalibRef"),
+                ("Temperature", "Temp"),
+                ("Scan Mode", "Mode"),
+                ("Chamber Conditions", "Chamber"),
+                ("Spot Size", "SpotSize"),
+                ("Comments", "Comments")
+            ]
+            self.entries = {}
+            for i, (label_text, key) in enumerate(fields):
+                tk.Label(master, text=f"{label_text}:").grid(row=i, column=0, sticky='w', padx=5, pady=2)
+                entry = tk.Entry(master, width=40)
+                entry.grid(row=i, column=1, padx=5, pady=2)
+                if self.initial_data.get(key):
+                    entry.insert(0, self.initial_data[key])
+                self.entries[key] = entry
+            return self.entries["Name"]
 
-    def apply(self):
-        self.result = {key: (entry.get() or "N/A") for key, entry in self.entries.items()}
+        def apply(self):
+            self.result = {key: (entry.get() or "N/A") for key, entry in self.entries.items()}
+else:
+    class MetadataDialog:
+        def __init__(self, *args, **kwargs):
+            self.result = None
 
 def get_h5_metadata(h5_path):
     """Extracts metadata from various HDF5 groups (robust search)."""

@@ -6,16 +6,37 @@ import ipywidgets as widgets
 from IPython.display import display
 import traceback
 from scipy.interpolate import griddata
-import tkinter as tk
-from tkinter import messagebox, simpledialog, filedialog
+# --- GUI Environment Detection ---
+try:
+    import tkinter as tk
+    from tkinter import messagebox, simpledialog, filedialog
+    # GUI is usable if on Windows (nt) or if an X11 / Wayland display is present on Linux/macOS
+    if os.name == 'nt':
+        HAS_GUI = True
+    else:
+        HAS_GUI = bool(os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY'))
+except (ImportError, ModuleNotFoundError):
+    tk = None
+    messagebox = None
+    simpledialog = None
+    filedialog = None
+    HAS_GUI = False
+
 from matplotlib.figure import Figure
 
 # --- Jupyter/macOS Tkinter Stability Patch ---
-_orig_showinfo = messagebox.showinfo
-_orig_showerror = messagebox.showerror
-_orig_showwarning = messagebox.showwarning
-_orig_askyesno = messagebox.askyesno
-_orig_askokcancel = messagebox.askokcancel
+if HAS_GUI and messagebox is not None:
+    _orig_showinfo = messagebox.showinfo
+    _orig_showerror = messagebox.showerror
+    _orig_showwarning = messagebox.showwarning
+    _orig_askyesno = messagebox.askyesno
+    _orig_askokcancel = messagebox.askokcancel
+else:
+    _orig_showinfo = None
+    _orig_showerror = None
+    _orig_showwarning = None
+    _orig_askyesno = None
+    _orig_askokcancel = None
 
 def _in_jupyter():
     try:
@@ -24,105 +45,112 @@ def _in_jupyter():
     except:
         return False
 
-class CustomTkDialog(tk.Toplevel):
-    def __init__(self, parent, title, message, dialog_type="info"):
-        super().__init__(parent)
-        self.title(title)
-        self.result = None
-        
-        self.protocol("WM_DELETE_WINDOW", self.on_cancel)
-        self.attributes("-topmost", True)
-        self.grab_set() # Modal dialog behavior
-        
-        # Padding frame
-        frame = tk.Frame(self, padx=15, pady=15)
-        frame.pack(fill=tk.BOTH, expand=True)
-        
-        # Message label
-        lbl = tk.Label(frame, text=message, justify=tk.LEFT, wraplength=400)
-        lbl.pack(side=tk.TOP, pady=(0, 15))
-        
-        # Button frame
-        btn_frame = tk.Frame(frame)
-        btn_frame.pack(side=tk.BOTTOM, fill=tk.X)
-        
-        if dialog_type == "info":
-            btn = tk.Button(btn_frame, text="OK", command=self.on_ok, width=10, bg='lightgray')
-            btn.pack(side=tk.BOTTOM, pady=5)
-        elif dialog_type == "yesno":
-            btn_yes = tk.Button(btn_frame, text="Yes", command=self.on_yes, width=10, bg='lightgreen')
-            btn_yes.pack(side=tk.LEFT, padx=5)
-            btn_no = tk.Button(btn_frame, text="No", command=self.on_no, width=10, bg='lightcoral')
-            btn_no.pack(side=tk.RIGHT, padx=5)
-        elif dialog_type == "okcancel":
-            btn_ok = tk.Button(btn_frame, text="OK", command=self.on_ok, width=10, bg='lightgreen')
-            btn_ok.pack(side=tk.LEFT, padx=5)
-            btn_cancel = tk.Button(btn_frame, text="Cancel", command=self.on_cancel, width=10, bg='lightcoral')
-            btn_cancel.pack(side=tk.RIGHT, padx=5)
-        elif dialog_type == "askstring":
-            self.entry = tk.Entry(frame, width=40)
-            self.entry.pack(side=tk.TOP, pady=(0, 15))
-            self.entry.focus_set()
-            self.entry.bind("<Return>", lambda e: self.on_string_ok())
+if HAS_GUI and tk is not None:
+    class CustomTkDialog(tk.Toplevel):
+        def __init__(self, parent, title, message, dialog_type="info"):
+            super().__init__(parent)
+            self.title(title)
+            self.result = None
             
-            btn_ok = tk.Button(btn_frame, text="OK", command=self.on_string_ok, width=10, bg='lightgreen')
-            btn_ok.pack(side=tk.LEFT, padx=5)
-            btn_cancel = tk.Button(btn_frame, text="Cancel", command=self.on_cancel, width=10, bg='lightcoral')
-            btn_cancel.pack(side=tk.RIGHT, padx=5)
+            self.protocol("WM_DELETE_WINDOW", self.on_cancel)
+            self.attributes("-topmost", True)
+            self.grab_set() # Modal dialog behavior
             
-        # Center the window
-        self.update_idletasks()
-        width = max(350, self.winfo_width())
-        height = max(150, self.winfo_height())
-        x = (self.winfo_screenwidth() // 2) - (width // 2)
-        y = (self.winfo_screenheight() // 2) - (height // 2)
-        self.geometry(f'{width}x{height}+{x}+{y}')
-        
-    def on_ok(self):
-        self.result = True
-        self.close()
-        
-    def on_yes(self):
-        self.result = True
-        self.close()
-        
-    def on_no(self):
-        self.result = False
-        self.close()
-        
-    def on_string_ok(self):
-        self.result = self.entry.get()
-        self.close()
-        
-    def on_cancel(self):
-        self.result = None
-        self.close()
-        
-    def close(self):
-        try:
-            self.grab_release()
-        except Exception:
-            pass
-        try:
-            self.withdraw()
-            self.update()
-        except Exception:
-            pass
-        try:
-            self.destroy()
-        except Exception:
-            pass
-        try:
-            if self.master:
-                self.master.update()
-        except Exception:
-            pass
-        try:
-            self.quit()
-        except Exception:
-            pass
+            # Padding frame
+            frame = tk.Frame(self, padx=15, pady=15)
+            frame.pack(fill=tk.BOTH, expand=True)
+            
+            # Message label
+            lbl = tk.Label(frame, text=message, justify=tk.LEFT, wraplength=400)
+            lbl.pack(side=tk.TOP, pady=(0, 15))
+            
+            # Button frame
+            btn_frame = tk.Frame(frame)
+            btn_frame.pack(side=tk.BOTTOM, fill=tk.X)
+            
+            if dialog_type == "info":
+                btn = tk.Button(btn_frame, text="OK", command=self.on_ok, width=10, bg='lightgray')
+                btn.pack(side=tk.BOTTOM, pady=5)
+            elif dialog_type == "yesno":
+                btn_yes = tk.Button(btn_frame, text="Yes", command=self.on_yes, width=10, bg='lightgreen')
+                btn_yes.pack(side=tk.LEFT, padx=5)
+                btn_no = tk.Button(btn_frame, text="No", command=self.on_no, width=10, bg='lightcoral')
+                btn_no.pack(side=tk.RIGHT, padx=5)
+            elif dialog_type == "okcancel":
+                btn_ok = tk.Button(btn_frame, text="OK", command=self.on_ok, width=10, bg='lightgreen')
+                btn_ok.pack(side=tk.LEFT, padx=5)
+                btn_cancel = tk.Button(btn_frame, text="Cancel", command=self.on_cancel, width=10, bg='lightcoral')
+                btn_cancel.pack(side=tk.RIGHT, padx=5)
+            elif dialog_type == "askstring":
+                self.entry = tk.Entry(frame, width=40)
+                self.entry.pack(side=tk.TOP, pady=(0, 15))
+                self.entry.focus_set()
+                self.entry.bind("<Return>", lambda e: self.on_string_ok())
+                
+                btn_ok = tk.Button(btn_frame, text="OK", command=self.on_string_ok, width=10, bg='lightgreen')
+                btn_ok.pack(side=tk.LEFT, padx=5)
+                btn_cancel = tk.Button(btn_frame, text="Cancel", command=self.on_cancel, width=10, bg='lightcoral')
+                btn_cancel.pack(side=tk.RIGHT, padx=5)
+                
+            # Center the window
+            self.update_idletasks()
+            width = max(350, self.winfo_width())
+            height = max(150, self.winfo_height())
+            x = (self.winfo_screenwidth() // 2) - (width // 2)
+            y = (self.winfo_screenheight() // 2) - (height // 2)
+            self.geometry(f'{width}x{height}+{x}+{y}')
+            
+        def on_ok(self):
+            self.result = True
+            self.close()
+            
+        def on_yes(self):
+            self.result = True
+            self.close()
+            
+        def on_no(self):
+            self.result = False
+            self.close()
+            
+        def on_string_ok(self):
+            self.result = self.entry.get()
+            self.close()
+            
+        def on_cancel(self):
+            self.result = None
+            self.close()
+            
+        def close(self):
+            try:
+                self.grab_release()
+            except Exception:
+                pass
+            try:
+                self.withdraw()
+                self.update()
+            except Exception:
+                pass
+            try:
+                self.destroy()
+            except Exception:
+                pass
+            try:
+                if self.master:
+                    self.master.update()
+            except Exception:
+                pass
+            try:
+                self.quit()
+            except Exception:
+                pass
+else:
+    class CustomTkDialog:
+        def __init__(self, parent=None, title="", message="", dialog_type="info"):
+            self.result = None
 
 def show_custom_dialog_subprocess(title, message, dialog_type="info"):
+    if not HAS_GUI:
+        return (False, None)
     import subprocess
     import json
     import sys
@@ -265,14 +293,36 @@ finally:
         return (False, None)
 
 def show_custom_dialog(title, message, dialog_type="info"):
+    if not HAS_GUI:
+        # Headless / JupyterHub console fallback
+        if dialog_type in ("info", "warning", "error"):
+            prefix = "[ERROR] " if dialog_type == "error" else ("[WARNING] " if dialog_type == "warning" else "")
+            print(f"\n{prefix}[{title}] {message}\n", flush=True)
+            return "ok"
+        elif dialog_type in ("yesno", "okcancel"):
+            print(f"\n[{title}] {message}", flush=True)
+            try:
+                ans = input(f"[{title}] Proceed? (y/n): ").strip().lower()
+                return ans in ('y', 'yes', 'true', '1')
+            except Exception:
+                return True
+        elif dialog_type == "askstring":
+            print(f"\n[{title}] {message}", flush=True)
+            try:
+                ans = input(f"[{title}] Enter value: ").strip()
+                return ans if ans else None
+            except Exception:
+                return None
+        return None
+
     if _in_jupyter():
         success, res = show_custom_dialog_subprocess(title, message, dialog_type=dialog_type)
         if success:
             return res
             
     root = get_tk_root()
-    # DO NOT deiconify the root, as it causes a blank tk window to appear.
-    # The CustomTkDialog is a Toplevel and handles its own topmost attribute.
+    if root is None:
+        return None
     try:
         import sys
         if sys.platform == 'darwin':
@@ -316,18 +366,64 @@ def _safe_askokcancel(title, message, **kwargs):
         return False
     return res
 
-# Apply monkeypatching globally to Tkinter modules
-import tkinter.messagebox as tk_messagebox
-tk_messagebox.showinfo = _safe_showinfo
-tk_messagebox.showerror = _safe_showerror
-tk_messagebox.showwarning = _safe_showwarning
-tk_messagebox.askyesno = _safe_askyesno
-tk_messagebox.askokcancel = _safe_askokcancel
-messagebox.showinfo = _safe_showinfo
-messagebox.showerror = _safe_showerror
-messagebox.showwarning = _safe_showwarning
-messagebox.askyesno = _safe_askyesno
-messagebox.askokcancel = _safe_askokcancel
+# Exported safe dialog helpers for external modules
+def safe_messagebox_showinfo(title, message, **kwargs):
+    return _safe_showinfo(title, message, **kwargs)
+
+def safe_messagebox_showerror(title, message, **kwargs):
+    return _safe_showerror(title, message, **kwargs)
+
+def safe_messagebox_showwarning(title, message, **kwargs):
+    return _safe_showwarning(title, message, **kwargs)
+
+def safe_messagebox_askyesno(title, message, **kwargs):
+    return _safe_askyesno(title, message, **kwargs)
+
+def safe_simpledialog_askstring(title, prompt, initialvalue=None, parent=None):
+    if not HAS_GUI or simpledialog is None:
+        print(f"\n[{title}] {prompt}", flush=True)
+        try:
+            val = input(f"[{title}] Enter value [{initialvalue or ''}]: ").strip()
+            return val if val else initialvalue
+        except Exception:
+            return initialvalue
+    try:
+        res = show_custom_dialog(title, prompt, dialog_type="askstring")
+        if res is not None:
+            return res
+    except Exception:
+        pass
+    return simpledialog.askstring(title, prompt, initialvalue=initialvalue, parent=parent)
+
+def safe_simpledialog_askinteger(title, prompt, initialvalue=None, minvalue=None, maxvalue=None, parent=None):
+    if not HAS_GUI or simpledialog is None:
+        print(f"\n[{title}] {prompt}", flush=True)
+        try:
+            val = input(f"[{title}] Enter integer [{initialvalue or ''}]: ").strip()
+            return int(val) if val else initialvalue
+        except Exception:
+            return initialvalue
+    try:
+        return simpledialog.askinteger(title, prompt, initialvalue=initialvalue, minvalue=minvalue, maxvalue=maxvalue, parent=parent)
+    except Exception:
+        return initialvalue
+
+# Apply monkeypatching globally to Tkinter modules if available
+if HAS_GUI and tk is not None and messagebox is not None:
+    try:
+        import tkinter.messagebox as tk_messagebox
+        tk_messagebox.showinfo = _safe_showinfo
+        tk_messagebox.showerror = _safe_showerror
+        tk_messagebox.showwarning = _safe_showwarning
+        tk_messagebox.askyesno = _safe_askyesno
+        tk_messagebox.askokcancel = _safe_askokcancel
+        messagebox.showinfo = _safe_showinfo
+        messagebox.showerror = _safe_showerror
+        messagebox.showwarning = _safe_showwarning
+        messagebox.askyesno = _safe_askyesno
+        messagebox.askokcancel = _safe_askokcancel
+    except Exception:
+        pass
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.widgets import SpanSelector, Button, RadioButtons
 import matplotlib.tri as tri
@@ -385,9 +481,15 @@ def format_num_val(val, decimals=2):
 _TK_ROOT = None
 def get_tk_root():
     global _TK_ROOT
+    if not HAS_GUI or tk is None:
+        return None
     if _TK_ROOT is None:
-        _TK_ROOT = tk.Tk()
-        _TK_ROOT.withdraw()
+        try:
+            _TK_ROOT = tk.Tk()
+            _TK_ROOT.withdraw()
+        except Exception as e:
+            console_log(f"get_tk_root: Failed to initialize Tk ({e}). Disabling GUI.")
+            return None
     return _TK_ROOT
 
 def console_log(msg):
@@ -443,6 +545,7 @@ def safe_filedialog_call(func, *args, **kwargs):
     """
     Safely invokes a Tkinter filedialog function (e.g. asksaveasfilename, askopenfilename, askdirectory)
     in a Jupyter notebook environment by launching a subprocess to avoid cross-thread hangs.
+    If running headless (e.g. on HPC / JupyterHub without an X11 display), prompts via input().
     """
     import subprocess
     import json
@@ -457,7 +560,30 @@ def safe_filedialog_call(func, *args, **kwargs):
     filetypes = kwargs.get('filetypes', [])
     
     # Format script based on the function type
-    func_name = func.__name__
+    func_name = getattr(func, '__name__', str(func)) if func is not None else ""
+    
+    if not HAS_GUI or tk is None:
+        console_log(f"safe_filedialog_call: Headless environment detected for {func_name}.")
+        prompt_title = title or "File Input"
+        prompt_hint = f" (default dir: {initialdir})" if initialdir else ""
+        if func_name == "askdirectory":
+            prompt = f"[{prompt_title}]{prompt_hint} Enter directory path: "
+        elif func_name in ("askopenfilenames",):
+            prompt = f"[{prompt_title}]{prompt_hint} Enter file path(s) (comma-separated): "
+        elif func_name == "asksaveasfilename":
+            prompt = f"[{prompt_title}]{prompt_hint} Enter save file path: "
+        else:
+            prompt = f"[{prompt_title}]{prompt_hint} Enter file path: "
+        try:
+            val = input(prompt).strip()
+            if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
+                val = val[1:-1]
+            if func_name == "askopenfilenames":
+                paths = [p.strip().strip('\"\'') for p in val.split(',') if p.strip()]
+                return tuple(paths) if paths else ()
+            return val if val else None
+        except Exception:
+            return None
     
     console_log(f"safe_filedialog_call: launching subprocess for {func_name}")
     console_log(f"  title: {title}")
@@ -596,6 +722,10 @@ def safe_metadata_dialog_call(initial_data=None):
         for k, v in initial_data.items():
             if v and str(v).strip() not in ("N/A", "None", "null", ""):
                 merged_initial[k] = str(v).strip()
+                
+    if not HAS_GUI or tk is None:
+        console_log("safe_metadata_dialog_call: Headless environment detected. Returning initial/cached metadata.")
+        return merged_initial
         
     script = f"""
 import tkinter as tk
@@ -749,6 +879,15 @@ def get_safe_save_path(save_dir, default_name):
         return save_path
     
     base, ext = os.path.splitext(default_name)
+    if not HAS_GUI:
+        counter = 1
+        while True:
+            new_name = f"{base}_{counter}{ext}"
+            new_path = os.path.join(save_dir, new_name)
+            if not os.path.exists(new_path):
+                return new_path
+            counter += 1
+            
     try:
         while True:
             suffix = show_custom_dialog("File Exists", 

@@ -4,13 +4,16 @@ import re
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Button
-from tkinter import filedialog
+try:
+    from tkinter import filedialog
+except (ImportError, ModuleNotFoundError):
+    filedialog = None
 from scipy.optimize import curve_fit
 
 from analyze_sgm_bsky_data import analyze_sgm_bsky_data
 import sdd_calibration_utils as sdd_calib
 import sdd_element_roi_utils as elem_utils
-from alignment_utils import safe_filedialog_call
+from alignment_utils import safe_filedialog_call, HAS_GUI
 
 
 # -----------------------------------------------------------------------------
@@ -625,8 +628,9 @@ def plot_selected_emission_spectra(
         ax_save_csv_btn.set_visible(False)
         fig.canvas.draw_idle()
 
+        func_plot = getattr(filedialog, 'asksaveasfilename', 'asksaveasfilename') if filedialog else 'asksaveasfilename'
         out_filename = safe_filedialog_call(
-            filedialog.asksaveasfilename,
+            func_plot,
             title="Save Emission Spectra & Peak Shifts Plot",
             initialdir=save_directory,
             initialfile=initial_name,
@@ -671,8 +675,9 @@ def plot_selected_emission_spectra(
         safe_title = "".join(c if c.isalnum() or c in ('-', '_') else '_' for c in scan_title)
         initial_csv_name = f"{safe_title}_Emission_Peak_Shifts_{detector}.csv"
 
+        func_csv = getattr(filedialog, 'asksaveasfilename', 'asksaveasfilename') if filedialog else 'asksaveasfilename'
         out_csv = safe_filedialog_call(
-            filedialog.asksaveasfilename,
+            func_csv,
             title="Save Selected Emission Spectra & Peak Shifts (CSV)",
             initialdir=save_directory,
             initialfile=initial_csv_name,

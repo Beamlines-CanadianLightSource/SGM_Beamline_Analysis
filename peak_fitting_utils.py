@@ -577,19 +577,23 @@ def save_spectrum_for_fitting(energy_arr, intensity_arr, filepath=None):
     str or None : Saved file path.
     """
     if filepath is None:
-        import tkinter as tk
-        from tkinter import filedialog
-        last_dir = _get_last_directory()
-        root = tk.Tk()
-        root.withdraw()
-        root.attributes("-topmost", True)
-        filepath = filedialog.asksaveasfilename(
-            title="Save Spectrum CSV for Peak Fitting",
-            initialdir=last_dir,
-            defaultextension=".csv",
-            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
-        )
-        root.destroy()
+        try:
+            from alignment_utils import safe_filedialog_call, HAS_GUI
+            try:
+                from tkinter import filedialog
+            except (ImportError, ModuleNotFoundError):
+                filedialog = None
+            func = getattr(filedialog, 'asksaveasfilename', 'asksaveasfilename') if filedialog else 'asksaveasfilename'
+            last_dir = _get_last_directory()
+            filepath = safe_filedialog_call(
+                func,
+                title="Save Spectrum CSV for Peak Fitting",
+                initialdir=last_dir,
+                defaultextension=".csv",
+                filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+            )
+        except Exception:
+            filepath = None
 
     if not filepath:
         print("Save operation cancelled.")
@@ -616,10 +620,20 @@ def select_csv_columns_gui(df, filepath=None, default_detector=None):
     import os
     import numpy as np
     import pandas as pd
-    import tkinter as tk
-    from tkinter import ttk
-    from matplotlib.figure import Figure
-    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+    from alignment_utils import HAS_GUI
+    if not HAS_GUI:
+        print("[Peak Fitting] Interactive Tkinter GUI cannot be displayed in headless / JupyterHub environment.")
+        print("Tip: Use fit_peaks() or programmatic fitting functions instead.")
+        return None, None
+
+    try:
+        import tkinter as tk
+        from tkinter import ttk
+        from matplotlib.figure import Figure
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+    except (ImportError, ModuleNotFoundError) as e:
+        print(f"[Peak Fitting] Tkinter / GUI packages unavailable: {e}")
+        return None, None
 
     columns = [c for c in df.columns if not str(c).startswith('#')]
     if not columns:
@@ -835,18 +849,22 @@ def load_spectrum_for_fitting(filepath=None, detector=None, raw=False, interacti
     """
     import os
     if filepath is None:
-        import tkinter as tk
-        from tkinter import filedialog
-        last_dir = _get_last_directory()
-        root = tk.Tk()
-        root.withdraw()
-        root.attributes("-topmost", True)
-        filepath = filedialog.askopenfilename(
-            title="Select Spectrum CSV File for Fitting",
-            initialdir=last_dir,
-            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
-        )
-        root.destroy()
+        try:
+            from alignment_utils import safe_filedialog_call, HAS_GUI
+            try:
+                from tkinter import filedialog
+            except (ImportError, ModuleNotFoundError):
+                filedialog = None
+            func = getattr(filedialog, 'askopenfilename', 'askopenfilename') if filedialog else 'askopenfilename'
+            last_dir = _get_last_directory()
+            filepath = safe_filedialog_call(
+                func,
+                title="Select Spectrum CSV File for Fitting",
+                initialdir=last_dir,
+                filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+            )
+        except Exception:
+            filepath = None
 
     if not filepath or not os.path.exists(filepath):
         print("No valid file selected.")

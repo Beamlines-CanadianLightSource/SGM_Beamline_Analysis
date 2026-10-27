@@ -6,9 +6,14 @@ import os
 import sys
 import ipywidgets as widgets
 from IPython.display import display
-import tkinter as tk
-from tkinter import messagebox, filedialog
-from alignment_utils import safe_filedialog_call, format_num_val
+try:
+    import tkinter as tk
+    from tkinter import messagebox, filedialog
+except (ImportError, ModuleNotFoundError):
+    tk = None
+    messagebox = None
+    filedialog = None
+from alignment_utils import safe_filedialog_call, format_num_val, HAS_GUI
 
 from pca_xanes_analysis import resolve_pca_h5_path
 
@@ -215,13 +220,16 @@ def interactive_cluster_merger(h5_path, dataset_name='average'):
             data_to_save[f'Merged_Clusters_{cluster_str}'] = merged_spec_orig
         
         default_name = f"{scan_name}_{state['current_dataset']}_merged_clusters_{cluster_str}.csv"
+        func = getattr(filedialog, 'asksaveasfilename', 'asksaveasfilename') if filedialog else 'asksaveasfilename'
         save_path = safe_filedialog_call(
-            filedialog.asksaveasfilename,
+            func,
             title="Save Merged Spectrum",
             initialdir=os.path.dirname(h5_path),
             initialfile=default_name,
             defaultextension=".csv"
         )
+        if not save_path:
+            save_path = os.path.join(os.path.dirname(h5_path), default_name)
         
         if save_path:
             try:

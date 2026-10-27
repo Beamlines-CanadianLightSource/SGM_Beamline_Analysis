@@ -8,6 +8,7 @@ import ipywidgets as widgets
 from IPython.display import display
 from analyze_sgm_bsky_data import analyze_sgm_bsky_data
 from save_pymca_stack_h5 import get_user_file_action
+from alignment_utils import HAS_GUI
 
 def apply_asymmetric_trim(x, y, data_indices, left=0, right=0, top=0, bottom=0):
     """
@@ -27,6 +28,30 @@ def browse_for_quadrant_files(num_files=None):
     Opens file dialogs to select HDF5 files one by one.
     This allows files to be in different folders.
     """
+    if not HAS_GUI:
+        print("[Headless Mode] GUI file dialog is unavailable.")
+        if num_files is None:
+            try:
+                val = input("Enter number of images to stitch [4]: ").strip()
+                num_files = int(val) if val else 4
+            except (EOFError, ValueError):
+                num_files = 4
+        files = []
+        for i in range(num_files):
+            try:
+                p = input(f"Enter path for Image {i+1} HDF5 file (or Enter to finish): ").strip()
+                if not p:
+                    break
+                p = p.strip('\"\'')
+                if os.path.exists(p):
+                    files.append(p)
+                    print(f"  -> Added: {os.path.basename(p)}")
+                else:
+                    print(f"  -> File not found: {p}")
+            except (EOFError, KeyboardInterrupt):
+                break
+        return files
+
     import tkinter as tk
     from tkinter import filedialog
     from tkinter import simpledialog
@@ -422,11 +447,21 @@ def stitch_quadrant_maps(h5_files=None, output_dir=None, trims=None, verbose=Tru
         return None
         
     if output_dir is None:
-        import tkinter as tk
-        from tkinter import filedialog
-        root = tk.Tk(); root.withdraw(); root.attributes("-topmost", True)
-        output_dir = filedialog.askdirectory(title="Select Output Directory for Stitched Map")
-        root.destroy()
+        if not HAS_GUI:
+            try:
+                val = input("Enter output directory for Stitched Map [current working directory]: ").strip().strip('\"\'')
+                output_dir = val if val else os.getcwd()
+            except (EOFError, KeyboardInterrupt):
+                output_dir = os.getcwd()
+        else:
+            try:
+                import tkinter as tk
+                from tkinter import filedialog
+                root = tk.Tk(); root.withdraw(); root.attributes("-topmost", True)
+                output_dir = filedialog.askdirectory(title="Select Output Directory for Stitched Map")
+                root.destroy()
+            except Exception:
+                output_dir = os.getcwd()
         
     if not output_dir:
         print("No output directory selected. Aborting.")
@@ -544,57 +579,76 @@ def stitch_quadrant_maps(h5_files=None, output_dir=None, trims=None, verbose=Tru
     
     # --- Overwrite & Rename Check ---
     if os.path.exists(master_folder_path) or os.path.exists(new_h5_path):
-        import tkinter as tk
-        from tkinter import messagebox, simpledialog
-        
-        root = tk.Tk()
-        root.withdraw()
-        root.attributes('-topmost', True)
-        
-        msg = (f"The dataset folder or file '{master_folder_name}' already exists.\n\n"
-               f"Do you want to overwrite it?\n\n"
-               f"• Click 'Yes' to overwrite existing data.\n"
-               f"• Click 'No' to save under a new name in a NEW folder.\n"
-               f"• Click 'Cancel' to abort.")
-        response = messagebox.askyesnocancel("Stitched Dataset Exists", msg, parent=root)
-        
-        if response is True:  # Overwrite
-            print(f"  -> Overwriting existing dataset folder: {master_folder_name}")
-        elif response is False:  # Rename / Save as New Folder
-            new_tag = simpledialog.askstring(
-                "Save as New Folder", 
-                "Enter new name/tag for stitched dataset:", 
-                initialvalue=f"{stitched_tag}_v2", 
-                parent=root
-            )
-            if new_tag:
-                new_tag = new_tag.strip()
-                if new_tag.startswith("Stitched_"):
-                    new_tag = new_tag[9:]
-                if new_tag.lower().endswith(".h5"):
-                    new_tag = new_tag[:-3]
-                    
-                stitched_tag = new_tag
-                if len(common_energies) == 1:
-                    energy_str = f"{common_energies[0]:.2f}".replace('.', '_')
-                    master_folder_name = f"Stitched_{stitched_tag}_{energy_str}eV"
-                else:
-                    master_folder_name = f"Stitched_{stitched_tag}"
-                    
-                master_folder_path = os.path.join(output_dir, master_folder_name)
-                new_h5_name = f"Stitched_{stitched_tag}.h5"
-                new_h5_path = os.path.join(master_folder_path, new_h5_name)
-                print(f"  -> Saving dataset under new folder name: {master_folder_name}")
+        if not HAS_GUI:
+            print(f"[Notice] Stitched dataset '{master_folder_name}' already exists. Auto-incrementing name for headless run.")
+            counter = 2
+            while os.path.exists(os.path.join(output_dir, f"{master_folder_name}_v{counter}")):
+                counter += 1
+            stitched_tag = f"{stitched_tag}_v{counter}"
+            if len(common_energies) == 1:
+                energy_str = f"{common_energies[0]:.2f}".replace('.', '_')
+                master_folder_name = f"Stitched_{stitched_tag}_{energy_str}eV"
             else:
-                print("  -> Stitching operation cancelled by user.")
+                master_folder_name = f"Stitched_{stitched_tag}"
+            master_folder_path = os.path.join(output_dir, master_folder_name)
+            new_h5_name = f"Stitched_{stitched_tag}.h5"
+            new_h5_path = os.path.join(master_folder_path, new_h5_name)
+            print(f"  -> Saving dataset under new folder name: {master_folder_name}")
+        else:
+            try:
+                import tkinter as tk
+                from tkinter import messagebox, simpledialog
+                
+                root = tk.Tk()
+                root.withdraw()
+                root.attributes('-topmost', True)
+                
+                msg = (f"The dataset folder or file '{master_folder_name}' already exists.\n\n"
+                       f"Do you want to overwrite it?\n\n"
+                       f"• Click 'Yes' to overwrite existing data.\n"
+                       f"• Click 'No' to save under a new name in a NEW folder.\n"
+                       f"• Click 'Cancel' to abort.")
+                response = messagebox.askyesnocancel("Stitched Dataset Exists", msg, parent=root)
+                
+                if response is True:  # Overwrite
+                    print(f"  -> Overwriting existing dataset folder: {master_folder_name}")
+                elif response is False:  # Rename / Save as New Folder
+                    new_tag = simpledialog.askstring(
+                        "Save as New Folder", 
+                        "Enter new name/tag for stitched dataset:", 
+                        initialvalue=f"{stitched_tag}_v2", 
+                        parent=root
+                    )
+                    if new_tag:
+                        new_tag = new_tag.strip()
+                        if new_tag.startswith("Stitched_"):
+                            new_tag = new_tag[9:]
+                        if new_tag.lower().endswith(".h5"):
+                            new_tag = new_tag[:-3]
+                            
+                        stitched_tag = new_tag
+                        if len(common_energies) == 1:
+                            energy_str = f"{common_energies[0]:.2f}".replace('.', '_')
+                            master_folder_name = f"Stitched_{stitched_tag}_{energy_str}eV"
+                        else:
+                            master_folder_name = f"Stitched_{stitched_tag}"
+                            
+                        master_folder_path = os.path.join(output_dir, master_folder_name)
+                        new_h5_name = f"Stitched_{stitched_tag}.h5"
+                        new_h5_path = os.path.join(master_folder_path, new_h5_name)
+                        print(f"  -> Saving dataset under new folder name: {master_folder_name}")
+                    else:
+                        print("  -> Stitching operation cancelled by user.")
+                        root.destroy()
+                        return None
+                else:  # Cancel or dialog closed
+                    print("  -> Stitching operation cancelled by user.")
+                    root.destroy()
+                    return None
+                    
                 root.destroy()
-                return None
-        else:  # Cancel or dialog closed
-            print("  -> Stitching operation cancelled by user.")
-            root.destroy()
-            return None
-            
-        root.destroy()
+            except Exception:
+                pass
 
     if not os.path.exists(master_folder_path):
         os.makedirs(master_folder_path)

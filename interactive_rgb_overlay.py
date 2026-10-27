@@ -4,9 +4,14 @@ import os
 import sys
 import ipywidgets as widgets
 from IPython.display import display, clear_output
-import tkinter as tk
-from tkinter import filedialog
+try:
+    import tkinter as tk
+    from tkinter import filedialog
+except (ImportError, ModuleNotFoundError):
+    tk = None
+    filedialog = None
 import matplotlib.patches as mpatches
+from alignment_utils import safe_filedialog_call, HAS_GUI
 
 # Ensure script directory is in sys.path for robust imports
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -22,18 +27,12 @@ def interactive_rgb_overlay(h5_file=None):
     and plot an RGB composite map of those regions.
     """
     if h5_file is None:
-        root = tk.Tk()
-        root.attributes("-alpha", 0.0)
-        root.attributes("-topmost", True)
-        root.lift()
-        root.focus_force()
-        h5_file = filedialog.askopenfilename(
+        func = getattr(filedialog, 'askopenfilename', 'askopenfilename') if filedialog else 'askopenfilename'
+        h5_file = safe_filedialog_call(
+            func,
             title="Select HDF5 Map File for RGB Overlay",
-            filetypes=[("HDF5 files", "*.h5"), ("All files", "*.*")],
-            parent=root
+            filetypes=[("HDF5 files", "*.h5"), ("All files", "*.*")]
         )
-        root.destroy()
-        
         if not h5_file:
             print("No file selected.")
             return

@@ -5,7 +5,10 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Button, SpanSelector
-from tkinter import filedialog
+try:
+    from tkinter import filedialog
+except (ImportError, ModuleNotFoundError):
+    filedialog = None
 import mplcursors
 
 from alignment_utils import (
@@ -122,8 +125,9 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
     x_sorted, y_sorted = None, None
     i0_source_label = "Au Mesh I0 (mcc1)"
     if not use_internal:
+        func = getattr(filedialog, 'askopenfilename', 'askopenfilename') if filedialog else 'askopenfilename'
         ext_path = safe_filedialog_call(
-            filedialog.askopenfilename,
+            func,
             title="Select External I0 CSV for Batch Normalization",
             filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
         )

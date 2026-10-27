@@ -5,9 +5,13 @@ import re
 import glob
 import sys
 import json
-import tkinter as tk
-from tkinter import filedialog
-from alignment_utils import format_num_val, safe_filedialog_call
+try:
+    import tkinter as tk
+    from tkinter import filedialog
+except (ImportError, ModuleNotFoundError):
+    tk = None
+    filedialog = None
+from alignment_utils import format_num_val, safe_filedialog_call, HAS_GUI
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".last_dir.json")
 
@@ -33,8 +37,9 @@ def save_last_dir(directory):
 def browse_for_file():
     """Opens a file dialog to select an HDF5 file safely via subprocess to avoid Jupyter hangs."""
     last_dir = get_last_dir()
+    func = getattr(filedialog, 'askopenfilename', 'askopenfilename') if filedialog else 'askopenfilename'
     file_path = safe_filedialog_call(
-        filedialog.askopenfilename,
+        func,
         title="Select HDF5 Map File",
         initialdir=last_dir,
         filetypes=[("HDF5 files", "*.h5"), ("All files", "*.*")]

@@ -12,10 +12,28 @@ import sys
 _GLOBAL_SUMMARY_DASH = None
 _GLOBAL_SYNC_OBJ = None
 
-import tkinter as tk
-from tkinter import messagebox, simpledialog, filedialog
+try:
+    import tkinter as tk
+    from tkinter import messagebox, simpledialog, filedialog, ttk
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+    HAS_TK = True
+except (ImportError, ModuleNotFoundError):
+    tk = None
+    messagebox = None
+    simpledialog = None
+    filedialog = None
+    ttk = None
+    FigureCanvasTkAgg = None
+    NavigationToolbar2Tk = None
+    HAS_TK = False
+
 from analyze_sgm_bsky_data import analyze_sgm_bsky_data, extract_sample_name, resolve_sample_name, build_scan_filename_base
-from alignment_utils import grid_interpolate_map, get_safe_save_path, get_tk_root, get_masked_triangulation, safe_filedialog_call, console_log, safe_metadata_dialog_call, format_num_val
+from alignment_utils import (
+    grid_interpolate_map, get_safe_save_path, get_tk_root, get_masked_triangulation,
+    safe_filedialog_call, console_log, safe_metadata_dialog_call, format_num_val,
+    HAS_GUI, safe_messagebox_showinfo, safe_messagebox_showerror, safe_messagebox_showwarning,
+    safe_messagebox_askyesno, safe_simpledialog_askstring
+)
 import sdd_calibration_utils as sdd_calib
 import sdd_element_roi_utils as elem_roi_utils
 try:
@@ -30,8 +48,6 @@ from matplotlib.widgets import RectangleSelector, Button, PolygonSelector, Slide
 from matplotlib.path import Path
 import pandas as pd
 from matplotlib.backends.backend_agg import FigureCanvasAgg
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
-from tkinter import ttk
 from scipy.signal import savgol_filter, convolve2d
 import ipywidgets as widgets
 from IPython.display import display
@@ -190,43 +206,49 @@ def format_norm_title(main_title, scan_name=None, roi_label=None, i0_src=None):
     return header
 
 
-class MetadataDialog(simpledialog.Dialog):
-    def __init__(self, parent, title, initial_data=None):
-        self.initial_data = initial_data or {}
-        super().__init__(parent, title)
+if HAS_TK and simpledialog is not None:
+    class MetadataDialog(simpledialog.Dialog):
+        def __init__(self, parent, title, initial_data=None):
+            self.initial_data = initial_data or {}
+            super().__init__(parent, title)
 
-    def body(self, master):
-        fields = [
-            ("Sample Name", "Name"),
-            ("Sample Formula", "Formula"),
-            ("Authors", "Authors"),
-            ("Affiliation", "Affiliation"),
-            ("Element", "Element"),
-            ("Edge", "Edge"),
-            ("Preparation Method", "Prep"),
-            ("Calibrated To", "Calib"),
-            ("Temperature", "Temp"),
-            ("Scan Mode", "Mode"),
-            ("Chamber Conditions", "Chamber"),
-            ("Spot Size", "SpotSize"),
-            ("Comments", "Comments")
-        ]
-        self.entries = {}
-        for i, (label_text, key) in enumerate(fields):
-            tk.Label(master, text=f"{label_text}:").grid(row=i, column=0, sticky='w', padx=5, pady=2)
-            entry = tk.Entry(master, width=40)
-            entry.grid(row=i, column=1, padx=5, pady=2)
-            if self.initial_data.get(key):
-                entry.insert(0, self.initial_data[key])
-            self.entries[key] = entry
-        return self.entries["Name"]
+        def body(self, master):
+            fields = [
+                ("Sample Name", "Name"),
+                ("Sample Formula", "Formula"),
+                ("Authors", "Authors"),
+                ("Affiliation", "Affiliation"),
+                ("Element", "Element"),
+                ("Edge", "Edge"),
+                ("Preparation Method", "Prep"),
+                ("Calibrated To", "Calib"),
+                ("Temperature", "Temp"),
+                ("Scan Mode", "Mode"),
+                ("Chamber Conditions", "Chamber"),
+                ("Spot Size", "SpotSize"),
+                ("Comments", "Comments")
+            ]
+            self.entries = {}
+            for i, (label_text, key) in enumerate(fields):
+                tk.Label(master, text=f"{label_text}:").grid(row=i, column=0, sticky='w', padx=5, pady=2)
+                entry = tk.Entry(master, width=40)
+                entry.grid(row=i, column=1, padx=5, pady=2)
+                if self.initial_data.get(key):
+                    entry.insert(0, self.initial_data[key])
+                self.entries[key] = entry
+            return self.entries["Name"]
 
-    def apply(self):
-        self.result = {key: (entry.get() or "N/A") for key, entry in self.entries.items()}
+        def apply(self):
+            self.result = {key: (entry.get() or "N/A") for key, entry in self.entries.items()}
+else:
+    class MetadataDialog:
+        def __init__(self, *args, **kwargs):
+            self.result = None
 
-class ExternalI0PreviewDialog(tk.Toplevel):
-    def __init__(self, parent, dataframe, default_e_col, default_i_col):
-        super().__init__(parent)
+if HAS_TK and tk is not None:
+    class ExternalI0PreviewDialog(tk.Toplevel):
+        def __init__(self, parent, dataframe, default_e_col, default_i_col):
+            super().__init__(parent)
         self.title("External I0 Selection & Processing")
         self.df = dataframe.copy()
         
@@ -695,6 +717,10 @@ class ExternalI0PreviewDialog(tk.Toplevel):
     def on_cancel(self):
         self.result = None
         self._close_dialog()
+else:
+    class ExternalI0PreviewDialog:
+        def __init__(self, *args, **kwargs):
+            self.result = None
 
 
 def save_csv_idl(path, rows):
@@ -1201,7 +1227,7 @@ class Synchronizer:
         if not elem:
             try:
                 root = get_tk_root()
-                user_in = simpledialog.askstring("Element ROI", "Enter element symbol (e.g. Si, Fe, O, Si-K):", parent=root)
+                user_in = safe_simpledialog_askstring("Element ROI", "Enter element symbol (e.g. Si, Fe, O, Si-K):", parent=root)
                 if user_in:
                     e, ed = elem_roi_utils.extract_element_and_edge(user_in)
                     if e:
@@ -2402,8 +2428,9 @@ class SummaryDashboard:
             if event is not None:
                 os.makedirs(self.ctx['save_dir'], exist_ok=True)
                 console_log(f"  Calling safe_filedialog_call: default={default_name}")
+                func_save = getattr(filedialog, 'asksaveasfilename', 'asksaveasfilename') if filedialog else 'asksaveasfilename'
                 save_path = safe_filedialog_call(
-                    filedialog.asksaveasfilename,
+                    func_save,
                     title=f"Save {mode_str} XANES Spectra",
                     initialdir=self.ctx['save_dir'],
                     initialfile=default_name,
@@ -2627,8 +2654,9 @@ class SummaryDashboard:
                 except Exception:
                     pass
                 root_msg = get_tk_root()
-                root_msg.attributes("-topmost", True)
-                messagebox.showinfo("Save Successful", f"Exported {mode_str} XANES spectra to:\n{save_path}", parent=root_msg)
+                if root_msg:
+                    root_msg.attributes("-topmost", True)
+                safe_messagebox_showinfo("Save Successful", f"Exported {mode_str} XANES spectra to:\n{save_path}", parent=root_msg)
                 console_log("  Save summary CSV complete!")
         except Exception as e:
             console_log(f"[ERROR] Exception in save_summary_csv: {e}")
@@ -2696,8 +2724,9 @@ class SummaryDashboard:
 
             os.makedirs(self.ctx['save_dir'], exist_ok=True)
             console_log(f"  Calling safe_filedialog_call: default={default_name}")
+            func_xrd = getattr(filedialog, 'asksaveasfilename', 'asksaveasfilename') if filedialog else 'asksaveasfilename'
             save_path = safe_filedialog_call(
-                filedialog.asksaveasfilename,
+                func_xrd,
                 title=f"Save Consolidated {mode_str} XRD Spectra",
                 initialdir=self.ctx['save_dir'],
                 initialfile=default_name,
@@ -2842,8 +2871,9 @@ class SummaryDashboard:
                 console_log(f"  Writing XRD spectra to {save_path}...")
                 save_csv_idl(save_path, rows)
                 root_msg = get_tk_root()
-                root_msg.attributes("-topmost", True)
-                messagebox.showinfo("Save Successful", f"Exported Consolidated {mode_str} ROI XRF to:\n{save_path}", parent=root_msg)
+                if root_msg:
+                    root_msg.attributes("-topmost", True)
+                safe_messagebox_showinfo("Save Successful", f"Exported Consolidated {mode_str} ROI XRF to:\n{save_path}", parent=root_msg)
                 console_log("  Save consolidated XRD spectrum complete!")
         except Exception as e:
             console_log(f"[ERROR] Exception in save_consolidated_xrd_spectrum: {e}")
@@ -2891,8 +2921,9 @@ class SummaryDashboard:
 
             # Safe Tkinter MessageBox
             root_msg = get_tk_root()
-            root_msg.attributes("-topmost", True)
-            messagebox.showinfo("Export Complete", f"Successfully exported all maps (PNG & TIFF) to:\n{save_dir_abs}", parent=root_msg)
+            if root_msg:
+                root_msg.attributes("-topmost", True)
+            safe_messagebox_showinfo("Export Complete", f"Successfully exported all maps (PNG & TIFF) to:\n{save_dir_abs}", parent=root_msg)
             
             if self.sync.status_widget:
                 self.sync.status_widget.value = f"EXPORT COMPLETE: All {total} maps saved to {save_dir_abs}"
@@ -3681,13 +3712,14 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
 
         # ---- EXTERNAL I0 PROMPT ----
         root_i0 = get_tk_root()
-        root_i0.withdraw()
+        if root_i0:
+            root_i0.withdraw()
         
-        # If single energy, skip the prompt and default to internal I0 (mcc1)
-        if len(all_energies) <= 1:
+        # If single energy, or if headless without GUI, default to internal I0 (mcc1)
+        if len(all_energies) <= 1 or not HAS_GUI:
             use_internal = True
         else:
-            use_internal = messagebox.askyesno("I0 Selection", "Use INTERNAL Au Mesh I0 (mcc1) for I0 normalization?\n\n(Select 'No' to load an EXTERNAL I0 CSV)")
+            use_internal = safe_messagebox_askyesno("I0 Selection", "Use INTERNAL Au Mesh I0 (mcc1) for I0 normalization?\n\n(Select 'No' to load an EXTERNAL I0 CSV)")
         
         use_ext = not use_internal
         
@@ -3698,8 +3730,9 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
         i0_source = "Internal: Au Mesh I0 (mcc1)" if (mcc_channels and 1 in mcc_channels) else "None (Raw Only)"
         
         if use_ext:
+            func_i0 = getattr(filedialog, 'askopenfilename', 'askopenfilename') if filedialog else 'askopenfilename'
             ext_path = safe_filedialog_call(
-                filedialog.askopenfilename,
+                func_i0,
                 title="Select External I0 CSV",
                 filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
             )

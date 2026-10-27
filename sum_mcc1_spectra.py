@@ -2,15 +2,32 @@ import os
 import sys
 import numpy as np
 import pandas as pd
-import tkinter as tk
-from tkinter import filedialog, messagebox
+try:
+    import tkinter as tk
+    from tkinter import filedialog, messagebox
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+    HAS_TK = True
+except (ImportError, ModuleNotFoundError):
+    tk = None
+    filedialog = None
+    messagebox = None
+    FigureCanvasTkAgg = None
+    NavigationToolbar2Tk = None
+    HAS_TK = False
+
 from matplotlib.figure import Figure
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
 # Import existing analysis logic
 from analyze_sgm_bsky_data import analyze_sgm_bsky_data
+from alignment_utils import (
+    HAS_GUI, safe_filedialog_call,
+    safe_messagebox_showinfo, safe_messagebox_showwarning, safe_messagebox_showerror
+)
 
-class ScrollableFrame(tk.Frame):
+_FrameBase = tk.Frame if tk is not None else object
+_TkBase = tk.Tk if tk is not None else object
+
+class ScrollableFrame(_FrameBase):
     def __init__(self, container, *args, **kwargs):
         super().__init__(container, *args, **kwargs)
         canvas = tk.Canvas(self)
@@ -68,7 +85,7 @@ def extract_mcc1_spectrum(file_path):
             
     return all_energies, np.array(mcc1_means)
 
-class MCC1SummatorApp(tk.Tk):
+class MCC1SummatorApp(_TkBase):
     def __init__(self):
         super().__init__()
         self.title("MCC1 Spectra Summator")
@@ -150,8 +167,10 @@ class MCC1SummatorApp(tk.Tk):
         self.update_plot()
         
     def load_files(self):
-        file_paths = filedialog.askopenfilenames(
-            parent=self,
+        func = getattr(filedialog, 'askopenfilenames', 'askopenfilenames') if filedialog else 'askopenfilenames'
+        file_paths = safe_filedialog_call(
+            func,
+            parent=self if HAS_GUI else None,
             title="Select HDF5 Stack Files",
             filetypes=[("HDF5 files", "*.h5"), ("All files", "*.*")]
         )
@@ -239,12 +258,12 @@ class MCC1SummatorApp(tk.Tk):
         
     def save_csv(self):
         if not self.spectra_data or self.common_energies is None:
-            messagebox.showwarning("Warning", "No data to save.")
+            safe_messagebox_showwarning("Warning", "No data to save.", parent=self if HAS_GUI else None)
             return
             
         active_spectra = [sd['mcc1'] for sd in self.spectra_data if sd['active'].get()]
         if not active_spectra:
-            messagebox.showwarning("Warning", "No active spectra selected.")
+            safe_messagebox_showwarning("Warning", "No active spectra selected.", parent=self if HAS_GUI else None)
             return
             
         avg_mcc1 = np.mean(active_spectra, axis=0)
@@ -253,8 +272,10 @@ class MCC1SummatorApp(tk.Tk):
         first_active = next((sd for sd in self.spectra_data if sd['active'].get()), None)
         initial_dir = os.path.dirname(first_active['file']) if first_active else os.getcwd()
         
-        save_path = filedialog.asksaveasfilename(
-            parent=self,
+        func = getattr(filedialog, 'asksaveasfilename', 'asksaveasfilename') if filedialog else 'asksaveasfilename'
+        save_path = safe_filedialog_call(
+            func,
+            parent=self if HAS_GUI else None,
             title="Save Averaged MCC1 to CSV",
             initialdir=initial_dir,
             defaultextension=".csv",
@@ -275,11 +296,14 @@ class MCC1SummatorApp(tk.Tk):
             print(f"\n[SAVE SUCCESS] MCC1 Average saved to:")
             print(f"--> {os.path.abspath(save_path)}")
             
-            messagebox.showinfo("Success", f"Saved successfully to:\n{save_path}")
+            safe_messagebox_showinfo("Success", f"Saved successfully to:\n{save_path}", parent=self if HAS_GUI else None)
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to save CSV:\n{e}")
+            safe_messagebox_showerror("Error", f"Failed to save CSV:\n{e}", parent=self if HAS_GUI else None)
 
 def sum_mcc1_spectra():
+    if not HAS_GUI or not HAS_TK or tk is None:
+        print("[Notice] sum_mcc1_spectra requires an interactive GUI environment with Tkinter.")
+        return None
     app = MCC1SummatorApp()
     app.mainloop()
 
