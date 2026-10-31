@@ -23,6 +23,144 @@ def apply_asymmetric_trim(x, y, data_indices, left=0, right=0, top=0, bottom=0):
            
     return x[mask], y[mask], data_indices[mask]
 
+
+def apply_overlap_only_trim(i, data_packs, trims):
+    """
+    Filters coordinates and pixel indices for map `i` so that Left/Right/Top/Bottom
+    trims are ONLY removed inside the 2D overlapping span with adjacent neighbor tiles,
+    preserving non-overlapping protruding edges when tiles are staggered in X or Y.
+    If an edge has no overlapping neighbor (outer edge), a manual trim > 0 trims the full edge.
+    """
+    dp_i = data_packs[i]
+    x, y = dp_i['x'], dp_i['y']
+    data_indices = np.arange(len(x))
+    if len(x) == 0:
+        return x, y, data_indices
+
+    t = trims[i] if (trims and i < len(trims)) else {}
+    left = float(t.get('left', 0.0))
+    right = float(t.get('right', 0.0))
+    top = float(t.get('top', 0.0))
+    bottom = float(t.get('bottom', 0.0))
+
+    x_min, x_max = float(np.min(x)), float(np.max(x))
+    y_min, y_max = float(np.min(y)), float(np.max(y))
+    xc, yc = (x_min + x_max) / 2.0, (y_min + y_max) / 2.0
+
+    num_maps = len(data_packs)
+    if num_maps <= 1:
+        return apply_asymmetric_trim(x, y, data_indices, left=left, right=right, top=top, bottom=bottom)
+
+    # Gather bounding info for all maps
+    maps_bounds = []
+    for k, dp_k in enumerate(data_packs):
+        kx, ky = dp_k['x'], dp_k['y']
+        if len(kx) == 0:
+            maps_bounds.append(None)
+            continue
+        kxmin, kxmax = float(np.min(kx)), float(np.max(kx))
+        kymin, kymax = float(np.min(ky)), float(np.max(ky))
+        maps_bounds.append({
+            'x_min': kxmin, 'x_max': kxmax,
+            'y_min': kymin, 'y_max': kymax,
+            'xc': (kxmin + kxmax) / 2.0,
+            'yc': (kymin + kymax) / 2.0
+        })
+
+    remove_mask = np.zeros(len(x), dtype=bool)
+
+    # 1. Left trim (x < x_min + left)
+    if left > 0:
+        in_left_strip = (x < x_min + left)
+        y_overlap_mask = np.zeros(len(x), dtype=bool)
+        has_left_neighbor = False
+        for j, mb in enumerate(maps_bounds):
+            if j == i or mb is None:
+                continue
+            # Neighbor is to the left and overlaps in X and Y
+            ov_x = min(x_max, mb['x_max']) - max(x_min, mb['x_min'])
+            ov_y = min(y_max, mb['y_max']) - max(y_min, mb['y_min'])
+            if mb['xc'] < xc and ov_x > 0 and ov_y > 0:
+                has_left_neighbor = True
+                tk = trims[j] if (trims and j < len(trims)) else {}
+                nb_ymin = mb['y_min'] + float(tk.get('bottom', 0.0))
+                nb_ymax = mb['y_max'] - float(tk.get('top', 0.0))
+                if nb_ymax > nb_ymin:
+                    y_overlap_mask |= (y >= nb_ymin) & (y <= nb_ymax)
+        if has_left_neighbor:
+            remove_mask |= (in_left_strip & y_overlap_mask)
+        else:
+            remove_mask |= in_left_strip
+
+    # 2. Right trim (x > x_max - right)
+    if right > 0:
+        in_right_strip = (x > x_max - right)
+        y_overlap_mask = np.zeros(len(x), dtype=bool)
+        has_right_neighbor = False
+        for j, mb in enumerate(maps_bounds):
+            if j == i or mb is None:
+                continue
+            ov_x = min(x_max, mb['x_max']) - max(x_min, mb['x_min'])
+            ov_y = min(y_max, mb['y_max']) - max(y_min, mb['y_min'])
+            if mb['xc'] > xc and ov_x > 0 and ov_y > 0:
+                has_right_neighbor = True
+                tk = trims[j] if (trims and j < len(trims)) else {}
+                nb_ymin = mb['y_min'] + float(tk.get('bottom', 0.0))
+                nb_ymax = mb['y_max'] - float(tk.get('top', 0.0))
+                if nb_ymax > nb_ymin:
+                    y_overlap_mask |= (y >= nb_ymin) & (y <= nb_ymax)
+        if has_right_neighbor:
+            remove_mask |= (in_right_strip & y_overlap_mask)
+        else:
+            remove_mask |= in_right_strip
+
+    # 3. Top trim (y > y_max - top)
+    if top > 0:
+        in_top_strip = (y > y_max - top)
+        x_overlap_mask = np.zeros(len(x), dtype=bool)
+        has_top_neighbor = False
+        for j, mb in enumerate(maps_bounds):
+            if j == i or mb is None:
+                continue
+            ov_x = min(x_max, mb['x_max']) - max(x_min, mb['x_min'])
+            ov_y = min(y_max, mb['y_max']) - max(y_min, mb['y_min'])
+            if mb['yc'] > yc and ov_x > 0 and ov_y > 0:
+                has_top_neighbor = True
+                tk = trims[j] if (trims and j < len(trims)) else {}
+                nb_xmin = mb['x_min'] + float(tk.get('left', 0.0))
+                nb_xmax = mb['x_max'] - float(tk.get('right', 0.0))
+                if nb_xmax > nb_xmin:
+                    x_overlap_mask |= (x >= nb_xmin) & (x <= nb_xmax)
+        if has_top_neighbor:
+            remove_mask |= (in_top_strip & x_overlap_mask)
+        else:
+            remove_mask |= in_top_strip
+
+    # 4. Bottom trim (y < y_min + bottom)
+    if bottom > 0:
+        in_bottom_strip = (y < y_min + bottom)
+        x_overlap_mask = np.zeros(len(x), dtype=bool)
+        has_bottom_neighbor = False
+        for j, mb in enumerate(maps_bounds):
+            if j == i or mb is None:
+                continue
+            ov_x = min(x_max, mb['x_max']) - max(x_min, mb['x_min'])
+            ov_y = min(y_max, mb['y_max']) - max(y_min, mb['y_min'])
+            if mb['yc'] < yc and ov_x > 0 and ov_y > 0:
+                has_bottom_neighbor = True
+                tk = trims[j] if (trims and j < len(trims)) else {}
+                nb_xmin = mb['x_min'] + float(tk.get('left', 0.0))
+                nb_xmax = mb['x_max'] - float(tk.get('right', 0.0))
+                if nb_xmax > nb_xmin:
+                    x_overlap_mask |= (x >= nb_xmin) & (x <= nb_xmax)
+        if has_bottom_neighbor:
+            remove_mask |= (in_bottom_strip & x_overlap_mask)
+        else:
+            remove_mask |= in_bottom_strip
+
+    keep_mask = ~remove_mask
+    return x[keep_mask], y[keep_mask], data_indices[keep_mask]
+
 def browse_for_quadrant_files(num_files=None):
     """
     Opens file dialogs to select HDF5 files one by one.
@@ -104,7 +242,7 @@ def calculate_initial_zero_overlap_trims(data_packs):
     Analyzes physical spatial bounds of loaded images to calculate initial
     trim distances (in mm) that remove spatial overlaps between adjacent grid images.
     
-    Uses 2D bounding box overlap detection (independent of tile scale/dimensions).
+    Uses 2D bounding box overlap detection (supports both aligned and staggered tiles).
     Returns a list of dicts: [{'left': l, 'right': r, 'top': t, 'bottom': b}, ...]
     """
     num_maps = len(data_packs)
@@ -137,46 +275,51 @@ def calculate_initial_zero_overlap_trims(data_packs):
             m_a = maps_info[i]
             m_b = maps_info[j]
 
-            # 1. Check Horizontal Relationship (m_a is Left, m_b is Right)
-            # Must have significant vertical (Y) overlap (> 50% of the smaller tile height)
             y_overlap = min(m_a['y_max'], m_b['y_max']) - max(m_a['y_min'], m_b['y_min'])
+            x_overlap = min(m_a['x_max'], m_b['x_max']) - max(m_a['x_min'], m_b['x_min'])
             min_h = min(m_a['h'], m_b['h'])
-            if y_overlap > 0.4 * min_h and m_a['xc'] < m_b['xc']:
+            min_w = min(m_a['w'], m_b['w'])
+
+            if x_overlap <= 0 or y_overlap <= 0:
+                continue
+
+            dx_norm = abs(m_a['xc'] - m_b['xc']) / min_w
+            dy_norm = abs(m_a['yc'] - m_b['yc']) / min_h
+
+            # 1. Check Horizontal Relationship (m_a is Left, m_b is Right)
+            # Supports staggered Y tiles (any positive Y overlap > 2% of height when primarily horizontal)
+            if y_overlap > 0.02 * min_h and m_a['xc'] < m_b['xc'] and dx_norm >= dy_norm * 0.5:
                 # Check if m_a and m_b are immediate horizontal neighbors (no tile in-between)
                 between = False
                 for k in range(num_maps):
                     if k != i and k != j:
                         m_k = maps_info[k]
                         k_y_ov = min(m_a['y_max'], m_k['y_max']) - max(m_a['y_min'], m_k['y_min'])
-                        if k_y_ov > 0.4 * min_h and m_a['xc'] < m_k['xc'] < m_b['xc']:
+                        if k_y_ov > 0.1 * min_h and m_a['xc'] < m_k['xc'] < m_b['xc']:
                             between = True
                             break
                 if not between:
                     overlap_x = m_a['x_max'] - m_b['x_min']
-                    # Overlap must be positive and less than 50% of tile width
-                    if 0 < overlap_x < 0.5 * min(m_a['w'], m_b['w']):
+                    if 0 < overlap_x < 0.90 * min_w:
                         half_ov = round(float(overlap_x / 2.0) + 0.005, 3)
                         auto_trims[m_a['idx']]['right'] = max(auto_trims[m_a['idx']]['right'], half_ov)
                         auto_trims[m_b['idx']]['left'] = max(auto_trims[m_b['idx']]['left'], half_ov)
 
             # 2. Check Vertical Relationship (m_a is Top, m_b is Bottom)
-            # Must have significant horizontal (X) overlap (> 50% of the smaller tile width)
-            x_overlap = min(m_a['x_max'], m_b['x_max']) - max(m_a['x_min'], m_b['x_min'])
-            min_w = min(m_a['w'], m_b['w'])
-            if x_overlap > 0.4 * min_w and m_a['yc'] > m_b['yc']:
+            # Supports staggered X tiles (any positive X overlap > 2% of width when primarily vertical)
+            if x_overlap > 0.02 * min_w and m_a['yc'] > m_b['yc'] and dy_norm >= dx_norm * 0.5:
                 # Check if m_a and m_b are immediate vertical neighbors (no tile in-between)
                 between = False
                 for k in range(num_maps):
                     if k != i and k != j:
                         m_k = maps_info[k]
                         k_x_ov = min(m_a['x_max'], m_k['x_max']) - max(m_a['x_min'], m_k['x_min'])
-                        if k_x_ov > 0.4 * min_w and m_b['yc'] < m_k['yc'] < m_a['yc']:
+                        if k_x_ov > 0.1 * min_w and m_b['yc'] < m_k['yc'] < m_a['yc']:
                             between = True
                             break
                 if not between:
                     overlap_y = m_b['y_max'] - m_a['y_min']
-                    # Overlap must be positive and less than 50% of tile height
-                    if 0 < overlap_y < 0.5 * min(m_a['h'], m_b['h']):
+                    if 0 < overlap_y < 0.90 * min_h:
                         half_ov = round(float(overlap_y / 2.0) + 0.005, 3)
                         auto_trims[m_a['idx']]['bottom'] = max(auto_trims[m_a['idx']]['bottom'], half_ov)
                         auto_trims[m_b['idx']]['top'] = max(auto_trims[m_b['idx']]['top'], half_ov)
@@ -184,10 +327,100 @@ def calculate_initial_zero_overlap_trims(data_packs):
     return auto_trims
 
 
-def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50), auto_trim=False):
+def calculate_aligned_flush_trims(data_packs, base_trims=None):
+    """
+    Calculates additional Top/Bottom (for rows) and Left/Right (for columns) trims
+    so that staggered tiles in the same row share flush Top/Bottom boundaries and
+    staggered tiles in the same column share flush Left/Right boundaries.
+    """
+    num_maps = len(data_packs)
+    if base_trims is not None:
+        flush_trims = [dict(t) for t in base_trims]
+    else:
+        flush_trims = calculate_initial_zero_overlap_trims(data_packs)
+
+    if num_maps <= 1:
+        return flush_trims
+
+    maps_info = []
+    for i, dp in enumerate(data_packs):
+        x_min, x_max = float(np.min(dp['x'])), float(np.max(dp['x']))
+        y_min, y_max = float(np.min(dp['y'])), float(np.max(dp['y']))
+        xc = (x_min + x_max) / 2.0
+        yc = (y_min + y_max) / 2.0
+        w = max(x_max - x_min, 1e-4)
+        h = max(y_max - y_min, 1e-4)
+        maps_info.append({
+            'idx': i,
+            'x_min': x_min, 'x_max': x_max,
+            'y_min': y_min, 'y_max': y_max,
+            'xc': xc, 'yc': yc,
+            'w': w, 'h': h
+        })
+
+    avg_h = np.mean([m['h'] for m in maps_info])
+    avg_w = np.mean([m['w'] for m in maps_info])
+
+    # 1. Group into rows (relaxed tolerance 0.65 * avg_h to catch Y-staggered tiles in same row)
+    sorted_by_y = sorted(maps_info, key=lambda m: m['yc'], reverse=True)
+    rows = []
+    for m in sorted_by_y:
+        placed = False
+        for row in rows:
+            row_yc = np.mean([rm['yc'] for rm in row])
+            if abs(row_yc - m['yc']) < 0.65 * avg_h:
+                row.append(m)
+                placed = True
+                break
+        if not placed:
+            rows.append([m])
+
+    for row in rows:
+        if len(row) > 1:
+            common_y_max = min(m['y_max'] - flush_trims[m['idx']].get('top', 0.0) for m in row)
+            common_y_min = max(m['y_min'] + flush_trims[m['idx']].get('bottom', 0.0) for m in row)
+            if common_y_max > common_y_min:
+                for m in row:
+                    idx = m['idx']
+                    req_top = round(max(0.0, m['y_max'] - common_y_max), 3)
+                    req_bot = round(max(0.0, common_y_min - m['y_min']), 3)
+                    flush_trims[idx]['top'] = max(flush_trims[idx].get('top', 0.0), req_top)
+                    flush_trims[idx]['bottom'] = max(flush_trims[idx].get('bottom', 0.0), req_bot)
+
+    # 2. Group into columns (relaxed tolerance 0.65 * avg_w to catch X-staggered tiles in same column)
+    sorted_by_x = sorted(maps_info, key=lambda m: m['xc'])
+    cols = []
+    for m in sorted_by_x:
+        placed = False
+        for col in cols:
+            col_xc = np.mean([cm['xc'] for cm in col])
+            if abs(col_xc - m['xc']) < 0.65 * avg_w:
+                col.append(m)
+                placed = True
+                break
+        if not placed:
+            cols.append([m])
+
+    for col in cols:
+        if len(col) > 1:
+            common_x_max = min(m['x_max'] - flush_trims[m['idx']].get('right', 0.0) for m in col)
+            common_x_min = max(m['x_min'] + flush_trims[m['idx']].get('left', 0.0) for m in col)
+            if common_x_max > common_x_min:
+                for m in col:
+                    idx = m['idx']
+                    req_right = round(max(0.0, m['x_max'] - common_x_max), 3)
+                    req_left = round(max(0.0, common_x_min - m['x_min']), 3)
+                    flush_trims[idx]['right'] = max(flush_trims[idx].get('right', 0.0), req_right)
+                    flush_trims[idx]['left'] = max(flush_trims[idx].get('left', 0.0), req_left)
+
+    return flush_trims
+
+
+def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50), auto_trim=False, trim_mode='full_edge'):
     """
     Interactive widget to adjust trims for multiple maps before stitching.
-    Includes contrast control for global visualization.
+    Includes contrast control, trim mode selection ('full_edge' vs 'overlap_only'),
+    and automatic flush alignment for staggered tiles.
 
     Parameters:
     -----------
@@ -198,6 +431,10 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50), auto_trim=Fa
     auto_trim : bool, default False
         If True, pre-calculates and populates sliders with zero-overlap trims.
         If False (default), sliders start at 0.00 mm (no trimming).
+    trim_mode : str, default 'full_edge'
+        'full_edge': Trims the entire edge length (straight rectangular cut).
+        'overlap_only': Only trims pixels where adjacent tiles actually overlap in 2D,
+                        keeping non-overlapping protruding edges on staggered tiles.
     """
     if h5_files is None:
         h5_files = browse_for_quadrant_files()
@@ -256,18 +493,30 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50), auto_trim=Fa
         y_range = np.max(data_packs[i]['y']) - np.min(data_packs[i]['y'])
         
         if auto_trim:
-            init_l = min(calculated_auto_trims[i]['left'], x_range * 0.45)
-            init_r = min(calculated_auto_trims[i]['right'], x_range * 0.45)
-            init_t = min(calculated_auto_trims[i]['top'], y_range * 0.45)
-            init_b = min(calculated_auto_trims[i]['bottom'], y_range * 0.45)
+            init_l = min(calculated_auto_trims[i]['left'], x_range * 0.90)
+            init_r = min(calculated_auto_trims[i]['right'], x_range * 0.90)
+            init_t = min(calculated_auto_trims[i]['top'], y_range * 0.90)
+            init_b = min(calculated_auto_trims[i]['bottom'], y_range * 0.90)
         else:
             init_l, init_r, init_t, init_b = 0.0, 0.0, 0.0, 0.0
         
-        l_s = widgets.FloatSlider(value=init_l, min=0.0, max=x_range*0.5, step=0.01, description=f'{label} Left:')
-        r_s = widgets.FloatSlider(value=init_r, min=0.0, max=x_range*0.5, step=0.01, description=f'{label} Right:')
-        t_s = widgets.FloatSlider(value=init_t, min=0.0, max=y_range*0.5, step=0.01, description=f'{label} Top:')
-        b_s = widgets.FloatSlider(value=init_b, min=0.0, max=y_range*0.5, step=0.01, description=f'{label} Bottom:')
+        l_s = widgets.FloatSlider(value=init_l, min=0.0, max=round(x_range*0.95, 2), step=0.01, description=f'{label} Left:')
+        r_s = widgets.FloatSlider(value=init_r, min=0.0, max=round(x_range*0.95, 2), step=0.01, description=f'{label} Right:')
+        t_s = widgets.FloatSlider(value=init_t, min=0.0, max=round(y_range*0.95, 2), step=0.01, description=f'{label} Top:')
+        b_s = widgets.FloatSlider(value=init_b, min=0.0, max=round(y_range*0.95, 2), step=0.01, description=f'{label} Bottom:')
         sliders.append({'L': l_s, 'R': r_s, 'T': t_s, 'B': b_s})
+
+    # Trim Mode Toggle
+    init_mode = 'overlap_only' if str(trim_mode).lower().startswith('overlap') else 'full_edge'
+    trim_mode_toggle = widgets.RadioButtons(
+        options=[
+            ('Full Edge Trim (Uniform rectangular cut across entire edge)', 'full_edge'),
+            ('Overlap-Only Trim (Only trim 2D overlapping region, keep staggered non-overlapping edges)', 'overlap_only')
+        ],
+        value=init_mode,
+        description='Trim Mode:',
+        layout=widgets.Layout(width='95%')
+    )
 
     # Contrast Sliders
     contrast_slider = widgets.FloatRangeSlider(
@@ -277,12 +526,16 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50), auto_trim=Fa
 
     btn_zero_trims = widgets.Button(description="Zero All Trims (No Trim)", button_style='info', icon='undo', layout=widgets.Layout(width='190px'))
     btn_auto_trims = widgets.Button(description="Auto-Calculate Overlaps", button_style='primary', icon='magic', layout=widgets.Layout(width='190px'))
+    btn_flush_trims = widgets.Button(description="Align Flush Bounds (Crop)", button_style='warning', icon='crop', layout=widgets.Layout(width='200px'))
     stitch_btn = widgets.Button(description="Bake Stitched Image", button_style='success', layout=widgets.Layout(width='200px'))
     output = widgets.Output()
     
     fig_id = f"stitch_trim_{id(h5_files)}"
+    batch_updating = [False]
 
     def update_plot(change=None):
+        if batch_updating[0]:
+            return
         with output:
             output.clear_output(wait=True)
             if not plt.fignum_exists(fig_id):
@@ -300,8 +553,14 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50), auto_trim=Fa
             if vmin == vmax: vmax = vmin + 1
 
             colors = ['#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4', '#46f0f0', '#f032e6', '#bcf60c', '#fabebe']
+            active_mode = trim_mode_toggle.value
+            current_trims = [
+                {'left': s['L'].value, 'right': s['R'].value, 'top': s['T'].value, 'bottom': s['B'].value}
+                for s in sliders
+            ]
             
-            print("--- LIVE TRIMMING & STITCHING STATUS ---")
+            mode_label = "OVERLAP-ONLY (2D Intersection)" if active_mode == 'overlap_only' else "FULL EDGE (Rectangular)"
+            print(f"--- LIVE TRIMMING & STITCHING STATUS [Mode: {mode_label}] ---")
             for i in range(num_maps):
                 lbl = labels[i] if i < len(labels) else f"Image {i+1}"
                 dp = data_packs[i]
@@ -311,10 +570,13 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50), auto_trim=Fa
                 orig_x, orig_y = dp['x'], dp['y']
                 all_idx = np.arange(len(orig_x))
                 
-                tx, ty, ti_idx = apply_asymmetric_trim(
-                    orig_x, orig_y, all_idx,
-                    left=L, right=R, top=T, bottom=B
-                )
+                if active_mode == 'overlap_only':
+                    tx, ty, ti_idx = apply_overlap_only_trim(i, data_packs, current_trims)
+                else:
+                    tx, ty, ti_idx = apply_asymmetric_trim(
+                        orig_x, orig_y, all_idx,
+                        left=L, right=R, top=T, bottom=B
+                    )
                 
                 num_kept = len(tx)
                 num_total = len(orig_x)
@@ -348,7 +610,7 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50), auto_trim=Fa
                     ky_min, ky_max = np.min(ty), np.max(ty)
                     ax.plot([kx_min, kx_max, kx_max, kx_min, kx_min], 
                             [ky_min, ky_min, ky_max, ky_max, ky_min], 
-                            color=col, lw=2.0, ls='-', label=f"{lbl} Kept Bounds")
+                            color=col, lw=2.0, ls='-' if active_mode == 'full_edge' else '--', label=f"{lbl} Kept Bounds")
                     
                     # Text label for image
                     ax.text((kx_min + kx_max) / 2.0, (ky_min + ky_max) / 2.0, lbl, 
@@ -356,37 +618,72 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50), auto_trim=Fa
                             bbox=dict(boxstyle="round,pad=0.2", facecolor='white', alpha=0.7, edgecolor=col))
 
             ax.set_aspect('equal')
-            ax.set_title(f"Stitching Preview (Contrast: {p_low}% - {p_high}%)")
+            ax.set_title(f"Stitching Preview [{mode_label}] (Contrast: {p_low}% - {p_high}%)")
             ax.set_xlabel("X (mm)")
             ax.set_ylabel("Y (mm)")
             ax.legend(loc='upper right', fontsize=8)
             plt.tight_layout()
             fig.canvas.draw_idle()
 
-    # Link all sliders to update_plot
+    # Link all sliders and mode toggle to update_plot
     for s_set in sliders:
         for s in s_set.values():
             s.observe(update_plot, names='value')
     contrast_slider.observe(update_plot, names='value')
+    trim_mode_toggle.observe(update_plot, names='value')
 
     def on_zero_trims_clicked(b):
-        for s in sliders:
-            s['L'].value = 0.0
-            s['R'].value = 0.0
-            s['T'].value = 0.0
-            s['B'].value = 0.0
+        batch_updating[0] = True
+        try:
+            for s in sliders:
+                s['L'].value = 0.0
+                s['R'].value = 0.0
+                s['T'].value = 0.0
+                s['B'].value = 0.0
+        finally:
+            batch_updating[0] = False
+        update_plot()
 
     def on_auto_trims_clicked(b):
-        for i, s in enumerate(sliders):
-            x_range = np.max(data_packs[i]['x']) - np.min(data_packs[i]['x'])
-            y_range = np.max(data_packs[i]['y']) - np.min(data_packs[i]['y'])
-            s['L'].value = min(calculated_auto_trims[i]['left'], x_range * 0.45)
-            s['R'].value = min(calculated_auto_trims[i]['right'], x_range * 0.45)
-            s['T'].value = min(calculated_auto_trims[i]['top'], y_range * 0.45)
-            s['B'].value = min(calculated_auto_trims[i]['bottom'], y_range * 0.45)
+        batch_updating[0] = True
+        try:
+            for i, s in enumerate(sliders):
+                x_range = np.max(data_packs[i]['x']) - np.min(data_packs[i]['x'])
+                y_range = np.max(data_packs[i]['y']) - np.min(data_packs[i]['y'])
+                s['L'].value = min(calculated_auto_trims[i]['left'], x_range * 0.90)
+                s['R'].value = min(calculated_auto_trims[i]['right'], x_range * 0.90)
+                s['T'].value = min(calculated_auto_trims[i]['top'], y_range * 0.90)
+                s['B'].value = min(calculated_auto_trims[i]['bottom'], y_range * 0.90)
+        finally:
+            batch_updating[0] = False
+        update_plot()
+
+    def on_flush_trims_clicked(b):
+        batch_updating[0] = True
+        try:
+            # Start from current trims (or auto-overlap trims if all are 0) to align outer staggered bounds flush
+            cur_trims = [
+                {'left': s['L'].value, 'right': s['R'].value, 'top': s['T'].value, 'bottom': s['B'].value}
+                for s in sliders
+            ]
+            if all(v == 0.0 for t in cur_trims for v in t.values()):
+                cur_trims = [dict(t) for t in calculated_auto_trims]
+            flush_trims = calculate_aligned_flush_trims(data_packs, base_trims=cur_trims)
+            trim_mode_toggle.value = 'full_edge'
+            for i, s in enumerate(sliders):
+                x_range = np.max(data_packs[i]['x']) - np.min(data_packs[i]['x'])
+                y_range = np.max(data_packs[i]['y']) - np.min(data_packs[i]['y'])
+                s['L'].value = min(flush_trims[i]['left'], x_range * 0.90)
+                s['R'].value = min(flush_trims[i]['right'], x_range * 0.90)
+                s['T'].value = min(flush_trims[i]['top'], y_range * 0.90)
+                s['B'].value = min(flush_trims[i]['bottom'], y_range * 0.90)
+        finally:
+            batch_updating[0] = False
+        update_plot()
 
     btn_zero_trims.on_click(on_zero_trims_clicked)
     btn_auto_trims.on_click(on_auto_trims_clicked)
+    btn_flush_trims.on_click(on_flush_trims_clicked)
 
     def on_stitch_clicked(b):
         stitch_btn.description = "Baking Stitched Image..."
@@ -400,9 +697,9 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50), auto_trim=Fa
             })
         
         with output:
-            print("\n[PROCESS STARTED] Baking Stitched Image with selected trims... Please wait.")
+            print(f"\n[PROCESS STARTED] Baking Stitched Image (Mode: {trim_mode_toggle.value})... Please wait.")
             try:
-                stitch_quadrant_maps(h5_files, trims=final_trims)
+                stitch_quadrant_maps(h5_files, trims=final_trims, trim_mode=trim_mode_toggle.value)
             finally:
                 stitch_btn.description = "Bake Stitched Image"
                 stitch_btn.button_style = 'success'
@@ -426,16 +723,18 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50), auto_trim=Fa
     notice_label = widgets.HTML(
         "<div style='background-color: #e8f4f8; padding: 8px 12px; border-left: 4px solid #0056b3; margin-bottom: 8px;'>"
         "<b style='color:#004085;'>Interactive Trimming & Stitching:</b> Adjust trim values manually in each tab below.<br>"
+        "• <b>Trim Mode:</b> Choose <b>Full Edge Trim</b> (cuts entire edge straight across) or <b>Overlap-Only Trim</b> (only trims inside 2D overlap regions, preserving staggered non-overlapping edges).<br>"
         "• Click <b>'Zero All Trims (No Trim)'</b> to reset all trims to 0.00 mm.<br>"
-        "• Click <b>'Auto-Calculate Overlaps'</b> to compute and apply calculated zero-overlap cutoffs.<br>"
+        "• Click <b>'Auto-Calculate Overlaps'</b> to compute zero-overlap cutoffs between adjacent tiles (supports staggered tiles).<br>"
+        "• Click <b>'Align Flush Bounds (Crop)'</b> to also crop protruding top/bottom or left/right edges so staggered rows/columns align flush.<br>"
         "• Click <b>'Bake Stitched Image'</b> when ready to generate the stitched dataset."
         "</div>"
     )
-    action_box = widgets.HBox([btn_zero_trims, btn_auto_trims, stitch_btn])
-    display(widgets.VBox([notice_label, tab_widget, widgets.Label("Global Contrast Control:"), contrast_slider, action_box, output]))
+    action_box = widgets.HBox([btn_zero_trims, btn_auto_trims, btn_flush_trims, stitch_btn])
+    display(widgets.VBox([notice_label, trim_mode_toggle, tab_widget, widgets.Label("Global Contrast Control:"), contrast_slider, action_box, output]))
     update_plot()
 
-def stitch_quadrant_maps(h5_files=None, output_dir=None, trims=None, verbose=True):
+def stitch_quadrant_maps(h5_files=None, output_dir=None, trims=None, trim_mode='full_edge', verbose=True):
     """
     Stitches multiple map datasets into a single unified dataset.
     """
@@ -519,7 +818,7 @@ def stitch_quadrant_maps(h5_files=None, output_dir=None, trims=None, verbose=Tru
         common_detectors = sorted(list(all_dets))
 
     if verbose:
-        print(f"\nStitching {len(data_packs)} maps...")
+        print(f"\nStitching {len(data_packs)} maps (Trim Mode: {trim_mode})...")
         print(f"Common Energies: {common_energies}")
         print(f"Common Detectors: {common_detectors}")
 
@@ -527,19 +826,23 @@ def stitch_quadrant_maps(h5_files=None, output_dir=None, trims=None, verbose=Tru
     master_x = []
     master_y = []
     map_pixel_masks = [] # List of (indices_to_keep) for each map
+    is_overlap_only = str(trim_mode).lower().startswith('overlap')
 
     for i, dp in enumerate(data_packs):
         t = trims[i] if (trims and i < len(trims)) else {}
         x, y = dp['x'], dp['y']
         indices = np.arange(len(x))
         
-        tx, ty, t_indices = apply_asymmetric_trim(
-            x, y, indices, 
-            left=t.get('left', 0), 
-            right=t.get('right', 0), 
-            top=t.get('top', 0), 
-            bottom=t.get('bottom', 0)
-        )
+        if is_overlap_only:
+            tx, ty, t_indices = apply_overlap_only_trim(i, data_packs, trims)
+        else:
+            tx, ty, t_indices = apply_asymmetric_trim(
+                x, y, indices, 
+                left=t.get('left', 0), 
+                right=t.get('right', 0), 
+                top=t.get('top', 0), 
+                bottom=t.get('bottom', 0)
+            )
         
         master_x.append(tx)
         master_y.append(ty)
@@ -674,6 +977,9 @@ def stitch_quadrant_maps(h5_files=None, output_dir=None, trims=None, verbose=Tru
         sm_group.attrs['top_left_scan'] = top_left_scan
         sm_group.attrs['bottom_right_scan'] = bottom_right_scan
         sm_group.attrs['stitched_tag'] = stitched_tag
+        sm_group.attrs['trim_mode'] = str(trim_mode)
+        if data_packs and data_packs[0].get('date') and str(data_packs[0].get('date')) not in ('N/A', 'None', ''):
+            sm_group.attrs['date'] = str(data_packs[0]['date'])
         
         for i, dp in enumerate(data_packs):
             t = trims[i] if (trims and i < len(trims)) else {}
@@ -806,14 +1112,16 @@ def read_stitching_trim_info(h5_file_path, verbose=True):
         sm = f['stitching_metadata']
         num_maps = sm.attrs.get('num_source_maps', 0)
         source_files = sm.attrs.get('source_files', [])
+        trim_mode = sm.attrs.get('trim_mode', 'full_edge')
         
         trim_info['num_source_maps'] = num_maps
         trim_info['source_files'] = list(source_files)
+        trim_info['trim_mode'] = str(trim_mode)
         trim_info['maps'] = {}
         
         if verbose:
             print(f"\n--- Stitching Trim Information for {os.path.basename(h5_file_path)} ---")
-            print(f"Source Maps Count: {num_maps}")
+            print(f"Source Maps Count: {num_maps} | Trim Mode: {trim_mode}")
             
         for key in sorted(sm.keys()):
             if key.startswith('map_'):
@@ -879,9 +1187,9 @@ def check_stitching_gaps(h5_file_path, verbose=True):
             'w': w, 'h': h
         })
 
-    # Group rows dynamically based on relative tile height
+    # Group rows dynamically based on relative tile height (relaxed to 0.65 * avg_h for staggered rows)
     avg_h = np.mean([m['h'] for m in maps_data]) if maps_data else 1.0
-    y_tol = 0.35 * avg_h
+    y_tol = 0.65 * avg_h
 
     # Sort maps into spatial rows (group by similar Y center)
     maps_data.sort(key=lambda m: m['yc'], reverse=True) # Top to bottom
@@ -890,7 +1198,8 @@ def check_stitching_gaps(h5_file_path, verbose=True):
     for m in maps_data:
         placed = False
         for row in rows:
-            if abs(row[0]['yc'] - m['yc']) < y_tol:
+            row_yc = np.mean([rm['yc'] for rm in row])
+            if abs(row_yc - m['yc']) < y_tol:
                 row.append(m)
                 placed = True
                 break
@@ -904,6 +1213,7 @@ def check_stitching_gaps(h5_file_path, verbose=True):
     if verbose:
         print(f"\n--- Stitching Boundary & Seam Diagnostic: {os.path.basename(h5_file_path)} ---")
         print(f"Detected Grid Layout: {len(rows)} Rows x {max(len(r) for r in rows)} Columns ({len(maps_data)} total images)")
+        print(f"Trim Mode Recorded: {trim_info.get('trim_mode', 'full_edge')}")
 
     boundary_report = []
 
@@ -941,13 +1251,15 @@ def check_stitching_gaps(h5_file_path, verbose=True):
             print(f"    Status: {status}")
             print(f"    Action: {rec}")
 
-    # 2. Check Horizontal Seams (Between Columns in each Row)
+    # 2. Check Horizontal Seams (Between Columns in each Row) & Y-Staggering
     for r_idx, row in enumerate(rows):
         for c_idx in range(len(row) - 1):
             left_img = row[c_idx]
             right_img = row[c_idx + 1]
             
             delta_x = left_img['x_max'] - right_img['x_min']
+            stagger_top = abs(left_img['y_max'] - right_img['y_max'])
+            stagger_bot = abs(left_img['y_min'] - right_img['y_min'])
             
             if abs(delta_x) < 0.02:
                 status = "PERFECT ALIGNMENT"
@@ -958,6 +1270,9 @@ def check_stitching_gaps(h5_file_path, verbose=True):
             else:
                 status = f"GAP ({delta_x:.3f} mm)"
                 rec = f"Decrease Left/Right trim by ~{abs(delta_x)/2.0:.3f} mm to close column gap."
+                
+            if stagger_top > 0.02 or stagger_bot > 0.02:
+                rec += f" [Note: Y-stagger detected: Top ΔY={stagger_top:.3f}mm, Bottom ΔY={stagger_bot:.3f}mm. Use 'Align Flush Bounds' or 'Overlap-Only Trim']."
                 
             rep_line = {
                 'type': 'Column Seam (X)',

@@ -28,9 +28,13 @@ Stitched datasets automatically analyze physical stage coordinates $(X, Y)$ acro
 To eliminate boundary overlaps and seam artifacts, `interactive_stitching_trim()` provides live interactive visualization and optional automated alignment.
 
 - **Default Behavior (`auto_trim=False`)**: Sliders start at `0.00 mm` (no data is trimmed by default).
-- **Interactive UI Buttons**:
+- **Interactive UI Buttons & Controls**:
   - **`Zero All Trims (No Trim)`**: Resets all sliders across all images to `0.00 mm`.
   - **`Auto-Calculate Overlaps`**: Dynamically calculates physical spatial overlaps and pre-populates sliders with zero-overlap boundary trims.
+  - **`Align Flush Bounds`**: Automatically computes and applies Top/Bottom (for rows) and Left/Right (for columns) trims so staggered tiles are cropped to a flush common rectangular edge.
+  - **`Trim Scope` Toggle (`Full Edge (Box)` vs. `Overlap-Only (L-shape)`)**:
+    - **`Full Edge (Box)`**: Trims the entire straight edge of the tile across its full width/height.
+    - **`Overlap-Only (L-shape)`**: Trims *only* the spatial segment where a neighboring tile physically overlaps, keeping the non-overlapping extensions intact when tiles are staggered in $X$ or $Y$.
 - **Explicit Auto-Trim**: Call `interactive_stitching_trim(auto_trim=True)` to open with zero-overlap trims pre-applied.
 
 ### 2.1 How Trimming & Joining Works (Direct Edge Trimming vs. Averaging)
@@ -105,10 +109,18 @@ A key observation in XRF mapping is that **seams may appear strongly at low ener
 | **Detector Geometry Effects** | Strong takeoff-angle dependence across SDD heads | Negligible directional dependence |
 | **Seam Visibility** | **Visible along specific SDD channels** | **Seamless / Invisible** |
 
-### Cause 3: SDD Multi-Element Array Orientation
-The 4 Silicon Drift Detector channels (SDD1, SDD2, SDD3, SDD4) sit at different physical orientation angles around the sample stage:
-- **SDD3**: Positioned at an angle sensitive to both $X$ (column) and $Y$ (row) stage translation, showing seams in both axes at $284\text{ eV}$.
-- **SDD1 & SDD4**: Positioned at angles sensitive primarily to $Y$ (row) stage elevation, showing seams mainly along $Y$ row boundaries at $284\text{ eV}$.
+### Cause 3: SDD Multi-Element Array Orientation (Before vs. After Aug 12, 2026)
+The 4 Silicon Drift Detector channels (`sdd1`, `sdd2`, `sdd3`, `sdd4`) sit at different physical orientation angles around the sample stage. Note that **after August 12, 2026**, the physical positions of `sdd1`, `sdd3`, and `sdd4` changed:
+
+| Detector | On or Before Aug 12, 2026 ($\le \text{2026-08-12}$) | After Aug 12, 2026 ($> \text{2026-08-12}$) |
+| :--- | :--- | :--- |
+| **`sdd1`** | `90, top` | **`90, side`** |
+| **`sdd2`** | `45, front, in-plane` | **`45, front, in-plane`** *(unchanged)* |
+| **`sdd3`** | `90, side` | **`45, front, out of plane`** |
+| **`sdd4`** | `45, front, out-plane` | **`90, top`** |
+
+- **Side-mounted detector (`90, side` — `sdd3` $\le$ Aug 12, 2026; `sdd1` $>$ Aug 12, 2026)**: Positioned at an angle sensitive to both $X$ (column) and $Y$ (row) stage translation, showing seams in both axes at $284\text{ eV}$.
+- **Top & Out-of-Plane detectors (`90, top` and `45, front, out of plane`)**: Positioned at angles sensitive primarily to $Y$ (row) stage elevation, showing seams mainly along $Y$ row boundaries at $284\text{ eV}$.
 - **SDD Sum (`sdd_sum`)**: Summing all 4 detector elements averages out directional takeoff-angle biases, significantly reducing visible seam steps.
 
 ### Cause 4: Single-Energy Scans & $I_0$ Normalization Behavior

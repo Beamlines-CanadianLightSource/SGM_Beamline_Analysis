@@ -24,7 +24,7 @@ from sdd_calibration_utils import (
     get_calibrated_bounds
 )
 from plot_sgm_bsky_data import read_csv_with_comments, ExternalI0PreviewDialog, get_tk_root
-from analyze_sgm_bsky_data import build_scan_filename_base, resolve_sample_name
+from analyze_sgm_bsky_data import build_scan_filename_base, resolve_sample_name, get_sdd_label
 
 def get_mcc_val(path_pack, energy, channel, spatial_mask):
     """
@@ -396,10 +396,12 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
             t_per_img = path_pack.get('time_per_map') or path_pack.get('time_per_image')
             if t_per_img and str(t_per_img).strip() not in ('N/A', 'None', ''):
                 rows.append(f"# Time Per Image: {t_per_img}")
+            sdd_pos_str = "; ".join([get_sdd_label(d, path_pack) for d in ['sdd1', 'sdd2', 'sdd3', 'sdd4']])
             rows += [
                 f"# ROI Selection: Rect",
                 f"# {'Energy ROI' if use_calibration else 'Channels'}: {roi_str}",
                 f"# Normalization: {i0_source_label}",
+                f"# SDD Detector Positions: {sdd_pos_str}",
             ]
             rows += calib_meta_rows
             rows.append("#")
@@ -410,11 +412,11 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
             rows.append("# Column 2: Original Energy (eV)")
             c_idx = 3
             for det in ['sdd1', 'sdd2', 'sdd3', 'sdd4']:
-                rows.append(f"# Column {c_idx}: RAW_{det.upper()}"); c_idx += 1
+                rows.append(f"# Column {c_idx}: RAW_{get_sdd_label(det, path_pack)}"); c_idx += 1
             rows.append(f"# Column {c_idx}: RAW_Average_SDD"); c_idx += 1
             
             for det in ['sdd1', 'sdd2', 'sdd3', 'sdd4']:
-                rows.append(f"# Column {c_idx}: NORM_{det.upper()} (by {i0_source_label})"); c_idx += 1
+                rows.append(f"# Column {c_idx}: NORM_{get_sdd_label(det, path_pack)} (by {i0_source_label})"); c_idx += 1
             rows.append(f"# Column {c_idx}: NORM_Average_SDD"); c_idx += 1
             
             rows.append(f"# Column {c_idx}: RAW_Au Mesh I0 (mcc1)"); c_idx += 1
@@ -505,10 +507,11 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
         xlabel_str = "Channel Index"
         span_s, span_e = channel_roi[0], channel_roi[1]
 
-    line_xrf, = ax_xrf.plot(xrf_x, xrf_spec, color='blue', lw=1.5, label=f"XRF Spectrum ({ref_det.upper()})")
+    ref_det_label = get_sdd_label(ref_det, ref_pack, uppercase=True)
+    line_xrf, = ax_xrf.plot(xrf_x, xrf_spec, color='blue', lw=1.5, label=f"XRF Spectrum ({ref_det_label})")
     ax_xrf.set_xlabel(xlabel_str, fontsize=10, fontweight='bold')
     ax_xrf.set_ylabel("PFY Counts", fontsize=10, fontweight='bold')
-    ax_xrf.set_title(f"Interactive XRF Spectrum ROI Inspector ({ref_pack.get('scan_name', 'Scan 1')} - {ref_det.upper()})\n(Drag mouse left/right on peak to change ROI dynamically)", fontsize=11, fontweight='bold')
+    ax_xrf.set_title(f"Interactive XRF Spectrum ROI Inspector ({ref_pack.get('scan_name', 'Scan 1')} - {ref_det_label})\n(Drag mouse left/right on peak to change ROI dynamically)", fontsize=11, fontweight='bold')
     ax_xrf.grid(True, linestyle=':', alpha=0.6)
     ax_xrf.legend(loc='upper right')
 
@@ -548,7 +551,8 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
     for idx, key in enumerate(raw_keys):
         ax = ax_list_raw[idx]
         if 'sdd' in key:
-            ax.set_title(f"Detector {key.split('_')[0].upper()} (Raw)", fontsize=11, fontweight='semibold')
+            det_lbl_raw = get_sdd_label(key.split('_')[0], ref_pack, uppercase=True)
+            ax.set_title(f"Detector {det_lbl_raw} (Raw)", fontsize=10.5, fontweight='semibold')
             ax.set_ylabel("Raw Counts", fontsize=9)
         elif key == 'mcc1_raw':
             ax.set_title("Raw Au Mesh I0 (mcc1) Intensity", fontsize=11, fontweight='semibold')
@@ -605,7 +609,8 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
     for idx, key in enumerate(norm_keys):
         ax = ax_list_norm[idx]
         if 'sdd' in key:
-            ax.set_title(f"Detector {key.split('_')[0].upper()} (Normalized)", fontsize=11, fontweight='semibold')
+            det_lbl_norm = get_sdd_label(key.split('_')[0], ref_pack, uppercase=True)
+            ax.set_title(f"Detector {det_lbl_norm} (Normalized)", fontsize=10.5, fontweight='semibold')
             ax.set_ylabel("Intensity (Normalized)", fontsize=9)
         elif key == 'mcc1_raw':
             ax.set_title("Raw Au Mesh I0 (mcc1) Intensity (Reference)", fontsize=11, fontweight='semibold')

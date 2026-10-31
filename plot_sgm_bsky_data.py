@@ -27,7 +27,10 @@ except (ImportError, ModuleNotFoundError):
     NavigationToolbar2Tk = None
     HAS_TK = False
 
-from analyze_sgm_bsky_data import analyze_sgm_bsky_data, extract_sample_name, resolve_sample_name, build_scan_filename_base
+from analyze_sgm_bsky_data import (
+    analyze_sgm_bsky_data, extract_sample_name, resolve_sample_name, build_scan_filename_base,
+    get_sdd_names_map, get_sdd_label, SDD_NAMES_PRE_2026_08_12, SDD_NAMES_POST_2026_08_12
+)
 from alignment_utils import (
     grid_interpolate_map, get_safe_save_path, get_tk_root, get_masked_triangulation,
     safe_filedialog_call, console_log, safe_metadata_dialog_call, format_num_val,
@@ -169,13 +172,8 @@ if hasattr(mwidgets, '_SelectorWidget'):
 # Increase the figure limit to avoid warnings in notebooks with many plots
 plt.rcParams['figure.max_open_warning'] = 50
 
-# Human-readable names for SDD and MCC channels
-SDD_NAMES = {
-    1: "sdd1 (90, top)",
-    2: "sdd2 (45, front, in-plane)",
-    3: "sdd3 (90, side)",
-    4: "sdd4 (45, front, out-plane)"
-}
+# Human-readable names for SDD and MCC channels (post Aug 12, 2026 default; dynamically resolved per scan date via get_sdd_label)
+SDD_NAMES = dict(SDD_NAMES_POST_2026_08_12)
 
 MCC_NAMES = {
     1: "Au Mesh I0 (mcc1)",
@@ -249,474 +247,474 @@ if HAS_TK and tk is not None:
     class ExternalI0PreviewDialog(tk.Toplevel):
         def __init__(self, parent, dataframe, default_e_col, default_i_col):
             super().__init__(parent)
-        self.title("External I0 Selection & Processing")
-        self.df = dataframe.copy()
-        
-        # Ensure mcc1 column is clearly displayed as 'Au Mesh I0 (mcc1)'
-        renamed_cols = {}
-        for c in self.df.columns:
-            if str(c).lower() == 'mcc1':
-                renamed_cols[c] = 'Au Mesh I0 (mcc1)'
-        if renamed_cols:
-            self.df = self.df.rename(columns=renamed_cols)
-            if default_i_col in renamed_cols:
-                default_i_col = renamed_cols[default_i_col]
-            if default_e_col in renamed_cols:
-                default_e_col = renamed_cols[default_e_col]
+            self.title("External I0 Selection & Processing")
+            self.df = dataframe.copy()
+            
+            # Ensure mcc1 column is clearly displayed as 'Au Mesh I0 (mcc1)'
+            renamed_cols = {}
+            for c in self.df.columns:
+                if str(c).lower() == 'mcc1':
+                    renamed_cols[c] = 'Au Mesh I0 (mcc1)'
+            if renamed_cols:
+                self.df = self.df.rename(columns=renamed_cols)
+                if default_i_col in renamed_cols:
+                    default_i_col = renamed_cols[default_i_col]
+                if default_e_col in renamed_cols:
+                    default_e_col = renamed_cols[default_e_col]
 
-        self.result = None
-        
-        self.protocol("WM_DELETE_WINDOW", self.on_cancel)
-        self.attributes("-topmost", True)
-        try:
-            self.deiconify()
-            self.lift()
-            self.focus_force()
-        except Exception:
-            pass
-        
-        self.i0_calib_enabled = tk.BooleanVar(value=False)
-        self.i0_energy_shift = tk.DoubleVar(value=0.0)
-        
-        # Constant Offset variables
-        self.do_const_offset = tk.BooleanVar(value=False)
-        self.i0_const_offset = tk.DoubleVar(value=0.0)
-        
-        # Optical Density (SF) variables
-        self.do_od_divide = tk.BooleanVar(value=False)
-        self.od_compound = tk.StringVar(value="BN")
-        self.od_density = tk.DoubleVar(value=2.1)
-        self.od_thickness = tk.DoubleVar(value=0.1)
-        self.do_autoscale = tk.BooleanVar(value=True)
-        
-        # UI Setup
-        ctrl_frame = tk.Frame(self)
-        ctrl_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=10)
-        
-        columns = list(self.df.columns)
-        
-        tk.Label(ctrl_frame, text="Energy Column (X):").grid(row=0, column=0, padx=5, pady=5, sticky='w')
-        self.cb_e = ttk.Combobox(ctrl_frame, values=columns, state="readonly", width=30)
-        if default_e_col in columns: self.cb_e.set(default_e_col)
-        self.cb_e.grid(row=0, column=1, padx=5, pady=5, sticky='w')
-        self.cb_e.bind("<<ComboboxSelected>>", self.update_plot)
-        
-        tk.Label(ctrl_frame, text="Intensity Column (Y):").grid(row=1, column=0, padx=5, pady=5, sticky='w')
-        self.cb_i = ttk.Combobox(ctrl_frame, values=columns, state="readonly", width=30)
-        if default_i_col in columns: self.cb_i.set(default_i_col)
-        self.cb_i.grid(row=1, column=1, padx=5, pady=5, sticky='w')
-        self.cb_i.bind("<<ComboboxSelected>>", self.update_plot)
-        
-        # Smoothing UI
-        smooth_frame = tk.LabelFrame(ctrl_frame, text="Smoothing (Savitzky-Golay)")
-        smooth_frame.grid(row=2, column=0, columnspan=2, padx=5, pady=4, sticky="ew")
-        
-        self.do_smooth = tk.BooleanVar(value=False)
-        self.chk_smooth = tk.Checkbutton(smooth_frame, text="Enable Smoothing", variable=self.do_smooth, command=self.update_plot)
-        self.chk_smooth.grid(row=0, column=0, padx=5, pady=4)
-        
-        tk.Label(smooth_frame, text="Window Size (odd):").grid(row=0, column=1, padx=5, pady=4)
-        self.spin_window = ttk.Spinbox(smooth_frame, from_=3, to=1001, increment=2, width=5, command=self.update_plot)
-        self.spin_window.set(11)
-        self.spin_window.grid(row=0, column=2, padx=5, pady=4)
-        self.spin_window.bind("<Return>", self.update_plot)
-        
-        # Energy Calibration UI (External I0 Only)
-        calib_frame = tk.LabelFrame(ctrl_frame, text="I0 Energy Calibration")
-        calib_frame.grid(row=3, column=0, columnspan=2, padx=5, pady=4, sticky="ew")
-        
-        self.chk_calib = tk.Checkbutton(calib_frame, text="Enable Energy Calibration", variable=self.i0_calib_enabled, command=self.update_plot)
-        self.chk_calib.grid(row=0, column=0, padx=5, pady=4)
-        
-        tk.Label(calib_frame, text="Shift (eV):").grid(row=0, column=1, padx=5, pady=4)
-        self.ent_calib = ttk.Entry(calib_frame, textvariable=self.i0_energy_shift, width=10)
-        self.ent_calib.grid(row=0, column=2, padx=5, pady=4)
-        self.ent_calib.bind("<Return>", self.update_plot)
-        self.ent_calib.bind("<FocusOut>", self.update_plot)
-        
-        # Constant Modification UI (Add, Multiply, Divide)
-        const_frame = tk.LabelFrame(ctrl_frame, text="I0 Constant Modification")
-        const_frame.grid(row=4, column=0, columnspan=2, padx=5, pady=4, sticky="ew")
-        
-        self.do_const_offset = tk.BooleanVar(value=False)
-        self.i0_const_offset = tk.DoubleVar(value=0.0)
-        self.const_op = tk.StringVar(value="Add")
-        
-        self.chk_const = tk.Checkbutton(
-            const_frame, text="Apply Constant:",
-            variable=self.do_const_offset, command=self.update_plot,
-            font=('TkDefaultFont', 9, 'bold')
-        )
-        self.chk_const.grid(row=0, column=0, padx=5, pady=3, sticky="w")
-        
-        self.cb_const_op = ttk.Combobox(const_frame, textvariable=self.const_op, values=["Add", "Multiply", "Divide"], state="readonly", width=9)
-        self.cb_const_op.set("Add")
-        self.cb_const_op.grid(row=0, column=1, padx=4, pady=3, sticky="w")
-        self.cb_const_op.bind("<<ComboboxSelected>>", self._on_const_op_change)
-        
-        tk.Label(const_frame, text="Value:").grid(row=0, column=2, padx=(8, 2), pady=3, sticky="w")
-        self.ent_const = ttk.Entry(const_frame, textvariable=self.i0_const_offset, width=10)
-        self.ent_const.grid(row=0, column=3, padx=2, pady=3, sticky="w")
-        self.ent_const.bind("<Return>", self._on_const_return)
-        self.ent_const.bind("<FocusOut>", self.update_plot)
-        self.ent_const.bind("<KeyRelease>", self._on_const_key)
-        
-        self.lbl_const_formula = tk.Label(const_frame, text="(I0' = I0 + C)", font=('TkDefaultFont', 8, 'italic'), fg='gray')
-        self.lbl_const_formula.grid(row=0, column=4, padx=6, pady=3, sticky="w")
-
-        # Optical Density (SF) Correction UI
-        od_frame = tk.LabelFrame(ctrl_frame, text="Compound Optical Density (SF) Correction")
-        od_frame.grid(row=5, column=0, columnspan=2, padx=5, pady=4, sticky="ew")
-        
-        self.chk_od = tk.Checkbutton(od_frame, text="Divide I0 by Optical Density (OD)", variable=self.do_od_divide, command=self.update_plot, font=('TkDefaultFont', 9, 'bold'))
-        self.chk_od.grid(row=0, column=0, columnspan=4, padx=5, pady=2, sticky="w")
-        
-        tk.Label(od_frame, text="Compound:").grid(row=1, column=0, padx=5, pady=2, sticky="w")
-        self.ent_compound = ttk.Entry(od_frame, textvariable=self.od_compound, width=10)
-        self.ent_compound.grid(row=1, column=1, padx=5, pady=2, sticky="w")
-        self.ent_compound.bind("<Return>", self.update_plot)
-        self.ent_compound.bind("<FocusOut>", self.update_plot)
-        
-        tk.Label(od_frame, text="Density (g/cm³):").grid(row=1, column=2, padx=5, pady=2, sticky="w")
-        self.ent_density = ttk.Entry(od_frame, textvariable=self.od_density, width=8)
-        self.ent_density.grid(row=1, column=3, padx=5, pady=2, sticky="w")
-        self.ent_density.bind("<Return>", self.update_plot)
-        self.ent_density.bind("<FocusOut>", self.update_plot)
-        
-        tk.Label(od_frame, text="Thickness (µm):").grid(row=2, column=0, padx=5, pady=2, sticky="w")
-        self.ent_thickness = ttk.Entry(od_frame, textvariable=self.od_thickness, width=10)
-        self.ent_thickness.grid(row=2, column=1, padx=5, pady=2, sticky="w")
-        self.ent_thickness.bind("<Return>", self.update_plot)
-        self.ent_thickness.bind("<FocusOut>", self.update_plot)
-
-        self.chk_autoscale = tk.Checkbutton(od_frame, text="Auto-scale modified I0 magnitude to match starting I0", variable=self.do_autoscale, command=self.update_plot)
-        self.chk_autoscale.grid(row=2, column=2, columnspan=2, padx=5, pady=2, sticky="w")
-
-        # Status / Error Label
-        self.lbl_status = tk.Label(ctrl_frame, text="", fg="red", font=('TkDefaultFont', 9, 'italic'))
-        self.lbl_status.grid(row=6, column=0, columnspan=2, padx=5, pady=2, sticky="w")
-
-        btn_frame = tk.Frame(ctrl_frame)
-        btn_frame.grid(row=0, column=2, rowspan=7, padx=20, sticky="n")
-        
-        tk.Button(btn_frame, text="Apply", command=self.on_apply, width=15, bg='lightgreen').pack(pady=4)
-        tk.Button(btn_frame, text="Cancel", command=self.on_cancel, width=15, bg='lightcoral').pack(pady=4)
-        
-        # Plot Setup
-        self.fig = Figure(figsize=(7, 5))
-        self.canvas = FigureCanvasTkAgg(self.fig, master=self)
-        self.canvas.draw()
-        self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-        
-        toolbar = NavigationToolbar2Tk(self.canvas, self)
-        toolbar.update()
-        
-        self.update_plot()
-        
-    def _on_const_op_change(self, event=None):
-        op = self.cb_const_op.get()
-        if op == "Multiply":
-            self.lbl_const_formula.config(text="(I0' = I0 * C)")
+            self.result = None
+            
+            self.protocol("WM_DELETE_WINDOW", self.on_cancel)
+            self.attributes("-topmost", True)
             try:
-                if float(self.ent_const.get()) == 0.0:
-                    self.i0_const_offset.set(1.0)
+                self.deiconify()
+                self.lift()
+                self.focus_force()
             except Exception:
                 pass
-        elif op == "Divide":
-            self.lbl_const_formula.config(text="(I0' = I0 / C)")
-            try:
-                if float(self.ent_const.get()) == 0.0:
-                    self.i0_const_offset.set(1.0)
-            except Exception:
-                pass
-        else:
-            self.lbl_const_formula.config(text="(I0' = I0 + C)")
-        self.update_plot()
+            
+            self.i0_calib_enabled = tk.BooleanVar(value=False)
+            self.i0_energy_shift = tk.DoubleVar(value=0.0)
+            
+            # Constant Offset variables
+            self.do_const_offset = tk.BooleanVar(value=False)
+            self.i0_const_offset = tk.DoubleVar(value=0.0)
+            
+            # Optical Density (SF) variables
+            self.do_od_divide = tk.BooleanVar(value=False)
+            self.od_compound = tk.StringVar(value="BN")
+            self.od_density = tk.DoubleVar(value=2.1)
+            self.od_thickness = tk.DoubleVar(value=0.1)
+            self.do_autoscale = tk.BooleanVar(value=True)
+            
+            # UI Setup
+            ctrl_frame = tk.Frame(self)
+            ctrl_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=10)
+            
+            columns = list(self.df.columns)
+            
+            tk.Label(ctrl_frame, text="Energy Column (X):").grid(row=0, column=0, padx=5, pady=5, sticky='w')
+            self.cb_e = ttk.Combobox(ctrl_frame, values=columns, state="readonly", width=30)
+            if default_e_col in columns: self.cb_e.set(default_e_col)
+            self.cb_e.grid(row=0, column=1, padx=5, pady=5, sticky='w')
+            self.cb_e.bind("<<ComboboxSelected>>", self.update_plot)
+            
+            tk.Label(ctrl_frame, text="Intensity Column (Y):").grid(row=1, column=0, padx=5, pady=5, sticky='w')
+            self.cb_i = ttk.Combobox(ctrl_frame, values=columns, state="readonly", width=30)
+            if default_i_col in columns: self.cb_i.set(default_i_col)
+            self.cb_i.grid(row=1, column=1, padx=5, pady=5, sticky='w')
+            self.cb_i.bind("<<ComboboxSelected>>", self.update_plot)
+            
+            # Smoothing UI
+            smooth_frame = tk.LabelFrame(ctrl_frame, text="Smoothing (Savitzky-Golay)")
+            smooth_frame.grid(row=2, column=0, columnspan=2, padx=5, pady=4, sticky="ew")
+            
+            self.do_smooth = tk.BooleanVar(value=False)
+            self.chk_smooth = tk.Checkbutton(smooth_frame, text="Enable Smoothing", variable=self.do_smooth, command=self.update_plot)
+            self.chk_smooth.grid(row=0, column=0, padx=5, pady=4)
+            
+            tk.Label(smooth_frame, text="Window Size (odd):").grid(row=0, column=1, padx=5, pady=4)
+            self.spin_window = ttk.Spinbox(smooth_frame, from_=3, to=1001, increment=2, width=5, command=self.update_plot)
+            self.spin_window.set(11)
+            self.spin_window.grid(row=0, column=2, padx=5, pady=4)
+            self.spin_window.bind("<Return>", self.update_plot)
+            
+            # Energy Calibration UI (External I0 Only)
+            calib_frame = tk.LabelFrame(ctrl_frame, text="I0 Energy Calibration")
+            calib_frame.grid(row=3, column=0, columnspan=2, padx=5, pady=4, sticky="ew")
+            
+            self.chk_calib = tk.Checkbutton(calib_frame, text="Enable Energy Calibration", variable=self.i0_calib_enabled, command=self.update_plot)
+            self.chk_calib.grid(row=0, column=0, padx=5, pady=4)
+            
+            tk.Label(calib_frame, text="Shift (eV):").grid(row=0, column=1, padx=5, pady=4)
+            self.ent_calib = ttk.Entry(calib_frame, textvariable=self.i0_energy_shift, width=10)
+            self.ent_calib.grid(row=0, column=2, padx=5, pady=4)
+            self.ent_calib.bind("<Return>", self.update_plot)
+            self.ent_calib.bind("<FocusOut>", self.update_plot)
+            
+            # Constant Modification UI (Add, Multiply, Divide)
+            const_frame = tk.LabelFrame(ctrl_frame, text="I0 Constant Modification")
+            const_frame.grid(row=4, column=0, columnspan=2, padx=5, pady=4, sticky="ew")
+            
+            self.do_const_offset = tk.BooleanVar(value=False)
+            self.i0_const_offset = tk.DoubleVar(value=0.0)
+            self.const_op = tk.StringVar(value="Add")
+            
+            self.chk_const = tk.Checkbutton(
+                const_frame, text="Apply Constant:",
+                variable=self.do_const_offset, command=self.update_plot,
+                font=('TkDefaultFont', 9, 'bold')
+            )
+            self.chk_const.grid(row=0, column=0, padx=5, pady=3, sticky="w")
+            
+            self.cb_const_op = ttk.Combobox(const_frame, textvariable=self.const_op, values=["Add", "Multiply", "Divide"], state="readonly", width=9)
+            self.cb_const_op.set("Add")
+            self.cb_const_op.grid(row=0, column=1, padx=4, pady=3, sticky="w")
+            self.cb_const_op.bind("<<ComboboxSelected>>", self._on_const_op_change)
+            
+            tk.Label(const_frame, text="Value:").grid(row=0, column=2, padx=(8, 2), pady=3, sticky="w")
+            self.ent_const = ttk.Entry(const_frame, textvariable=self.i0_const_offset, width=10)
+            self.ent_const.grid(row=0, column=3, padx=2, pady=3, sticky="w")
+            self.ent_const.bind("<Return>", self._on_const_return)
+            self.ent_const.bind("<FocusOut>", self.update_plot)
+            self.ent_const.bind("<KeyRelease>", self._on_const_key)
+            
+            self.lbl_const_formula = tk.Label(const_frame, text="(I0' = I0 + C)", font=('TkDefaultFont', 8, 'italic'), fg='gray')
+            self.lbl_const_formula.grid(row=0, column=4, padx=6, pady=3, sticky="w")
 
-    def _on_const_key(self, event=None):
-        if self.do_const_offset.get():
+            # Optical Density (SF) Correction UI
+            od_frame = tk.LabelFrame(ctrl_frame, text="Compound Optical Density (SF) Correction")
+            od_frame.grid(row=5, column=0, columnspan=2, padx=5, pady=4, sticky="ew")
+            
+            self.chk_od = tk.Checkbutton(od_frame, text="Divide I0 by Optical Density (OD)", variable=self.do_od_divide, command=self.update_plot, font=('TkDefaultFont', 9, 'bold'))
+            self.chk_od.grid(row=0, column=0, columnspan=4, padx=5, pady=2, sticky="w")
+            
+            tk.Label(od_frame, text="Compound:").grid(row=1, column=0, padx=5, pady=2, sticky="w")
+            self.ent_compound = ttk.Entry(od_frame, textvariable=self.od_compound, width=10)
+            self.ent_compound.grid(row=1, column=1, padx=5, pady=2, sticky="w")
+            self.ent_compound.bind("<Return>", self.update_plot)
+            self.ent_compound.bind("<FocusOut>", self.update_plot)
+            
+            tk.Label(od_frame, text="Density (g/cm³):").grid(row=1, column=2, padx=5, pady=2, sticky="w")
+            self.ent_density = ttk.Entry(od_frame, textvariable=self.od_density, width=8)
+            self.ent_density.grid(row=1, column=3, padx=5, pady=2, sticky="w")
+            self.ent_density.bind("<Return>", self.update_plot)
+            self.ent_density.bind("<FocusOut>", self.update_plot)
+            
+            tk.Label(od_frame, text="Thickness (µm):").grid(row=2, column=0, padx=5, pady=2, sticky="w")
+            self.ent_thickness = ttk.Entry(od_frame, textvariable=self.od_thickness, width=10)
+            self.ent_thickness.grid(row=2, column=1, padx=5, pady=2, sticky="w")
+            self.ent_thickness.bind("<Return>", self.update_plot)
+            self.ent_thickness.bind("<FocusOut>", self.update_plot)
+
+            self.chk_autoscale = tk.Checkbutton(od_frame, text="Auto-scale modified I0 magnitude to match starting I0", variable=self.do_autoscale, command=self.update_plot)
+            self.chk_autoscale.grid(row=2, column=2, columnspan=2, padx=5, pady=2, sticky="w")
+
+            # Status / Error Label
+            self.lbl_status = tk.Label(ctrl_frame, text="", fg="red", font=('TkDefaultFont', 9, 'italic'))
+            self.lbl_status.grid(row=6, column=0, columnspan=2, padx=5, pady=2, sticky="w")
+
+            btn_frame = tk.Frame(ctrl_frame)
+            btn_frame.grid(row=0, column=2, rowspan=7, padx=20, sticky="n")
+            
+            tk.Button(btn_frame, text="Apply", command=self.on_apply, width=15, bg='lightgreen').pack(pady=4)
+            tk.Button(btn_frame, text="Cancel", command=self.on_cancel, width=15, bg='lightcoral').pack(pady=4)
+            
+            # Plot Setup
+            self.fig = Figure(figsize=(7, 5))
+            self.canvas = FigureCanvasTkAgg(self.fig, master=self)
+            self.canvas.draw()
+            self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+            
+            toolbar = NavigationToolbar2Tk(self.canvas, self)
+            toolbar.update()
+            
+            self.update_plot()
+            
+        def _on_const_op_change(self, event=None):
+            op = self.cb_const_op.get()
+            if op == "Multiply":
+                self.lbl_const_formula.config(text="(I0' = I0 * C)")
+                try:
+                    if float(self.ent_const.get()) == 0.0:
+                        self.i0_const_offset.set(1.0)
+                except Exception:
+                    pass
+            elif op == "Divide":
+                self.lbl_const_formula.config(text="(I0' = I0 / C)")
+                try:
+                    if float(self.ent_const.get()) == 0.0:
+                        self.i0_const_offset.set(1.0)
+                except Exception:
+                    pass
+            else:
+                self.lbl_const_formula.config(text="(I0' = I0 + C)")
             self.update_plot()
 
-    def _on_const_return(self, event=None):
-        try:
-            val = float(self.ent_const.get())
-            if not self.do_const_offset.get():
-                self.do_const_offset.set(True)
-        except Exception:
-            pass
-        self.update_plot()
-
-    def update_plot(self, event=None):
-        self.lbl_status.config(text="")
-        e_col = self.cb_e.get()
-        i_col = self.cb_i.get()
-        
-        self.fig.clear()
-        
-        if e_col and i_col:
-            x = self.df[e_col].values
-            y = self.df[i_col].values
-            
-            idx = np.argsort(x)
-            x_sorted = np.array(x[idx], dtype=float)
-            y_sorted = np.array(y[idx], dtype=float)
-            
-            self.x_final = x_sorted
-            y_proc = np.copy(y_sorted)
-            
-            if self.do_smooth.get():
-                try:
-                    w = int(self.spin_window.get())
-                    if w % 2 == 0: w += 1
-                    if w < 3: w = 3
-                    
-                    if len(y_sorted) >= w:
-                        y_proc = savgol_filter(y_sorted, window_length=w, polyorder=2)
-                except Exception as e:
-                    self.lbl_status.config(text=f"Smoothing error: {e}")
-
-            const_val = 0.0
-            const_op = self.cb_const_op.get() if hasattr(self, 'cb_const_op') else "Add"
+        def _on_const_key(self, event=None):
             if self.do_const_offset.get():
-                try:
-                    const_val = float(self.ent_const.get())
-                    if const_op == "Multiply":
-                        y_proc = y_proc * const_val
-                    elif const_op == "Divide":
-                        if const_val != 0.0:
-                            y_proc = y_proc / const_val
-                        else:
-                            self.lbl_status.config(text="Constant division error: Cannot divide by zero")
-                    else:
-                        y_proc = y_proc + const_val
-                except (ValueError, TypeError):
-                    pass
-                except Exception as e:
-                    self.lbl_status.config(text=f"Constant modification error: {e}")
+                self.update_plot()
 
-            od_vals = None
-            od_error = None
-            compound_str = self.od_compound.get().strip()
+        def _on_const_return(self, event=None):
+            try:
+                val = float(self.ent_const.get())
+                if not self.do_const_offset.get():
+                    self.do_const_offset.set(True)
+            except Exception:
+                pass
+            self.update_plot()
+
+        def update_plot(self, event=None):
+            self.lbl_status.config(text="")
+            e_col = self.cb_e.get()
+            i_col = self.cb_i.get()
             
-            if self.do_od_divide.get():
-                if not HAS_SF:
-                    self.lbl_status.config(text="Warning: sf.py module or Henke database not available.")
-                elif compound_str:
-                    try:
-                        d_val = float(self.od_density.get())
-                        t_val = float(self.od_thickness.get())
-                        # Calculate Optical Density using sf module
-                        od_raw = sf(compound_str, x_sorted, result_type='od', density=d_val, thickness=t_val)
-                        if od_raw is not None:
-                            od_vals = np.array(od_raw, dtype=float)
-                            od_vals_safe = np.maximum(od_vals, 1e-12)
-                            y_od_div = y_proc / od_vals_safe
-                            
-                            if self.do_autoscale.get():
-                                mean_orig = np.nanmean(y_proc)
-                                mean_div = np.nanmean(y_od_div)
-                                if mean_div != 0 and not np.isnan(mean_div):
-                                    scale_factor = mean_orig / mean_div
-                                    y_od_div = y_od_div * scale_factor
-                            y_proc = y_od_div
-                        else:
-                            od_error = f"Invalid compound formula '{compound_str}'"
-                    except Exception as ex:
-                        od_error = f"OD calculation error: {ex}"
-                        
-            if od_error:
-                self.lbl_status.config(text=od_error)
+            self.fig.clear()
+            
+            if e_col and i_col:
+                x = self.df[e_col].values
+                y = self.df[i_col].values
                 
-            self.y_final = y_proc
-
-            # Layout subplots
-            if self.do_od_divide.get() and od_vals is not None:
-                gs = self.fig.add_gridspec(2, 1, height_ratios=[1.5, 1], hspace=0.15)
-                ax_top = self.fig.add_subplot(gs[0, 0])
-                ax_bot = self.fig.add_subplot(gs[1, 0], sharex=ax_top)
+                idx = np.argsort(x)
+                x_sorted = np.array(x[idx], dtype=float)
+                y_sorted = np.array(y[idx], dtype=float)
                 
-                # Top Subplot: Original vs Modified I0
-                ax_top.plot(x_sorted, y_sorted, color='gray', alpha=0.5, label='Raw I0')
+                self.x_final = x_sorted
+                y_proc = np.copy(y_sorted)
                 
-                mod_desc = []
                 if self.do_smooth.get():
-                    mod_desc.append(f"Smoothed (w={self.spin_window.get()})")
-                if self.do_const_offset.get() and const_val != 0.0:
-                    if const_op == "Multiply":
-                        mod_desc.append(f"Scale: *{const_val:.4g}")
-                    elif const_op == "Divide":
-                        mod_desc.append(f"Scale: /{const_val:.4g}")
-                    else:
-                        mod_desc.append(f"Offset: {const_val:+.4g}")
-                mod_desc.append(f"OD-Div ({compound_str})")
-                top_label = " & ".join(mod_desc) if mod_desc else "Modified I0"
-                
-                ax_top.plot(x_sorted, y_proc, 'b.-', label=top_label, linewidth=1.5)
-                    
-                if self.i0_calib_enabled.get():
                     try:
-                        shift = float(self.i0_energy_shift.get())
-                        ax_top.plot(x_sorted + shift, y_proc, 'r--', alpha=0.7, label=f'Shifted ({shift:+.2f} eV)')
-                    except: pass
+                        w = int(self.spin_window.get())
+                        if w % 2 == 0: w += 1
+                        if w < 3: w = 3
+                        
+                        if len(y_sorted) >= w:
+                            y_proc = savgol_filter(y_sorted, window_length=w, polyorder=2)
+                    except Exception as e:
+                        self.lbl_status.config(text=f"Smoothing error: {e}")
+
+                const_val = 0.0
+                const_op = self.cb_const_op.get() if hasattr(self, 'cb_const_op') else "Add"
+                if self.do_const_offset.get():
+                    try:
+                        const_val = float(self.ent_const.get())
+                        if const_op == "Multiply":
+                            y_proc = y_proc * const_val
+                        elif const_op == "Divide":
+                            if const_val != 0.0:
+                                y_proc = y_proc / const_val
+                            else:
+                                self.lbl_status.config(text="Constant division error: Cannot divide by zero")
+                        else:
+                            y_proc = y_proc + const_val
+                    except (ValueError, TypeError):
+                        pass
+                    except Exception as e:
+                        self.lbl_status.config(text=f"Constant modification error: {e}")
+
+                od_vals = None
+                od_error = None
+                compound_str = self.od_compound.get().strip()
+                
+                if self.do_od_divide.get():
+                    if not HAS_SF:
+                        self.lbl_status.config(text="Warning: sf.py module or Henke database not available.")
+                    elif compound_str:
+                        try:
+                            d_val = float(self.od_density.get())
+                            t_val = float(self.od_thickness.get())
+                            # Calculate Optical Density using sf module
+                            od_raw = sf(compound_str, x_sorted, result_type='od', density=d_val, thickness=t_val)
+                            if od_raw is not None:
+                                od_vals = np.array(od_raw, dtype=float)
+                                od_vals_safe = np.maximum(od_vals, 1e-12)
+                                y_od_div = y_proc / od_vals_safe
+                                
+                                if self.do_autoscale.get():
+                                    mean_orig = np.nanmean(y_proc)
+                                    mean_div = np.nanmean(y_od_div)
+                                    if mean_div != 0 and not np.isnan(mean_div):
+                                        scale_factor = mean_orig / mean_div
+                                        y_od_div = y_od_div * scale_factor
+                                y_proc = y_od_div
+                            else:
+                                od_error = f"Invalid compound formula '{compound_str}'"
+                        except Exception as ex:
+                            od_error = f"OD calculation error: {ex}"
+                            
+                if od_error:
+                    self.lbl_status.config(text=od_error)
                     
-                ax_top.set_ylabel(i_col)
-                if self.do_const_offset.get() and const_val != 0.0:
-                    if const_op == "Multiply":
-                        title_extra = f", Scale: *{const_val:.4g}"
-                    elif const_op == "Divide":
-                        title_extra = f", Scale: /{const_val:.4g}"
-                    else:
-                        title_extra = f", Offset: {const_val:+.4g}"
-                else:
-                    title_extra = ""
-                ax_top.set_title(f"I0 Preview: {i_col} (OD Divided by {compound_str}{title_extra})")
-                ax_top.legend(loc='upper right', fontsize=8)
-                ax_top.grid(True, linestyle='--', alpha=0.6)
-                plt.setp(ax_top.get_xticklabels(), visible=False)
-                
-                # Bottom Subplot: Optical Density curve
-                ax_bot.plot(x_sorted, od_vals, color='#2ca02c', linewidth=1.8, label=f"OD ({compound_str})")
-                ax_bot.set_xlabel(f"{e_col} (eV)")
-                ax_bot.set_ylabel("Optical Density")
-                ax_bot.legend(loc='upper right', fontsize=8)
-                ax_bot.grid(True, linestyle='--', alpha=0.6)
-            else:
-                ax = self.fig.add_subplot(111)
-                is_modified = self.do_smooth.get() or self.do_const_offset.get()
-                
-                if is_modified:
-                    # Show Raw I0 in gray and Modified I0 in blue for instant visual comparison
-                    ax.plot(x_sorted, y_sorted, color='gray', alpha=0.5, label='Raw I0')
+                self.y_final = y_proc
+
+                # Layout subplots
+                if self.do_od_divide.get() and od_vals is not None:
+                    gs = self.fig.add_gridspec(2, 1, height_ratios=[1.5, 1], hspace=0.15)
+                    ax_top = self.fig.add_subplot(gs[0, 0])
+                    ax_bot = self.fig.add_subplot(gs[1, 0], sharex=ax_top)
+                    
+                    # Top Subplot: Original vs Modified I0
+                    ax_top.plot(x_sorted, y_sorted, color='gray', alpha=0.5, label='Raw I0')
                     
                     mod_desc = []
                     if self.do_smooth.get():
                         mod_desc.append(f"Smoothed (w={self.spin_window.get()})")
-                    if self.do_const_offset.get():
+                    if self.do_const_offset.get() and const_val != 0.0:
                         if const_op == "Multiply":
                             mod_desc.append(f"Scale: *{const_val:.4g}")
                         elif const_op == "Divide":
                             mod_desc.append(f"Scale: /{const_val:.4g}")
                         else:
                             mod_desc.append(f"Offset: {const_val:+.4g}")
+                    mod_desc.append(f"OD-Div ({compound_str})")
+                    top_label = " & ".join(mod_desc) if mod_desc else "Modified I0"
                     
-                    mod_label = "Modified I0 (" + ", ".join(mod_desc) + ")"
-                    ax.plot(x_sorted, y_proc, 'b.-', label=mod_label, linewidth=1.5)
-                    ax.legend(loc='best', fontsize=8)
-                else:
-                    ax.plot(x_sorted, y_proc, 'b.-', label='I0')
-                    
-                ax.set_xlabel(e_col)
-                ax.set_ylabel(i_col)
-                
-                title_mods = []
-                if self.do_const_offset.get():
-                    if const_op == "Multiply":
-                        title_mods.append(f"Scale: *{const_val:.4g}")
-                    elif const_op == "Divide":
-                        title_mods.append(f"Scale: /{const_val:.4g}")
+                    ax_top.plot(x_sorted, y_proc, 'b.-', label=top_label, linewidth=1.5)
+                        
+                    if self.i0_calib_enabled.get():
+                        try:
+                            shift = float(self.i0_energy_shift.get())
+                            ax_top.plot(x_sorted + shift, y_proc, 'r--', alpha=0.7, label=f'Shifted ({shift:+.2f} eV)')
+                        except: pass
+                        
+                    ax_top.set_ylabel(i_col)
+                    if self.do_const_offset.get() and const_val != 0.0:
+                        if const_op == "Multiply":
+                            title_extra = f", Scale: *{const_val:.4g}"
+                        elif const_op == "Divide":
+                            title_extra = f", Scale: /{const_val:.4g}"
+                        else:
+                            title_extra = f", Offset: {const_val:+.4g}"
                     else:
-                        title_mods.append(f"Offset: {const_val:+.4g}")
-                if self.do_smooth.get():
-                    title_mods.append("Smoothed")
-                if self.i0_calib_enabled.get():
-                    try:
-                        shift = float(self.i0_energy_shift.get())
-                        title_mods.append(f"Shift: {shift:+.2f} eV")
-                    except: pass
-                
-                title_str = f"Preview: {i_col} vs {e_col}"
-                if title_mods:
-                    title_str += f" ({', '.join(title_mods)})"
-                ax.set_title(title_str)
-                ax.grid(True, linestyle='--', alpha=0.6)
-                
-                if self.i0_calib_enabled.get():
-                    try:
-                        shift = float(self.i0_energy_shift.get())
-                        ax.plot(x_sorted + shift, y_proc, 'r--', alpha=0.7, label=f'Shifted ({shift:+.2f} eV)')
-                        ax.legend(loc='best', fontsize=8)
-                    except: pass
-            
-        try:
-            self.fig.tight_layout()
-        except Exception:
-            self.fig.subplots_adjust(top=0.92, bottom=0.12, left=0.12, right=0.95, hspace=0.25)
-        self.canvas.draw()
-        
-    def _close_dialog(self):
-        try:
-            self.grab_release()
-        except Exception:
-            pass
-        try:
-            self.withdraw()
-            self.update()
-        except Exception:
-            pass
-        try:
-            self.destroy()
-        except Exception:
-            pass
-        try:
-            if self.master:
-                self.master.update()
-        except Exception:
-            pass
-        try:
-            self.quit()
-        except Exception:
-            pass
-
-    def on_apply(self):
-        smoothed_str = f" (Smoothed w={self.spin_window.get()})" if self.do_smooth.get() else ""
-        const_str = ""
-        c_val = 0.0
-        c_op = self.cb_const_op.get() if hasattr(self, 'cb_const_op') else "Add"
-        if self.do_const_offset.get():
-            try:
-                c_val = float(self.ent_const.get())
-                if c_op == "Multiply":
-                    const_str = f" (* Constant: {c_val:.4g})"
-                elif c_op == "Divide":
-                    const_str = f" (/ Constant: {c_val:.4g})"
+                        title_extra = ""
+                    ax_top.set_title(f"I0 Preview: {i_col} (OD Divided by {compound_str}{title_extra})")
+                    ax_top.legend(loc='upper right', fontsize=8)
+                    ax_top.grid(True, linestyle='--', alpha=0.6)
+                    plt.setp(ax_top.get_xticklabels(), visible=False)
+                    
+                    # Bottom Subplot: Optical Density curve
+                    ax_bot.plot(x_sorted, od_vals, color='#2ca02c', linewidth=1.8, label=f"OD ({compound_str})")
+                    ax_bot.set_xlabel(f"{e_col} (eV)")
+                    ax_bot.set_ylabel("Optical Density")
+                    ax_bot.legend(loc='upper right', fontsize=8)
+                    ax_bot.grid(True, linestyle='--', alpha=0.6)
                 else:
-                    const_str = f" (+ Constant: {c_val:+.4g})"
+                    ax = self.fig.add_subplot(111)
+                    is_modified = self.do_smooth.get() or self.do_const_offset.get()
+                    
+                    if is_modified:
+                        # Show Raw I0 in gray and Modified I0 in blue for instant visual comparison
+                        ax.plot(x_sorted, y_sorted, color='gray', alpha=0.5, label='Raw I0')
+                        
+                        mod_desc = []
+                        if self.do_smooth.get():
+                            mod_desc.append(f"Smoothed (w={self.spin_window.get()})")
+                        if self.do_const_offset.get():
+                            if const_op == "Multiply":
+                                mod_desc.append(f"Scale: *{const_val:.4g}")
+                            elif const_op == "Divide":
+                                mod_desc.append(f"Scale: /{const_val:.4g}")
+                            else:
+                                mod_desc.append(f"Offset: {const_val:+.4g}")
+                        
+                        mod_label = "Modified I0 (" + ", ".join(mod_desc) + ")"
+                        ax.plot(x_sorted, y_proc, 'b.-', label=mod_label, linewidth=1.5)
+                        ax.legend(loc='best', fontsize=8)
+                    else:
+                        ax.plot(x_sorted, y_proc, 'b.-', label='I0')
+                        
+                    ax.set_xlabel(e_col)
+                    ax.set_ylabel(i_col)
+                    
+                    title_mods = []
+                    if self.do_const_offset.get():
+                        if const_op == "Multiply":
+                            title_mods.append(f"Scale: *{const_val:.4g}")
+                        elif const_op == "Divide":
+                            title_mods.append(f"Scale: /{const_val:.4g}")
+                        else:
+                            title_mods.append(f"Offset: {const_val:+.4g}")
+                    if self.do_smooth.get():
+                        title_mods.append("Smoothed")
+                    if self.i0_calib_enabled.get():
+                        try:
+                            shift = float(self.i0_energy_shift.get())
+                            title_mods.append(f"Shift: {shift:+.2f} eV")
+                        except: pass
+                    
+                    title_str = f"Preview: {i_col} vs {e_col}"
+                    if title_mods:
+                        title_str += f" ({', '.join(title_mods)})"
+                    ax.set_title(title_str)
+                    ax.grid(True, linestyle='--', alpha=0.6)
+                    
+                    if self.i0_calib_enabled.get():
+                        try:
+                            shift = float(self.i0_energy_shift.get())
+                            ax.plot(x_sorted + shift, y_proc, 'r--', alpha=0.7, label=f'Shifted ({shift:+.2f} eV)')
+                            ax.legend(loc='best', fontsize=8)
+                        except: pass
+                
+            try:
+                self.fig.tight_layout()
+            except Exception:
+                self.fig.subplots_adjust(top=0.92, bottom=0.12, left=0.12, right=0.95, hspace=0.25)
+            self.canvas.draw()
+            
+        def _close_dialog(self):
+            try:
+                self.grab_release()
             except Exception:
                 pass
-        self.const_val = c_val
-        self.const_op = c_op
-        shift_str = f" (Energy Shift: {self.i0_energy_shift.get():+.2f} eV)" if self.i0_calib_enabled.get() else ""
-        od_str = ""
-        if self.do_od_divide.get():
-            c_str = self.od_compound.get().strip()
-            d_str = self.od_density.get()
-            t_str = self.od_thickness.get()
-            scale_str = " auto-scaled" if self.do_autoscale.get() else ""
-            od_str = f" (Divided by OD: {c_str} ρ={d_str} t={t_str}µm{scale_str})"
-        if c_val != 0.0:
-            if c_op == "Multiply":
-                console_log(f"[I0 Preview] Constant multiplication applied: *{c_val:.4g}")
-            elif c_op == "Divide":
-                console_log(f"[I0 Preview] Constant division applied: /{c_val:.4g}")
-            else:
-                console_log(f"[I0 Preview] Constant offset applied: {c_val:+.4g}")
+            try:
+                self.withdraw()
+                self.update()
+            except Exception:
+                pass
+            try:
+                self.destroy()
+            except Exception:
+                pass
+            try:
+                if self.master:
+                    self.master.update()
+            except Exception:
+                pass
+            try:
+                self.quit()
+            except Exception:
+                pass
+
+        def on_apply(self):
+            smoothed_str = f" (Smoothed w={self.spin_window.get()})" if self.do_smooth.get() else ""
+            const_str = ""
+            c_val = 0.0
+            c_op = self.cb_const_op.get() if hasattr(self, 'cb_const_op') else "Add"
+            if self.do_const_offset.get():
+                try:
+                    c_val = float(self.ent_const.get())
+                    if c_op == "Multiply":
+                        const_str = f" (* Constant: {c_val:.4g})"
+                    elif c_op == "Divide":
+                        const_str = f" (/ Constant: {c_val:.4g})"
+                    else:
+                        const_str = f" (+ Constant: {c_val:+.4g})"
+                except Exception:
+                    pass
+            self.const_val = c_val
+            self.const_op = c_op
+            shift_str = f" (Energy Shift: {self.i0_energy_shift.get():+.2f} eV)" if self.i0_calib_enabled.get() else ""
+            od_str = ""
+            if self.do_od_divide.get():
+                c_str = self.od_compound.get().strip()
+                d_str = self.od_density.get()
+                t_str = self.od_thickness.get()
+                scale_str = " auto-scaled" if self.do_autoscale.get() else ""
+                od_str = f" (Divided by OD: {c_str} ρ={d_str} t={t_str}µm{scale_str})"
+            if c_val != 0.0:
+                if c_op == "Multiply":
+                    console_log(f"[I0 Preview] Constant multiplication applied: *{c_val:.4g}")
+                elif c_op == "Divide":
+                    console_log(f"[I0 Preview] Constant division applied: /{c_val:.4g}")
+                else:
+                    console_log(f"[I0 Preview] Constant offset applied: {c_val:+.4g}")
+                
+            self.result = (
+                self.cb_e.get(), 
+                self.cb_i.get(), 
+                self.x_final, 
+                self.y_final, 
+                smoothed_str + const_str + shift_str + od_str, 
+                self.i0_calib_enabled.get(), 
+                self.i0_energy_shift.get(),
+                c_val,
+                c_op
+            )
+            self._close_dialog()
             
-        self.result = (
-            self.cb_e.get(), 
-            self.cb_i.get(), 
-            self.x_final, 
-            self.y_final, 
-            smoothed_str + const_str + shift_str + od_str, 
-            self.i0_calib_enabled.get(), 
-            self.i0_energy_shift.get(),
-            c_val,
-            c_op
-        )
-        self._close_dialog()
-        
-    def on_cancel(self):
-        self.result = None
-        self._close_dialog()
+        def on_cancel(self):
+            self.result = None
+            self._close_dialog()
 else:
     class ExternalI0PreviewDialog:
         def __init__(self, *args, **kwargs):
@@ -788,6 +786,69 @@ def get_dynamic_mask(cx, cy, xt, yt, roi=None, poly=None):
         x1, x2 = sorted(roi[0:2]); y1, y2 = sorted(roi[2:4])
         mask &= (cx >= x1) & (cx <= x2) & (cy >= y1) & (cy <= y2)
     return mask
+
+def compute_optimal_scatter_size(ax, x, y, view_xlim=None, view_ylim=None):
+    """
+    Computes the optimal Matplotlib scatter marker area `s` (in points^2) so that
+    each square marker ('s') matches one physical scan pixel on `ax`.
+    Prevents oversized default markers (s=36 pt^2) from overlapping across pixels
+    in high-resolution bidirectional (serpentine) scans, which otherwise causes
+    shifted ghost/shadow duplicates between even (L->R) and odd (R->L) scan rows.
+    """
+    try:
+        if x is None or y is None or len(x) < 2 or len(y) < 2:
+            return 4.0
+
+        dx_arr = np.abs(np.diff(x))
+        valid_dx = dx_arr[dx_arr > 1e-5]
+        step_x = float(np.median(valid_dx)) if valid_dx.size > 0 else 0.0
+
+        dy_arr = np.abs(np.diff(y))
+        valid_dy = dy_arr[dy_arr > 1e-5]
+        step_y = float(np.median(valid_dy)) if valid_dy.size > 0 else 0.0
+
+        if step_x <= 0.0 and step_y <= 0.0:
+            return 4.0
+        step_x = step_x if step_x > 0.0 else step_y
+        step_y = step_y if step_y > 0.0 else step_x
+        step = min(step_x, step_y)
+
+        if view_xlim is not None and view_ylim is not None:
+            x_span = abs(view_xlim[1] - view_xlim[0]) + step_x
+            y_span = abs(view_ylim[1] - view_ylim[0]) + step_y
+        else:
+            x_span = float(np.max(x) - np.min(x)) + step_x
+            y_span = float(np.max(y) - np.min(y)) + step_y
+
+        fig = ax.figure
+        bbox = ax.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
+        w_pt = max(float(bbox.width) * 72.0, 10.0)
+        h_pt = max(float(bbox.height) * 72.0, 10.0)
+
+        pt_per_mm = min(w_pt / max(x_span, step_x), h_pt / max(y_span, step_y))
+        side_pt = step * pt_per_mm * 1.02
+        return float(np.clip(side_pt ** 2, 0.04, 36.0))
+    except Exception:
+        return 1.0
+
+def attach_dynamic_scatter_resizer(ax, scatter_artist, x, y):
+    """
+    Updates the scatter marker size dynamically when the user zooms or pans the map axis.
+    """
+    state = {'updating': False}
+    def _on_lims_change(_ax):
+        if state['updating']:
+            return
+        state['updating'] = True
+        try:
+            new_s = compute_optimal_scatter_size(ax, x, y, view_xlim=ax.get_xlim(), view_ylim=ax.get_ylim())
+            scatter_artist.set_sizes([new_s])
+        except Exception:
+            pass
+        finally:
+            state['updating'] = False
+    ax.callbacks.connect('xlim_changed', _on_lims_change)
+    ax.callbacks.connect('ylim_changed', _on_lims_change)
 
 def generate_gaussian_psf(fwhm_x, fwhm_y, shape=(15, 15)):
     """Generates a normalized 2D Gaussian PSF."""
@@ -1560,7 +1621,7 @@ class DashboardRow:
                     self.sc_en.set_clim(vmin, vmax)
                 
                 det_id = int(self.name.replace('sdd','')) if 'sdd' in self.name else None
-                title_name = (SDD_NAMES.get(det_id, self.name) if det_id else 
+                title_name = (get_sdd_label(det_id, self.ctx) if det_id else 
                              (MCC_NAMES.get(int(self.name.replace('mcc','')), self.name) if self.is_mcc else self.name))
                 self.ax[0].set_title(f"{title_name} @ {self.rep_e:.2f} eV", fontsize='small')
             except Exception as e:
@@ -1750,7 +1811,7 @@ class DashboardRow:
                 ch_slice = slice(ch1, ch2)
             else:
                 ch1, ch2 = self.ctx['channel_roi']
-                ch_slice = slice(ch1, ch2)
+                ch_slice = slice(ch1, ch2 + 1)
             m_rep = np.sum(self.s2d_rep[:, ch_slice], axis=1)
             
         tm = get_dynamic_mask(self.ctx['x_coords'][:len(m_rep)], self.ctx['y_coords'][:len(m_rep)], self.ctx['x_trim'], self.ctx['y_trim'])
@@ -1784,24 +1845,31 @@ class DashboardRow:
         fig_en = Figure(figsize=(6,6))
         canvas_en = FigureCanvasAgg(fig_en)
         ax_en = fig_en.add_subplot(111)
+        x_en_tm = self.ctx['x_coords'][:len(m_rep)][tm]
+        y_en_tm = self.ctx['y_coords'][:len(m_rep)][tm]
         as_scatter = self.ctx.get('as_scatter_plot', False)
         if as_scatter:
-            ax_en.scatter(self.ctx['x_coords'][:len(m_rep)][tm], self.ctx['y_coords'][:len(m_rep)][tm], c=m_rep[tm], 
+            s_en = compute_optimal_scatter_size(ax_en, x_en_tm, y_en_tm)
+            ax_en.scatter(x_en_tm, y_en_tm, c=m_rep[tm], s=s_en,
                           cmap=cmap, norm=norm, marker='s', edgecolors='none', rasterized=True)
         else:
             try:
-                ax_en.tripcolor(self.ctx['x_coords'][:len(m_rep)][tm], self.ctx['y_coords'][:len(m_rep)][tm], m_rep[tm], 
+                ax_en.tripcolor(x_en_tm, y_en_tm, m_rep[tm], 
                                  shading='gouraud', edgecolors='none', rasterized=True, cmap=cmap, norm=norm)
             except Exception:
-                ax_en.scatter(self.ctx['x_coords'][:len(m_rep)][tm], self.ctx['y_coords'][:len(m_rep)][tm], c=m_rep[tm], 
+                s_en = compute_optimal_scatter_size(ax_en, x_en_tm, y_en_tm)
+                ax_en.scatter(x_en_tm, y_en_tm, c=m_rep[tm], s=s_en,
                               cmap=cmap, norm=norm, marker='s', edgecolors='none', rasterized=True)
+        det_id = int(self.name.replace('sdd','')) if 'sdd' in self.name else None
+        title_name = (get_sdd_label(det_id, self.ctx) if det_id else 
+                     (MCC_NAMES.get(int(self.name.replace('mcc','')), self.name) if self.is_mcc else self.name))
         ax_en.set_aspect('equal'); ax_en.axis('off')
-        fig_en.savefig(path_en_png, bbox_inches='tight', pad_inches=0, transparent=True)
+        fig_en.savefig(path_en_png, bbox_inches='tight', pad_inches=0, transparent=True, metadata={'Description': f"{title_name} @ {self.rep_e:.2f} eV"})
         try:
             fig_en.savefig(path_en_tif, bbox_inches='tight', pad_inches=0, transparent=True)
         except Exception as e:
             print(f"    ! Warning saving TIFF {path_en_tif}: {e}")
-        print(f"    -> [SAVE] Energy Map: {path_en_png} & {path_en_tif}", flush=True)
+        print(f"    -> [SAVE] Energy Map ({title_name}): {path_en_png} & {path_en_tif}", flush=True)
 
         # Export Average Map
         base_name_avg = f"{self.ctx['scan_name']}_{self.name}_StackAverage"
@@ -1831,41 +1899,55 @@ class DashboardRow:
         fig_avg = Figure(figsize=(6,6))
         canvas_avg = FigureCanvasAgg(fig_avg)
         ax_avg = fig_avg.add_subplot(111)
+        x_avg_tm = self.ctx['x_coords'][:len(m_avg)][tm]
+        y_avg_tm = self.ctx['y_coords'][:len(m_avg)][tm]
         if as_scatter:
-            ax_avg.scatter(self.ctx['x_coords'][:len(m_avg)][tm], self.ctx['y_coords'][:len(m_avg)][tm], c=m_avg[tm], 
+            s_avg = compute_optimal_scatter_size(ax_avg, x_avg_tm, y_avg_tm)
+            ax_avg.scatter(x_avg_tm, y_avg_tm, c=m_avg[tm], s=s_avg,
                            cmap=cmap, norm=norm, marker='s', edgecolors='none', rasterized=True)
         else:
             try:
-                ax_avg.tripcolor(self.ctx['x_coords'][:len(m_avg)][tm], self.ctx['y_coords'][:len(m_avg)][tm], m_avg[tm], 
+                ax_avg.tripcolor(x_avg_tm, y_avg_tm, m_avg[tm], 
                                  shading='gouraud', edgecolors='none', rasterized=True, cmap=cmap, norm=norm)
             except Exception:
-                ax_avg.scatter(self.ctx['x_coords'][:len(m_avg)][tm], self.ctx['y_coords'][:len(m_avg)][tm], c=m_avg[tm], 
+                s_avg = compute_optimal_scatter_size(ax_avg, x_avg_tm, y_avg_tm)
+                ax_avg.scatter(x_avg_tm, y_avg_tm, c=m_avg[tm], s=s_avg,
                                cmap=cmap, norm=norm, marker='s', edgecolors='none', rasterized=True)
         ax_avg.set_aspect('equal'); ax_avg.axis('off')
-        fig_avg.savefig(path_avg_png, bbox_inches='tight', pad_inches=0, transparent=True)
+        fig_avg.savefig(path_avg_png, bbox_inches='tight', pad_inches=0, transparent=True, metadata={'Description': f"{title_name} - Stack Average"})
         try:
             fig_avg.savefig(path_avg_tif, bbox_inches='tight', pad_inches=0, transparent=True)
         except Exception as e:
             print(f"    ! Warning saving TIFF {path_avg_tif}: {e}")
-        print(f"    -> [SAVE] Average Map: {path_avg_png} & {path_avg_tif}", flush=True)
+        print(f"    -> [SAVE] Average Map ({title_name}): {path_avg_png} & {path_avg_tif}", flush=True)
 
     def plot(self):
         # Use a unique but persistent figure ID for each detector
         fig_id = f"dash_{self.name}_{id(self.sync)}"
         self.fig, self.ax = plt.subplots(1, 3, figsize=(10.5, 3.36), num=fig_id)
+        self.fig.subplots_adjust(left=0.06, right=0.97, bottom=0.2, top=0.85, wspace=0.18)
         cmap = 'viridis' if self.sync.use_color else 'gray'
         
         if self.is_mcc:
             m_rep = self.s2d_rep
         else:
-            m_rep = np.sum(self.s2d_rep[:, self.ctx['channel_roi'][0]:self.ctx['channel_roi'][1]], axis=1)
+            if self.sync.use_sdd_calib:
+                e1, e2 = self.sync.energy_roi
+                ch1, ch2 = sdd_calib.get_calibrated_bounds(e1, e2, self.name, self.sync.sdd_calib_data)
+                ch_slice = slice(ch1, ch2)
+            else:
+                ch1, ch2 = self.ctx['channel_roi']
+                ch_slice = slice(ch1, ch2 + 1)
+            m_rep = np.sum(self.s2d_rep[:, ch_slice], axis=1)
             
         tm = get_dynamic_mask(self.ctx['x_coords'][:len(m_rep)], self.ctx['y_coords'][:len(m_rep)], self.ctx['x_trim'], self.ctx['y_trim'])
         m_rep_plot = m_rep[tm]
+        x_rep_tm = self.ctx['x_coords'][:len(m_rep)][tm]
+        y_rep_tm = self.ctx['y_coords'][:len(m_rep)][tm]
         if self.sync.use_deconv and not self.is_mcc:
             m_rep_plot = apply_deconvolution_to_map(
-                self.ctx['x_coords'][:len(m_rep)][tm],
-                self.ctx['y_coords'][:len(m_rep)][tm],
+                x_rep_tm,
+                y_rep_tm,
                 m_rep_plot,
                 self.sync.deconv_fwhm_um,
                 self.sync.deconv_iterations,
@@ -1874,32 +1956,36 @@ class DashboardRow:
             
         as_scatter = self.ctx.get('as_scatter_plot', False)
         if as_scatter:
-            self.sc_en = self.ax[0].scatter(self.ctx['x_coords'][:len(m_rep)][tm], self.ctx['y_coords'][:len(m_rep)][tm],
-                                            c=m_rep_plot, cmap=cmap, marker='s', edgecolors='none', rasterized=True)
+            s_en = compute_optimal_scatter_size(self.ax[0], x_rep_tm, y_rep_tm)
+            self.sc_en = self.ax[0].scatter(x_rep_tm, y_rep_tm,
+                                            c=m_rep_plot, s=s_en, cmap=cmap, marker='s', edgecolors='none', rasterized=True)
+            attach_dynamic_scatter_resizer(self.ax[0], self.sc_en, x_rep_tm, y_rep_tm)
         else:
-            tri_en = get_masked_triangulation(self.ctx['x_coords'][:len(m_rep)][tm], self.ctx['y_coords'][:len(m_rep)][tm])
+            tri_en = get_masked_triangulation(x_rep_tm, y_rep_tm)
             if tri_en is not None:
                 self.sc_en = self.ax[0].tripcolor(tri_en, m_rep_plot, 
                                             shading='gouraud', edgecolors='none', rasterized=True, cmap=cmap)
             else:
                 try:
-                    self.sc_en = self.ax[0].tripcolor(self.ctx['x_coords'][:len(m_rep)][tm], self.ctx['y_coords'][:len(m_rep)][tm], m_rep_plot,
+                    self.sc_en = self.ax[0].tripcolor(x_rep_tm, y_rep_tm, m_rep_plot,
                                                 shading='gouraud', edgecolors='none', rasterized=True, cmap=cmap)
                 except Exception:
-                    self.sc_en = self.ax[0].scatter(self.ctx['x_coords'][:len(m_rep)][tm], self.ctx['y_coords'][:len(m_rep)][tm],
-                                                    c=m_rep_plot, cmap=cmap, marker='s', edgecolors='none', rasterized=True)
+                    s_en = compute_optimal_scatter_size(self.ax[0], x_rep_tm, y_rep_tm)
+                    self.sc_en = self.ax[0].scatter(x_rep_tm, y_rep_tm,
+                                                    c=m_rep_plot, s=s_en, cmap=cmap, marker='s', edgecolors='none', rasterized=True)
+                    attach_dynamic_scatter_resizer(self.ax[0], self.sc_en, x_rep_tm, y_rep_tm)
         plt.colorbar(self.sc_en, ax=self.ax[0]); self.ax[0].set_aspect('equal')
         
         # Explicitly set limits to the data range to avoid expansion from patches
         if np.any(tm):
-            x_data = self.ctx['x_coords'][:len(m_rep)][tm]
-            y_data = self.ctx['y_coords'][:len(m_rep)][tm]
+            x_data = x_rep_tm
+            y_data = y_rep_tm
             if len(x_data) > 0 and len(y_data) > 0:
                 self.ax[0].set_xlim(np.min(x_data), np.max(x_data))
                 self.ax[0].set_ylim(np.min(y_data), np.max(y_data))
             
         det_id = int(self.name.replace('sdd','')) if 'sdd' in self.name else None
-        title_name = (SDD_NAMES.get(det_id, self.name) if det_id else 
+        title_name = (get_sdd_label(det_id, self.ctx) if det_id else 
                      (MCC_NAMES.get(int(self.name.replace('mcc','')), self.name) if self.is_mcc else self.name))
         self.ax[0].set_title(f"{title_name} @ {self.rep_e:.2f} eV", fontsize='small')
         self.ax[0].set_xlabel("X (mm)")
@@ -1911,10 +1997,12 @@ class DashboardRow:
             avg_map_raw = np.zeros(self.ctx['x_coords'].size, dtype=np.float32)
         m_avg = avg_map_raw / num_en
         m_avg_plot = m_avg[tm]
+        x_avg_tm = self.ctx['x_coords'][:len(m_avg)][tm]
+        y_avg_tm = self.ctx['y_coords'][:len(m_avg)][tm]
         if self.sync.use_deconv and not self.is_mcc:
             m_avg_plot = apply_deconvolution_to_map(
-                self.ctx['x_coords'][:len(m_avg)][tm],
-                self.ctx['y_coords'][:len(m_avg)][tm],
+                x_avg_tm,
+                y_avg_tm,
                 m_avg_plot,
                 self.sync.deconv_fwhm_um,
                 self.sync.deconv_iterations,
@@ -1922,20 +2010,24 @@ class DashboardRow:
             )
             
         if as_scatter:
-            self.sc_avg = self.ax[1].scatter(self.ctx['x_coords'][:len(m_avg)][tm], self.ctx['y_coords'][:len(m_avg)][tm],
-                                             c=m_avg_plot, cmap=cmap, marker='s', edgecolors='none', rasterized=True)
+            s_avg = compute_optimal_scatter_size(self.ax[1], x_avg_tm, y_avg_tm)
+            self.sc_avg = self.ax[1].scatter(x_avg_tm, y_avg_tm,
+                                             c=m_avg_plot, s=s_avg, cmap=cmap, marker='s', edgecolors='none', rasterized=True)
+            attach_dynamic_scatter_resizer(self.ax[1], self.sc_avg, x_avg_tm, y_avg_tm)
         else:
-            tri_avg = get_masked_triangulation(self.ctx['x_coords'][:len(m_avg)][tm], self.ctx['y_coords'][:len(m_avg)][tm])
+            tri_avg = get_masked_triangulation(x_avg_tm, y_avg_tm)
             if tri_avg is not None:
                 self.sc_avg = self.ax[1].tripcolor(tri_avg, m_avg_plot,
                                              shading='gouraud', edgecolors='none', rasterized=True, cmap=cmap)
             else:
                 try:
-                    self.sc_avg = self.ax[1].tripcolor(self.ctx['x_coords'][:len(m_avg)][tm], self.ctx['y_coords'][:len(m_avg)][tm], m_avg_plot,
+                    self.sc_avg = self.ax[1].tripcolor(x_avg_tm, y_avg_tm, m_avg_plot,
                                                  shading='gouraud', edgecolors='none', rasterized=True, cmap=cmap)
                 except Exception:
-                    self.sc_avg = self.ax[1].scatter(self.ctx['x_coords'][:len(m_avg)][tm], self.ctx['y_coords'][:len(m_avg)][tm],
-                                                     c=m_avg_plot, cmap=cmap, marker='s', edgecolors='none', rasterized=True)
+                    s_avg = compute_optimal_scatter_size(self.ax[1], x_avg_tm, y_avg_tm)
+                    self.sc_avg = self.ax[1].scatter(x_avg_tm, y_avg_tm,
+                                                     c=m_avg_plot, s=s_avg, cmap=cmap, marker='s', edgecolors='none', rasterized=True)
+                    attach_dynamic_scatter_resizer(self.ax[1], self.sc_avg, x_avg_tm, y_avg_tm)
         plt.colorbar(self.sc_avg, ax=self.ax[1]); self.ax[1].set_aspect('equal')
         
         if np.any(tm):
@@ -2553,8 +2645,10 @@ class SummaryDashboard:
                     else:
                         rows.append(f"# I0 Constant Offset: {const_offset_meta:+.4g} (I0 modified by adding constant {const_offset_meta:+.4g})")
                         console_log(f"  [METADATA] I0 was modified by adding constant: {const_offset_meta:+.4g}")
+                sdd_pos_str = "; ".join([get_sdd_label(d, self.ctx) for d in self.ctx['detector_names']])
                 rows += calib_meta_rows
                 rows += [
+                    f"# SDD Detector Positions: {sdd_pos_str}",
                     f"# Active SDD Selection for Selected Average: {sel_str}",
                     f"# Excluded SDD Detectors: {excl_str}",
                 ]
@@ -2577,14 +2671,14 @@ class SummaryDashboard:
                 c_idx = 3
                 # List Raw Columns
                 for det in self.ctx['detector_names']:
-                    label = SDD_NAMES.get(int(det.replace('sdd','')), det) if 'sdd' in det else det
+                    label = get_sdd_label(det, self.ctx)
                     rows.append(f"# Column {c_idx}: RAW_{label}"); c_idx += 1
                 rows.append(f"# Column {c_idx}: RAW_Average_SDD (All)"); c_idx += 1
                 rows.append(f"# Column {c_idx}: RAW_Selected_Average_SDD ({sel_str})"); c_idx += 1
                 
                 # List Normalized Columns
                 for det in self.ctx['detector_names']:
-                    label = SDD_NAMES.get(int(det.replace('sdd','')), det) if 'sdd' in det else det
+                    label = get_sdd_label(det, self.ctx)
                     if ipfy_active:
                         off_val = ipfy_offsets.get(det, 0.0)
                         rows.append(f"# Column {c_idx}: NORM_IPFY_{label} (Inverted: -1*(RAW/{i0_source}) + {off_val:.2f})"); c_idx += 1
@@ -2836,8 +2930,10 @@ class SummaryDashboard:
                     f"# Image Energy: {self.sync.all_energies[self.sync.energy_idx]:.2f} eV",
                     f"# Selection Coordinates: {roi if mode=='rect' else poly}",
                 ]
+                sdd_pos_str = "; ".join([get_sdd_label(d, self.ctx) for d in self.ctx['detector_names']])
                 rows += calib_meta_rows
                 rows += [
+                    f"# SDD Detector Positions: {sdd_pos_str}",
                     f"# Active SDD Selection for Selected Average: {sel_str}",
                     f"# Excluded SDD Detectors: {excl_str}",
                     "#"
@@ -2847,7 +2943,8 @@ class SummaryDashboard:
                 rows.append("# Column 2: Channel")
                 c_idx = 3
                 for det in self.ctx['detector_names']:
-                    rows.append(f"# Column {c_idx}: {det}"); c_idx += 1
+                    label = get_sdd_label(det, self.ctx)
+                    rows.append(f"# Column {c_idx}: {label}"); c_idx += 1
                 rows.append(f"# Column {c_idx}: Average_SDD (All)"); c_idx += 1
                 rows.append(f"# Column {c_idx}: Selected_Average_SDD ({sel_str})"); c_idx += 1
                 rows.append("#")
@@ -3087,8 +3184,7 @@ class SummaryDashboard:
             
             # 1. Plot Raw Fluorescence (Top)
             for det in self.ctx['detector_names']:
-                det_id = int(det.replace('sdd','')) if 'sdd' in det else None
-                label = SDD_NAMES.get(det_id, det) if det_id else det
+                label = get_sdd_label(det, self.ctx)
                 l, = ax_raw_sdd.plot(self.ctx['calibrated_energies'], self.ctx['summary_data'][det], fmt, label=f"Raw {label}", alpha=0.7)
                 self.det_lines_raw[det] = l
             self.avg_line_raw, = ax_raw_sdd.plot(self.ctx['calibrated_energies'], self.ctx['avg_dependence'], 'k-', lw=2, label='All Average')
@@ -3174,8 +3270,7 @@ class SummaryDashboard:
             
             norm_avg_init = []
             for det in self.ctx['detector_names']:
-                det_id = int(det.replace('sdd','')) if 'sdd' in det else None
-                label = SDD_NAMES.get(det_id, det) if det_id else det
+                label = get_sdd_label(det, self.ctx)
                 norm_data = self.ctx['summary_data'][det] / i0_init
                 l, = ax_norm_sdd.plot(self.ctx['calibrated_energies'], norm_data, fmt, label=f"Normalized {label}", alpha=0.7)
                 self.det_lines_norm[det] = l
@@ -3626,11 +3721,16 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                     num_s = min(len(d1d) // 256, x_coords.size)
                     s2d = d1d[:num_s * 256].reshape((num_s, 256))
                     if roll_shift != 0: s2d = np.roll(s2d, shift=roll_shift, axis=0)
-                    inten = np.sum(s2d[:, channel_roi[0]:channel_roi[1]+1], axis=1)
+                    if xrf_roi is not None and calib_data:
+                        ch1_d, ch2_d = sdd_calib.get_calibrated_bounds(xrf_roi[0], xrf_roi[1], det_name, calib_data)
+                        ch_slice_d = slice(ch1_d, ch2_d)
+                    else:
+                        ch_slice_d = slice(channel_roi[0], channel_roi[1] + 1)
+                    inten = np.sum(s2d[:, ch_slice_d], axis=1)
                     if avg_maps[det_name] is None: avg_maps[det_name] = inten.copy()
                     else: avg_maps[det_name] += inten
                     m = get_dynamic_mask(x_coords[:num_s], y_coords[:num_s], x_trim, y_trim, roi=map_roi)
-                    summary_data[det_name].append(np.sum(s2d[m, channel_roi[0]:channel_roi[1]+1]))
+                    summary_data[det_name].append(np.sum(s2d[m, ch_slice_d]))
                     stack_maps[det_name][e_idx, :num_s] = inten
                 except: summary_data[det_name].append(np.nan)
             

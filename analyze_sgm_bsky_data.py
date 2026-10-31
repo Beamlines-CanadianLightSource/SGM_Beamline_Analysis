@@ -13,8 +13,174 @@ except (ImportError, ModuleNotFoundError):
     filedialog = None
 
 from alignment_utils import format_num_val, safe_filedialog_call, HAS_GUI
+import datetime
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".last_dir.json")
+
+# Detector physical position configurations before/on and after August 12, 2026
+SDD_POSITIONS_CUTOFF_DATE = datetime.date(2026, 8, 12)
+
+SDD_NAMES_PRE_2026_08_12 = {
+    1: "sdd1 (90, top)",
+    2: "sdd2 (45, front, in-plane)",
+    3: "sdd3 (90, side)",
+    4: "sdd4 (45, front, out-plane)"
+}
+
+SDD_NAMES_POST_2026_08_12 = {
+    1: "sdd1 (90, side)",
+    2: "sdd2 (45, front, in-plane)",
+    3: "sdd3 (45, front, out of plane)",
+    4: "sdd4 (90, top)"
+}
+
+
+def _extract_date_from_text(text):
+    """Attempts to parse a datetime.date from a string (YYYY-MM-DD, YYYY_MM_DD, or YYMMDD folder prefix)."""
+    if not text or not isinstance(text, str):
+        return None
+    s = text.strip()
+    if s in ('N/A', 'None', ''):
+        return None
+    # 1. Standard YYYY-MM-DD or YYYY_MM_DD or YYYY/MM/DD
+    m = re.search(r'\b(20\d{2})[-_/](\d{2})[-_/](\d{2})\b', s)
+    if m:
+        try:
+            return datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            pass
+    # 2. Compact 8-digit YYYYMMDD (e.g. 20261028)
+    m8 = re.search(r'(?<!\d)(20[2-3]\d)(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?!\d)', s)
+    if m8:
+        try:
+            return datetime.date(int(m8.group(1)), int(m8.group(2)), int(m8.group(3)))
+        except ValueError:
+            pass
+    # 3. 6-digit YYMMDD prefix in directory/scan names (e.g. '260728-Butterfly_wing')
+    for part in re.split(r'[\\/]', s):
+        m6 = re.match(r'^([2-3]\d)(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?:[-_A-Za-z]|$)', part)
+        if m6:
+            try:
+                return datetime.date(2000 + int(m6.group(1)), int(m6.group(2)), int(m6.group(3)))
+            except ValueError:
+                pass
+    return None
+
+
+def parse_scan_date(date_or_source=None):
+    """
+    Resolves a scan's acquisition date (as a datetime.date object) from a date string,
+    datetime/date object, data_pack/context dict, or HDF5 file path.
+    """
+    if date_or_source is None:
+        return None
+    if isinstance(date_or_source, datetime.datetime):
+        return date_or_source.date()
+    if isinstance(date_or_source, datetime.date):
+        return date_or_source
+
+    if isinstance(date_or_source, dict):
+        # Check direct 'date' key or nested 'path_pack'
+        candidates = [
+            date_or_source.get('date'),
+            (date_or_source.get('path_pack') or {}).get('date') if isinstance(date_or_source.get('path_pack'), dict) else None,
+            date_or_source.get('scan_name'),
+            (date_or_source.get('path_pack') or {}).get('scan_name') if isinstance(date_or_source.get('path_pack'), dict) else None,
+            date_or_source.get('h5_file_path'),
+            (date_or_source.get('path_pack') or {}).get('h5_file_path') if isinstance(date_or_source.get('path_pack'), dict) else None,
+            date_or_source.get('h5_dir'),
+            date_or_source.get('save_dir'),
+        ]
+        for cand in candidates:
+            dt = _extract_date_from_text(str(cand)) if cand else None
+            if dt is not None:
+                return dt
+        # If h5_file_path exists on disk, inspect HDF5 attributes / source_files
+        h5_p = date_or_source.get('h5_file_path') or (
+            date_or_source.get('path_pack', {}).get('h5_file_path')
+            if isinstance(date_or_source.get('path_pack'), dict) else None
+        )
+        if h5_p and isinstance(h5_p, str) and os.path.isfile(h5_p):
+            return parse_scan_date(h5_p)
+        return None
+
+    if isinstance(date_or_source, str):
+        dt = _extract_date_from_text(date_or_source)
+        if dt is not None:
+            return dt
+        if os.path.isfile(date_or_source) and date_or_source.lower().endswith(('.h5', '.hdf5', '.nxs')):
+            try:
+                with h5py.File(date_or_source, 'r') as f:
+                    for grp_name in ['', 'scan_metadata', 'stack_metadata', 'entry', 'entry/measurement', 'stitching_metadata']:
+                        grp = f if grp_name == '' else f.get(grp_name)
+                        if grp is not None and hasattr(grp, 'attrs'):
+                            for key in ['date', 'session', 'start_time', 'time', 'timestamp', 'datetime']:
+                                val = grp.attrs.get(key)
+                                if isinstance(val, (bytes, np.bytes_)):
+                                    val = val.decode('utf-8', errors='ignore')
+                                dt = _extract_date_from_text(str(val)) if val is not None else None
+                                if dt is not None:
+                                    return dt
+                            if 'source_files' in grp.attrs:
+                                for sf in grp.attrs['source_files']:
+                                    if isinstance(sf, (bytes, np.bytes_)):
+                                        sf = sf.decode('utf-8', errors='ignore')
+                                    dt = _extract_date_from_text(str(sf))
+                                    if dt is not None:
+                                        return dt
+            except Exception:
+                pass
+            try:
+                return datetime.datetime.fromtimestamp(os.path.getmtime(date_or_source)).date()
+            except Exception:
+                pass
+    return None
+
+
+def is_post_aug_12_2026(date_or_source=None):
+    """
+    Returns True if the scan date is strictly after August 12, 2026 (> 2026-08-12),
+    or if no date can be determined (defaulting to the current post-Aug 12, 2026 layout).
+    Returns False if the scan date is on or before August 12, 2026 (<= 2026-08-12).
+    """
+    dt = parse_scan_date(date_or_source)
+    if dt is None:
+        return True
+    return dt > SDD_POSITIONS_CUTOFF_DATE
+
+
+def get_sdd_names_map(date_or_source=None):
+    """
+    Returns the dictionary mapping SDD detector integer ID (1..4) to its human-readable
+    position string based on whether the scan was acquired after Aug 12, 2026.
+    """
+    if is_post_aug_12_2026(date_or_source):
+        return dict(SDD_NAMES_POST_2026_08_12)
+    return dict(SDD_NAMES_PRE_2026_08_12)
+
+
+def get_sdd_label(det, date_or_source=None, uppercase=False):
+    """
+    Given a detector identifier (e.g., 1, 'sdd1', 'SDD1'), returns its date-appropriate
+    position label (e.g., 'sdd1 (90, side)' after Aug 12, 2026 or 'sdd1 (90, top)' on/before Aug 12, 2026).
+    If uppercase=True, capitalizes the detector prefix (e.g., 'SDD1 (90, side)').
+    """
+    sdd_map = get_sdd_names_map(date_or_source)
+    det_id = None
+    if isinstance(det, (int, np.integer)):
+        det_id = int(det)
+    elif isinstance(det, str):
+        m = re.match(r'^sdd(\d+)$', det.strip(), re.IGNORECASE)
+        if m:
+            det_id = int(m.group(1))
+    if det_id in sdd_map:
+        lbl = sdd_map[det_id]
+        if uppercase:
+            lbl = re.sub(r'^sdd(\d+)', lambda m_obj: f"SDD{m_obj.group(1)}", lbl)
+        return lbl
+    if isinstance(det, str):
+        return det.upper() if uppercase else det
+    return str(det)
 
 def get_last_dir():
     """Reads the last accessed directory from a config file."""
@@ -317,24 +483,28 @@ def analyze_sgm_bsky_data(file_path=None, verbose=True):
         if f_obj is not None:
             groups = [f_obj, f_obj.get('scan_metadata'), f_obj.get('stack_metadata'),
                       f_obj.get('entry'), f_obj.get('map_data'),
-                      f_obj.get('initial_motor_positions/all_beamline_motors_snapshot')]
+                      f_obj.get('initial_motor_positions/all_beamline_motors_snapshot'),
+                      f_obj.get('stitching_metadata')]
             for grp in groups:
                 if grp is not None and hasattr(grp, 'attrs'):
                     for key in ['session', 'date', 'start_time', 'time', 'timestamp', 'datetime', 'end_time']:
                         val = grp.attrs.get(key)
+                        if isinstance(val, (bytes, np.bytes_)):
+                            val = val.decode('utf-8', errors='ignore')
                         if val and str(val).strip() not in ('N/A', 'None', ''):
                             return str(val).strip()
+                    if 'source_files' in grp.attrs:
+                        for sf in grp.attrs['source_files']:
+                            if isinstance(sf, (bytes, np.bytes_)):
+                                sf = sf.decode('utf-8', errors='ignore')
+                            dt_sf = _extract_date_from_text(str(sf))
+                            if dt_sf is not None:
+                                return dt_sf.strftime('%Y-%m-%d')
 
-        # 3. Try filename regex (YYYY-MM-DD or YYYY_MM_DD)
-        fname = os.path.basename(f_path)
-        match = re.search(r'(\d{4}[-_]\d{2}[-_]\d{2})', fname)
-        if match: return match.group(1).replace('_', '-')
-            
-        # 4. Try directory names (search from leaf to root)
-        path_parts = os.path.abspath(f_path).split(os.sep)
-        for part in reversed(path_parts):
-            match = re.search(r'(\d{4}[-_]\d{2}[-_]\d{2})', part)
-            if match: return match.group(1).replace('_', '-')
+        # 3. Try filename and directory path via _extract_date_from_text (YYYY-MM-DD, YYYYMMDD, or YYMMDD)
+        dt_path = _extract_date_from_text(os.path.abspath(f_path))
+        if dt_path is not None:
+            return dt_path.strftime('%Y-%m-%d')
             
         # 5. File modification date fallback from disk
         try:

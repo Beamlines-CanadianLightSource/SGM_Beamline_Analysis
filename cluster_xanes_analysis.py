@@ -24,6 +24,7 @@ except (ImportError, ModuleNotFoundError):
     HAS_TK = False
 
 from alignment_utils import format_num_val, safe_metadata_dialog_call, HAS_GUI
+from analyze_sgm_bsky_data import get_sdd_label
 
 # Global cache to prevent multiple prompts during a multi-detector run
 _USER_METADATA_CACHE = None
@@ -174,6 +175,7 @@ def save_csv_with_header(csv_path, df, scan_info, full_meta=None):
     # Add Processing Metadata
     rows += [
         f"# --- Processing ---",
+        f"# Dataset Source: {scan_info.get('dataset_source', 'N/A')}" if scan_info.get('dataset_source') else "# --- Processing ---",
         f"# Normalized: {scan_info.get('normalized', 'N/A')} (I0 Source: {scan_info.get('i0_source', 'N/A')})",
         f"# Trimmed: {'Yes' if scan_info.get('x_trim') or scan_info.get('y_trim') else 'No'} (X: {scan_info.get('x_trim', 0)}, Y: {scan_info.get('y_trim', 0)})",
         f"# Roll Shift: {scan_info.get('roll_shift', 0)}",
@@ -309,7 +311,9 @@ def cluster_xanes_analysis(h5_path, dataset_name='average', n_clusters=4, show_p
                 cols[f'Cluster_{i+1}_Sum'] = cluster_sums[i, :]
 
             df = pd.DataFrame(cols)
-            save_csv_with_header(csv_path, df, scan_info, full_meta)
+            scan_info_det = dict(scan_info)
+            scan_info_det['dataset_source'] = get_sdd_label(dataset_name, scan_info if scan_info.get('date') not in (None, 'N/A', '') else h5_path)
+            save_csv_with_header(csv_path, df, scan_info_det, full_meta)
 
             # 5. Save back to HDF5
             cluster_group_path = f"entry/pca_results/{dataset_name}/clustering"
@@ -463,7 +467,7 @@ def plot_multi_cluster_results(all_results, h5_path, i0_info=None, apply_waterfa
         ax = axes_map[0, i]
         masked_map = np.ma.masked_where(res['cluster_map'] == -1, res['cluster_map'])
         ax.imshow(masked_map, extent=[x_axis[0], x_axis[-1], y_axis[-1], y_axis[0]], cmap=cmap, interpolation='nearest')
-        ax.set_title(f"{res['dataset']}", fontweight='semibold')
+        ax.set_title(f"{get_sdd_label(res['dataset'], h5_path)}", fontsize=10, fontweight='semibold')
         ax.set_xlabel("X (mm)")
         if i == 0: ax.set_ylabel("Y (mm)")
 
@@ -494,7 +498,7 @@ def plot_multi_cluster_results(all_results, h5_path, i0_info=None, apply_waterfa
             lbl = f"C{k+1}" + (f" (+{k*offset_step:.1f})" if apply_waterfall and k > 0 else "")
             ax.plot(energy, y_val, color=cmap(k), linewidth=1.5, label=lbl)
 
-        ax.set_title(f"{res['dataset']}", fontweight='semibold')
+        ax.set_title(f"{get_sdd_label(res['dataset'], h5_path)}", fontsize=10, fontweight='semibold')
         ax.set_xlabel("Energy (eV)")
         if i == 0: ax.set_ylabel("Intensity" + (" (Waterfall Offset)" if apply_waterfall else ""))
         ax.grid(True, alpha=0.4, linestyle='--')
@@ -559,7 +563,8 @@ def plot_results(x_coords, y_coords, energy, cluster_map, spectra, dataset_name,
     n_clusters = spectra.shape[0]
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
 
-    fig.suptitle(f"K-Means Cluster Analysis: {dataset_name}\n[Normalized: {i0_info}]", fontsize=14, fontweight='semibold')
+    det_lbl = get_sdd_label(dataset_name, os.path.join(output_dir, f"{scan_name}.h5"))
+    fig.suptitle(f"K-Means Cluster Analysis: {det_lbl}\n[Normalized: {i0_info}]", fontsize=14, fontweight='semibold')
 
     try:
         cmap = plt.colormaps['tab10'].resampled(n_clusters)
@@ -574,7 +579,7 @@ def plot_results(x_coords, y_coords, energy, cluster_map, spectra, dataset_name,
     cbar.ax.set_yticklabels([f"{i+1}" for i in range(n_clusters)])
     cbar.set_label('Cluster ID')
     
-    ax1.set_title(f"Cluster Map ({dataset_name}, k={n_clusters})", fontsize=11, fontweight='semibold')
+    ax1.set_title(f"Cluster Map ({det_lbl}, k={n_clusters})", fontsize=10.5, fontweight='semibold')
     ax1.set_xlabel("X (mm)")
     ax1.set_ylabel("Y (mm)")
 
@@ -593,7 +598,7 @@ def plot_results(x_coords, y_coords, energy, cluster_map, spectra, dataset_name,
         lbl = f"Cluster {i+1}" + (f" (+{i*offset_step:.2f})" if apply_waterfall and i > 0 else "")
         ax2.plot(energy, y_val, color=cmap(i), linewidth=1.8, label=lbl)
 
-    ax2.set_title(f"Cluster-Averaged XANES Spectra ({dataset_name})", fontsize=11, fontweight='semibold')
+    ax2.set_title(f"Cluster-Averaged XANES Spectra ({det_lbl})", fontsize=10.5, fontweight='semibold')
     ax2.set_xlabel("Energy (eV)")
     ax2.set_ylabel("Intensity" + (" (Waterfall Offset)" if apply_waterfall else ""))
     ax2.grid(True, linestyle='--', alpha=0.6)

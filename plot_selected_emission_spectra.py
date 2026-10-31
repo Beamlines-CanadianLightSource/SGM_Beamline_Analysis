@@ -10,7 +10,7 @@ except (ImportError, ModuleNotFoundError):
     filedialog = None
 from scipy.optimize import curve_fit
 
-from analyze_sgm_bsky_data import analyze_sgm_bsky_data
+from analyze_sgm_bsky_data import analyze_sgm_bsky_data, get_sdd_label
 import sdd_calibration_utils as sdd_calib
 import sdd_element_roi_utils as elem_utils
 from alignment_utils import safe_filedialog_call, HAS_GUI
@@ -512,11 +512,12 @@ def plot_selected_emission_spectra(
                 ax_spec.plot(fl_c, fl_y, 's', color=color, markeredgecolor='darkred',
                              markersize=6, zorder=5)
 
+        det_display = get_sdd_label(detector, data_pack)
         ax_spec.set_xlabel(xlabel, fontsize=8.5, fontweight='semibold')
         ax_spec.set_ylabel('Counts / Intensity' + (' (Waterfall Offset)' if apply_waterfall else ''),
                            fontsize=8.5, fontweight='semibold')
         ax_spec.tick_params(labelsize=8)
-        title_suffix = f" ({len(spectra_data)} Energies)\n{scan_title} ({detector})"
+        title_suffix = f" ({len(spectra_data)} Energies)\n{scan_title} ({det_display})"
         ax_spec.set_title(f'Emission / XRD Spectra' + title_suffix, fontsize=9.5, fontweight='bold')
         ax_spec.grid(True, linestyle=':', alpha=0.6)
         ax_spec.legend(loc='best', fontsize=7)
@@ -575,10 +576,11 @@ def plot_selected_emission_spectra(
                              linewidth=1.8, markersize=7, markeredgecolor='black',
                              label=lbl_fl, zorder=3)
 
+        det_display = get_sdd_label(detector, data_pack)
         ax_disp.set_xlabel('Incident Energy (eV)', fontsize=8.5, fontweight='semibold')
         ax_disp.set_ylabel('Peak Position (Emission eV)', fontsize=8.5, fontweight='semibold')
         ax_disp.tick_params(labelsize=8)
-        ax_disp.set_title(f'Peak Shift vs. Incident Energy\n{scan_title} ({detector})',
+        ax_disp.set_title(f'Peak Shift vs. Incident Energy\n{scan_title} ({det_display})',
                           fontsize=9.5, fontweight='bold')
         ax_disp.grid(True, linestyle=':', alpha=0.6)
         ax_disp.legend(loc='best', fontsize=7)
@@ -718,7 +720,7 @@ def plot_selected_emission_spectra(
             f"# Time Per Map: {data_pack.get('time_per_map', 'N/A')}",
             f"# Coordinates: {data_pack.get('coordinates', 'N/A')}",
             f"# Command: {data_pack.get('command', 'N/A')}",
-            f"# Target Detector: {detector} ({'+'.join(target_dets)})",
+            f"# Target Detector: {get_sdd_label(detector, data_pack)} ({'+'.join(get_sdd_label(d, data_pack) for d in target_dets)})",
         ]
 
         if map_roi:
@@ -772,7 +774,7 @@ def plot_selected_emission_spectra(
         rows.append(f"# Column {c_idx}: Channel (0-255)"); c_idx += 1
         for item in spectra_data:
             en_val = item['energy']
-            rows.append(f"# Column {c_idx}: Emission_Counts_Einc_{en_val:.2f}eV ({detector})"); c_idx += 1
+            rows.append(f"# Column {c_idx}: Emission_Counts_Einc_{en_val:.2f}eV ({get_sdd_label(detector, data_pack)})"); c_idx += 1
         rows.append("#")
 
         for ch in range(256):

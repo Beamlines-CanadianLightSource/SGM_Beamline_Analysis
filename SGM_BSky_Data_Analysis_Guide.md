@@ -43,6 +43,17 @@ As you progress through the notebook, various file dialogs and interactive GUIs 
   - If data is loaded from a read-only beamline directory containing `\raw\` (e.g. `V:\projects\<project>\raw\<date>\<scan>\...`), all saved outputs (XANES CSVs, XRD CSVs, exported images, and PyMca stacks) are automatically redirected to `V:\projects\<project>\preprocessed\<date>\<scan>\`.
   - Folders are created on-demand when saving (Option A), preventing empty ghost folders on the server.
   - Offline local datasets (e.g. on `C:\` or `D:\`) continue saving in their scan directory as usual.
+- **Automatic Date-Dependent SDD Detector Position Mapping (August 12, 2026 Cutoff):**
+  - After **August 12, 2026**, the physical positions of the SDD detectors around the sample stage changed (`sdd1`, `sdd3`, and `sdd4` were repositioned, while `sdd2` remained in the same position).
+  - `analyze_sgm_bsky_data.py` automatically extracts the scan acquisition date (`YYYY-MM-DD`, `YYYYMMDD`, or `YYMMDD` from HDF5 attributes, stitched `source_files` metadata, or file/directory names) and applies the appropriate detector position labels across all figures, plot legends, saved XANES/XRD CSV headers, PyMca HDF5 attributes, and PCA/Cluster outputs:
+
+| Detector | On or Before Aug 12, 2026 ($\le \text{2026-08-12}$) | After Aug 12, 2026 ($> \text{2026-08-12}$) |
+| :--- | :--- | :--- |
+| **`sdd1`** | `sdd1 (90, top)` | **`sdd1 (90, side)`** |
+| **`sdd2`** | `sdd2 (45, front, in-plane)` | **`sdd2 (45, front, in-plane)`** *(unchanged)* |
+| **`sdd3`** | `sdd3 (90, side)` | **`sdd3 (45, front, out of plane)`** |
+| **`sdd4`** | `sdd4 (45, front, out-plane)` | **`sdd4 (90, top)`** |
+
 - Changes made here are saved to the `path_pack` and applied to all downstream steps.
 
 ### 2. `calibrate_sdd_xrf.py` (Energy Calibration)
@@ -86,6 +97,11 @@ run_calibration()
 - **Duplicate Prevention:** A warning will appear if you select the same file for multiple quadrants. Avoid this, as it causes spatial data overlap and visualization artifacts.
 - **Automatic Gap Masking:** The tool now automatically masks the space between quadrants. This prevents "smearing" artifacts (where data appears to stretch across missing areas) in the dashboard and alignment tools.
 - **Asymmetric Sliders:** Use the **Left, Right, Top, Bottom** sliders for each quadrant (now labeled Map 1, Map 2, etc.) to remove bad edge data caused by stage acceleration or to eliminate overlaps.
+- **Staggered / Non-Aligned Tile Trimming Modes:** When stitching maps that are staggered in $Y$ (top/bottom not aligned) or $X$ (left/right not aligned), only part of an edge physically overlaps its neighbor:
+  - **Trim Scope Toggle (`Overlap-Only (L-shape)` vs. `Full Edge (Box)`):**
+    - **`Overlap-Only (L-shape)`:** Trims *only* the spatial segment where a neighboring map actually overlaps, preserving the non-overlapping top/bottom or left/right extensions of each tile.
+    - **`Full Edge (Box)` (Default):** Trims the entire straight edge of the tile across its full span.
+  - **`Align Flush Bounds` Button:** Automatically calculates and sets the Top/Bottom (or Left/Right) sliders across a row or column so all tiles share a common flush rectangular bounding edge.
 - **Contrast Control:** Includes a dedicated contrast slider to help you see fine details while aligning the boundaries.
 - **Data Preservation:** The stitched dataset now preserves all 4 MCC reference channels (`mcc1` through `mcc4`), ensuring complete metadata for normalization.
 - **Bake Stitched Map:** Once the maps join perfectly without visible "seams" or overshoots, click this button to generate a new master HDF5 file and data directory. The resulting "baked" map is fully compatible with the rest of the pipeline.
@@ -111,6 +127,9 @@ The dashboard is organized vertically to provide immediate access to global spec
    - **Deconvolution (Live):** PSF FWHM and iterations controls for deblurring.
 4. **Top Horizontal View Scrollbar:** A dedicated horizontal scrollbar ("simple grey slider") located directly above the detector images with quick buttons (`◄ Show Maps` / `Show XRD Spectra ►`). This lets you slide between the maps (left) and the XRD emission spectra (right) without scrolling down to the bottom of the page.
 5. **Detector Rows (SDD1 to SDD4 & TEY/MCC4):** Each detector provides a 3-panel row (Energy Map, Average Map, XRD Emission Spectrum).
+   - **Automatic Date-Dependent SDD Position Labels:** Because the physical positions of the SDD detectors changed after **August 12, 2026**, the pipeline automatically detects the scan date (`YYYY-MM-DD` / `YYMMDD` from HDF5 metadata or file paths) and labels all figure titles, legends, exported CSV headers, and HDF5 datasets accordingly:
+     - **On or Before Aug 12, 2026 ($\le \text{2026-08-12}$):** `sdd1 (90, top)`, `sdd2 (45, front, in-plane)`, `sdd3 (90, side)`, `sdd4 (45, front, out-plane)`
+     - **After Aug 12, 2026 ($> \text{2026-08-12}$):** `sdd1 (90, side)`, `sdd2 (45, front, in-plane)`, `sdd3 (45, front, out of plane)`, `sdd4 (90, top)`
 6. **Bottom Controls:** The native bottom horizontal scrollbar directly above the `Select Image Energy for Display (Bottom):` slider.
 
 **How to Use the Interactive Features:**
@@ -185,6 +204,26 @@ The dashboard is organized vertically to provide immediate access to global spec
   - **Iterative Optimization:** For Richardson-Lucy, use the **Iterations** slider to tune the deblurring intensity (typically 15 to 30 is optimal).
   - **Responsiveness:** Sliders use delayed updates (`continuous_update=False`) to avoid CPU lag during dragging. The calculation runs immediately once you release the slider handle.
   - **Stability Notes:** Utilizes a custom division-by-zero epsilon check ($10^{-12}$) and intensity normalization to prevent NaNs and solid-color blank plots on masked/trimmed margins.
+
+**Map Rendering Mode: `as_scatter_plot=False` vs. `as_scatter_plot=True`**
+
+When calling `plot_sgm_bsky_data(sgm_data, as_scatter_plot=...)`, you can choose between two spatial map rendering modes:
+
+| Feature | `as_scatter_plot=False` (Default — `tripcolor`) | `as_scatter_plot=True` (Pixel-Matched `scatter`) |
+| :--- | :--- | :--- |
+| **How It Works** | Builds a **Delaunay triangulation** (`ax.tripcolor`) connecting exact $(x, y)$ stage coordinates into a continuous, gap-free polygonal mesh (`shading='flat'`), automatically masking stretched triangles across missing quadrants or L-shaped gaps. | Plots each $(x, y)$ measurement as an individual **square marker** (`marker='s'`, `linewidths=0`) whose area ($s$ in $\text{pt}^2$) is dynamically sized to match the physical grid spacing on screen. |
+| **Advantages** | - **True edge-to-edge geometry:** Adjacent points meet at exact shared polygon boundaries with **zero overplotting**, regardless of zoom level or figure DPI.<br>- **Zero directional/serpentine bias:** Completely immune to marker draw-order effects on bidirectional (snake) fly-scans.<br>- **Smooth zoom & vector export:** Polygons scale naturally in physical $(x, y)$ data coordinates. | - **Discrete raw point inspection:** Shows each raw measurement point independently without triangulating between neighbors.<br>- **Fast point-cloud rendering:** Useful for sparse, irregularly sampled, or non-gridded coordinate sets where triangulation is undesirable.<br>- **Crisp L-shaped / staggered outer edges:** Never attempts to bridge concave boundary corners with triangles. |
+| **Disadvantages** | - **Slightly slower initial mesh build** on very large stitched point clouds ($>250\text{k}$ points).<br>- Requires edge-length masking (`max_edge`) so triangles do not stretch across wide empty gaps between non-contiguous tiles. | - **Draw-order overlap sensitivity if markers exceed 1 pixel:** Because SGM fly-scans run bidirectionally (even rows left $\rightarrow$ right, odd rows right $\rightarrow$ left), oversized markers cause dark background points to overwrite opposite sides of thin bright features on alternating rows.<br>- *(Note: `plot_sgm_bsky_data` now attaches a dynamic pixel-matched resizer `compute_optimal_scatter_size` / `attach_dynamic_scatter_resizer` that automatically scales $s$ to ~1 physical pixel step, eliminating shifted-shadow artifacts while zooming or exporting).* |
+| **When to Use** | **Recommended for most maps**, especially high-resolution fly-scans ($200 \times 200$ to $500 \times 500+$), samples with fine/thin high-contrast features (e.g., thin ridges, cell walls, punctate particles), and publication figures. | Useful when inspecting **low-resolution/coarse maps**, verifying **raw discrete sampling locations** (e.g., checking for dropped points or irregular step spacing), or viewing **staggered multi-tile layouts** as discrete point clouds. |
+
+  - **Why Bidirectional (Serpentine) Fly-Scans Can Show a "Shifted Shadow" with Fixed Scatter Markers (and Why It Appeared on Stitched High-Res Maps):**
+    - **Did the beamline scanning method change? No.** Both older scans (e.g., July 2026 Butterfly Wing maps) and newer scans (e.g., October 2026 Wheat maps) use the exact same **bidirectional (serpentine / snake) hexapod fly-scan** (even rows scan Left $\rightarrow$ Right, odd rows scan Right $\rightarrow$ Left).
+    - **How serpentine order interacts with oversized markers:** Matplotlib renders scatter points sequentially in array order. When Matplotlib's fixed default marker size (`s = 36` $\text{pt}^2$, a $6\text{ pt} \times 6\text{ pt}$ square) was larger than a single pixel step, dark background points immediately following a narrow bright feature overwrote the **right half** of the square on even rows (`L → R`) and the **left half** on odd rows (`R → L`), visibly splitting thin ridges or dots into two shifted copies.
+    - **Why it wasn't noticeable before:**
+      1. **Default is `as_scatter_plot=False` (`tripcolor`):** `interactive_roll_align`, `interactive_stitching_trim`, and the default `plot_sgm_bsky_data(..., as_scatter_plot=False)` all use `tripcolor` (no overlapping markers). Only notebooks explicitly passing `as_scatter_plot=True` used `scatter`.
+      2. **Sample Morphology:** Samples with **very thin, high-contrast ridges or punctate spots (~2–4 pixels wide) against a dark background** (like the wheat Si K-edge ridge) get split in half by trailing dark pixels, whereas broader continuous regions (like butterfly wing veins/scales or $30 \times 30$ to $60 \times 60$ XANES stacks) blend interior overlaps smoothly.
+      3. **Wide Staggered Multi-Tile Span & Compact 30%-Smaller Subplots:** Fitting a wide staggered 3-tile span (~900 pixels across $5.8\text{ mm}$) into the compact $\sim 157\text{ pt}$ subplot shrunk each pixel to $\sim 0.17\text{ pt}$, making a $6\text{ pt}$ marker span $>30$ pixels until dynamic pixel-matched sizing (`compute_optimal_scatter_size`) was introduced.
+    - *(See [`SGM_Map_Rendering_and_Scatter_Plot_Guide.md`](SGM_Map_Rendering_and_Scatter_Plot_Guide.md) for the complete standalone reference).*
 
 ### 3.1 `plot_sgm_bsky_data_batch.py` (Batch Processing & Comparison of Multiple Scans)
 **Purpose:** Enables batch processing and side-by-side comparison of XANES spectra across multiple loaded stack scans (`SGM_BSky_Data_Analysis-batch.ipynb`). It processes all scans using unified spatial and spectral ROI parameters, normalizes the spectra ($I_0$ internal/external with optional smoothing, energy shift, and optical density correction), and exports summary CSV files for each scan to its original directory.

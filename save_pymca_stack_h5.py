@@ -10,7 +10,7 @@ except (ImportError, ModuleNotFoundError):
     messagebox = None
     simpledialog = None
     filedialog = None
-from analyze_sgm_bsky_data import analyze_sgm_bsky_data
+from analyze_sgm_bsky_data import analyze_sgm_bsky_data, get_sdd_label
 from alignment_utils import (
     safe_filedialog_call, format_num_val, HAS_GUI,
     safe_messagebox_askyesno, safe_simpledialog_askstring, get_safe_save_path
@@ -606,7 +606,8 @@ def save_pymca_stack_h5(path_pack, output_path=None, channel_roi=None, xrf_roi=N
             for det_name, stack_data in detector_stacks.items():
                 ds = measurement.create_dataset(det_name, data=stack_data, compression="gzip")
                 ds.attrs['interpretation'] = 'spectrum'
-                ds.attrs['long_name'] = f"{det_name} ROI Sum"
+                ds.attrs['long_name'] = f"{get_sdd_label(det_name, path_pack)} ROI Sum"
+                ds.attrs['detector_position'] = str(get_sdd_label(det_name, path_pack))
 
             # Save the Overall Sum
             sum_ds = measurement.create_dataset('sum', data=sum_stack, compression="gzip")

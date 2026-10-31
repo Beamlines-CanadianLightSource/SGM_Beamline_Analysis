@@ -9,7 +9,7 @@ except (ImportError, ModuleNotFoundError):
     tk = None
     messagebox = None
     filedialog = None
-from analyze_sgm_bsky_data import analyze_sgm_bsky_data
+from analyze_sgm_bsky_data import analyze_sgm_bsky_data, get_sdd_label
 from alignment_utils import safe_filedialog_call, format_num_val, HAS_GUI
 
 def save_pymca_4d_stack_h5(path_pack, output_path=None, normalize=True, channel_roi=None, xrf_roi=None):
@@ -341,7 +341,9 @@ def save_pymca_4d_stack_h5(path_pack, output_path=None, normalize=True, channel_
             for det in detector_names:
                 ds = xrf_meas.create_dataset(det, (ny, nx, n_channels), dtype=np.float32, compression="gzip")
                 ds.attrs['interpretation'] = 'spectrum'
-                ds.attrs['long_name'] = f"{det} XRF Stack (Energy Sum)"
+                det_lbl = get_sdd_label(det, path_pack)
+                ds.attrs['long_name'] = f"{det_lbl} XRF Stack (Energy Sum)"
+                ds.attrs['detector_position'] = str(det_lbl)
                 xrf_det_datasets_3d[det] = ds
 
             # XANES 3D
@@ -355,7 +357,9 @@ def save_pymca_4d_stack_h5(path_pack, output_path=None, normalize=True, channel_
             for det in detector_names:
                 ds = xanes_meas.create_dataset(det, (ny, nx, num_energies), dtype=np.float32, compression="gzip")
                 ds.attrs['interpretation'] = 'spectrum'
-                ds.attrs['long_name'] = f"{det} XANES Stack (Ch {roi_ch[0]}-{roi_ch[1]})"
+                det_lbl = get_sdd_label(det, path_pack)
+                ds.attrs['long_name'] = f"{det_lbl} XANES Stack (Ch {roi_ch[0]}-{roi_ch[1]})"
+                ds.attrs['detector_position'] = str(det_lbl)
                 xanes_det_datasets_3d[det] = ds
 
             # FULL 4D

@@ -19,6 +19,7 @@ if script_dir not in sys.path:
     sys.path.insert(0, script_dir)
 
 from analyze_map import analyze_map
+from analyze_sgm_bsky_data import get_sdd_label
 import sdd_calibration_utils as sdd_calib
 
 def interactive_rgb_overlay(h5_file=None):
@@ -185,8 +186,9 @@ def interactive_rgb_overlay(h5_file=None):
             current_fig[0] = fig
             
             # --- Spectrum Plot ---
+            det_lbl = get_sdd_label(det, path_pack)
             ax_spec.plot(energy_axis, np.maximum(total_spectrum, 1e-1), color='black', lw=1)
-            ax_spec.set_title(f"Total Spectrum ({det})")
+            ax_spec.set_title(f"Total Spectrum ({det_lbl})")
             ax_spec.set_xlabel("Energy (eV)")
             ax_spec.set_ylabel("Total Intensity")
             ax_spec.set_yscale('log') # Use log scale to see smaller peaks easily
@@ -233,7 +235,7 @@ def interactive_rgb_overlay(h5_file=None):
             ax_map.scatter(curr_x, curr_y, c=rgb_array, marker='s', s=marker_size_slider.value, edgecolors='none')
                 
             ax_map.set_aspect('equal')
-            ax_map.set_title(f"RGB Composite Map - {os.path.basename(h5_file)}")
+            ax_map.set_title(f"RGB Composite Map ({det_lbl}) - {os.path.basename(h5_file)}")
             ax_map.set_xlabel("Hexapod X")
             ax_map.set_ylabel("Hexapod Y")
             

@@ -13,6 +13,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
+from analyze_sgm_bsky_data import get_sdd_label
 
 def resolve_pca_h5_path(h5_path):
     """
@@ -176,9 +177,10 @@ def pca_xanes_analysis(h5_path, dataset_name='average', n_components=5, show_plo
                 cols[f'PC{i+1}_Loading (Var:{explained_var[i]:.2%})'] = pca_loadings[i]
             
             df = pd.DataFrame(cols)
+            det_label = get_sdd_label(dataset_name, h5_path)
             header_rows = [
                 f"# Scan Name: {scan_name}",
-                f"# Dataset Source: {dataset_name}",
+                f"# Dataset Source: {det_label}",
                 f"# Normalized: {i0_info}",
                 f"# Number of Components: {n_components}",
                 "#"
@@ -319,10 +321,11 @@ def plot_multi_detector_results(all_results, h5_path, i0_info=None):
             var = res['variance'][c]
             
             im = ax.imshow(data, extent=[x_axis[0], x_axis[-1], y_axis[-1], y_axis[0]], cmap='viridis')
+            det_lbl = get_sdd_label(res['dataset'], h5_path)
             if c == 0:
-                ax.set_title(f"{res['dataset']}\nPC{c+1} ({var:.1%})")
+                ax.set_title(f"{det_lbl}\nPC{c+1} ({var:.1%})", fontsize=9.5)
             else:
-                ax.set_title(f"PC{c+1} ({var:.1%})")
+                ax.set_title(f"PC{c+1} ({var:.1%})", fontsize=9.5)
             
             if d == 0:
                 ax.set_ylabel(f"Component {c+1}\nY (mm)")
@@ -343,7 +346,7 @@ def plot_multi_detector_results(all_results, h5_path, i0_info=None):
             
             ax.plot(energy, loading, color='red', linewidth=1.5)
             if c == 0:
-                ax.set_title(f"{res['dataset']}")
+                ax.set_title(f"{get_sdd_label(res['dataset'], h5_path)}", fontsize=9.5)
             ax.grid(True, alpha=0.3)
             if d == 0:
                 ax.set_ylabel(f"PC{c+1} Loading")
@@ -374,7 +377,8 @@ def plot_results(energy, x_axis, y_axis, eigenimages, loadings, variance, datase
     if n_comp == 1:
         axes = np.expand_dims(axes, axis=0)
 
-    fig.suptitle(f"PCA Results for Stack: {dataset_name}\n[Normalized: {i0_info}]", fontsize=15)
+    det_lbl = get_sdd_label(dataset_name, h5_path)
+    fig.suptitle(f"PCA Results for Stack: {det_lbl}\n[Normalized: {i0_info}]", fontsize=15)
 
     for i in range(n_comp):
         # Eigenimage (Left)
