@@ -46,12 +46,11 @@ To eliminate boundary overlaps and seam artifacts, `interactive_stitching_trim()
 #### Why We Do Not Average Pixels:
 In synchrotron XRF and XANES mapping, every pixel represents raw photon counts and 256-channel MCA spectra tied to exact physical stage coordinates $(x, y)$. Averaging overlapping pixels from separate scan acquisitions taken minutes apart would distort raw photon counts, corrupt energy spectra, and smear fine chemical features.
 
-#### The Auto-Trimming Edge Split:
-When two adjacent images overlap spatially (e.g., Image 1 and Image 2 overlap horizontally by $0.30\text{ mm}$):
-1. **Splitting the Overlap**: The algorithm splits the $0.30\text{ mm}$ overlap evenly ($0.15\text{ mm}$ each).
-2. **Image 1**: Trimmed by $0.15\text{ mm}$ on its Right edge.
-3. **Image 2**: Trimmed by $0.15\text{ mm}$ on its Left edge.
-4. **Result**: Both images meet precisely at the midpoint boundary with zero spatial overlap and zero gap.
+#### The Auto-Trimming Edge Split (`0.001 mm` Precision):
+When two adjacent images overlap spatially (e.g., Image 1 and Image 2 overlap horizontally by $0.300\text{ mm}$):
+1. **Splitting the Overlap**: The algorithm splits the overlap evenly at `0.001 mm` (`1 µm`) slider resolution while subtracting half a pixel step ($0.5 \times \text{pixel step}$) per side so adjacent tiles retain 1 pixel of shared boundary coverage.
+2. **Why $0.001\text{ mm}$ Precision Matters**: Rounding trims up to `0.01 mm` steps on high-resolution maps ($\sim 6.7\,\mu\text{m}$ pixel pitch) can over-trim each edge by $10\text{--}20\,\mu\text{m}$ ($2\text{--}4$ pixels), leaving an empty 1–3 pixel vertical or horizontal strip that appears as a straight white line in discrete-grid tools such as `interactive_rgb_overlay`.
+3. **Result**: Both images meet seamlessly at the midpoint boundary with zero gap in both `plot_sgm_bsky_data` and `interactive_rgb_overlay`.
 
 #### Joining the Datasets:
 - **Coordinates**: The kept physical $(x, y)$ coordinates from all images are concatenated into unified master arrays (`master_x`, `master_y`).

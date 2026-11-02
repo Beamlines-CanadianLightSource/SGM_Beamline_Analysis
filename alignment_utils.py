@@ -451,12 +451,9 @@ def get_masked_triangulation(x, y, max_edge=None):
             # More robust heuristic: use 5x the median edge length
             # This handles both high-res and low-res maps correctly.
             all_edges = np.concatenate([e1, e2, e3])
-            max_edge = np.median(all_edges) * 5.0
-            
-            # Absolute sanity check: don't mask if max_edge is too small relative to total range
-            range_max = max(np.max(x) - np.min(x), np.max(y) - np.min(y))
-            if max_edge < range_max * 0.01:
-                max_edge = range_max * 0.5 # Effectively disable masking if it seems wrong
+            pos_edges = all_edges[all_edges > 0]
+            median_edge = np.median(pos_edges) if len(pos_edges) > 0 else np.median(all_edges)
+            max_edge = max(median_edge * 5.0, 1e-5)
         
         # Mask triangles where any edge is too long
         mask = (e1 > max_edge) | (e2 > max_edge) | (e3 > max_edge)

@@ -1733,12 +1733,79 @@ class DashboardRow:
             if len(self.current_poly) > 0:
                 self.poly_line.set_visible(True)
 
+    def update_mcc_histogram(self):
+        """Plot pixel intensity distribution histogram and statistics (Average/Mean, SD, Median) on ax[2] for MCC maps."""
+        if not self.is_mcc or self.ax is None or len(self.ax) < 3:
+            return
+        ax_hist = self.ax[2]
+        ax_hist.clear()
+        ax_hist.set_visible(True)
+
+        m_rep = self.s2d_rep if self.s2d_rep is not None else np.array([])
+        if len(m_rep) == 0:
+            ax_hist.set_title("Pixel Intensity Distribution (No Data)", fontsize='x-small')
+            return
+
+        tm = get_dynamic_mask(
+            self.ctx['x_coords'][:len(m_rep)],
+            self.ctx['y_coords'][:len(m_rep)],
+            self.ctx['x_trim'],
+            self.ctx['y_trim']
+        )
+        map_data = m_rep[tm] if np.any(tm) else m_rep
+        valid_data = map_data[np.isfinite(map_data)]
+
+        mcc_num = int(self.name.replace('mcc', '')) if 'mcc' in self.name and self.name.replace('mcc', '').isdigit() else None
+        title_name = MCC_NAMES.get(mcc_num, self.name) if mcc_num is not None else self.name
+
+        if valid_data.size == 0:
+            ax_hist.set_title(f"{title_name} Pixel Distribution (Empty)", fontsize='x-small')
+            return
+
+        avg_val = float(np.mean(valid_data))
+        std_val = float(np.std(valid_data))
+        med_val = float(np.median(valid_data))
+
+        counts, _, _ = ax_hist.hist(
+            valid_data, bins=50, color='skyblue', edgecolor='black', alpha=0.75, linewidth=0.5,
+            label=f"Pixels (N={valid_data.size:,})"
+        )
+
+        ax_hist.axvline(avg_val, color='red', linestyle='--', linewidth=1.5,
+                        label=f"Average / Mean: {avg_val:.4g}")
+        ax_hist.axvspan(avg_val - std_val, avg_val + std_val, color='red', alpha=0.15,
+                        label=f"Std Dev (±1σ): ±{std_val:.4g}")
+        ax_hist.axvline(med_val, color='darkgreen', linestyle=':', linewidth=1.5,
+                        label=f"Median: {med_val:.4g}")
+
+        max_count = float(np.max(counts)) if len(counts) > 0 else 1.0
+        if self.sync.use_log_spec:
+            ax_hist.set_yscale('log')
+            ax_hist.set_ylim(0.8, max(max_count * 5.0, 10.0))
+        else:
+            ax_hist.set_yscale('linear')
+            ax_hist.set_ylim(0, max_count * 1.32 if max_count > 0 else 1.0)
+            ax_hist.ticklabel_format(axis='y', style='sci', scilimits=(0, 3), useMathText=True)
+            ax_hist.yaxis.get_offset_text().set_fontsize(7)
+
+        ax_hist.tick_params(axis='both', labelsize=8)
+        ax_hist.set_title(
+            f"Pixel Intensity Distribution ({title_name})\n"
+            f"Average (Mean): {avg_val:.4g} ± {std_val:.4g} | Median: {med_val:.4g}",
+            fontsize='x-small'
+        )
+        ax_hist.set_xlabel("Pixel Intensity", fontsize=8.5)
+        ax_hist.set_ylabel("Pixel Count", fontsize=8.5)
+        ax_hist.grid(True, linestyle=':', alpha=0.6)
+        ax_hist.legend(loc='upper right', fontsize=6.5, framealpha=0.92, edgecolor='gray')
+
     def update_spectrum(self):
+        if self.is_mcc:
+            self.update_mcc_histogram()
+            self.fig.canvas.draw_idle()
+            return
         m = get_dynamic_mask(self.ctx['x_coords'][:len(self.s2d_rep)], self.ctx['y_coords'][:len(self.s2d_rep)], self.ctx['x_trim'], self.ctx['y_trim'], 
                              roi=self.current_roi, poly=self.current_poly if self.sync.mode=='poly' else None)
-        if self.is_mcc:
-            if self.line_spec: self.line_spec.set_ydata(np.zeros(256))
-            return
 
         if self.sync.use_sdd_calib and self.name in self.sync.sdd_calib_data:
             gain = self.sync.sdd_calib_data[self.name].get('gain', 1.0)
@@ -1770,6 +1837,8 @@ class DashboardRow:
         else:
             self.ax[2].set_yscale('linear')
             self.ax[2].set_ylim(0, ymax * 1.1 if ymax > 0 else 1.0)
+            self.ax[2].ticklabel_format(axis='y', style='sci', scilimits=(0, 3), useMathText=True)
+            self.ax[2].yaxis.get_offset_text().set_fontsize(7)
             
         if self.sync.use_sdd_calib and self.name in self.sync.sdd_calib_data:
             e_min, e_max = np.min(x_axis), np.max(x_axis)
@@ -1854,8 +1923,13 @@ class DashboardRow:
                           cmap=cmap, norm=norm, marker='s', edgecolors='none', rasterized=True)
         else:
             try:
-                ax_en.tripcolor(x_en_tm, y_en_tm, m_rep[tm], 
-                                 shading='gouraud', edgecolors='none', rasterized=True, cmap=cmap, norm=norm)
+                tri_en = get_masked_triangulation(x_en_tm, y_en_tm)
+                if tri_en:
+                    ax_en.tripcolor(tri_en, m_rep[tm],
+                                     shading='gouraud', edgecolors='none', rasterized=True, cmap=cmap, norm=norm)
+                else:
+                    ax_en.tripcolor(x_en_tm, y_en_tm, m_rep[tm], 
+                                     shading='gouraud', edgecolors='none', rasterized=True, cmap=cmap, norm=norm)
             except Exception:
                 s_en = compute_optimal_scatter_size(ax_en, x_en_tm, y_en_tm)
                 ax_en.scatter(x_en_tm, y_en_tm, c=m_rep[tm], s=s_en,
@@ -1871,7 +1945,9 @@ class DashboardRow:
             print(f"    ! Warning saving TIFF {path_en_tif}: {e}")
         print(f"    -> [SAVE] Energy Map ({title_name}): {path_en_png} & {path_en_tif}", flush=True)
 
-        # Export Average Map
+        # Export Average Map only for multi-energy stacks (redundant for single-energy maps)
+        if len(self.sync.all_energies) <= 1:
+            return
         base_name_avg = f"{self.ctx['scan_name']}_{self.name}_StackAverage"
         path_avg_png = get_safe_save_path(target_dir, f"{base_name_avg}.png")
         if not path_avg_png:
@@ -1907,8 +1983,13 @@ class DashboardRow:
                            cmap=cmap, norm=norm, marker='s', edgecolors='none', rasterized=True)
         else:
             try:
-                ax_avg.tripcolor(x_avg_tm, y_avg_tm, m_avg[tm], 
-                                 shading='gouraud', edgecolors='none', rasterized=True, cmap=cmap, norm=norm)
+                tri_avg = get_masked_triangulation(x_avg_tm, y_avg_tm)
+                if tri_avg:
+                    ax_avg.tripcolor(tri_avg, m_avg[tm],
+                                     shading='gouraud', edgecolors='none', rasterized=True, cmap=cmap, norm=norm)
+                else:
+                    ax_avg.tripcolor(x_avg_tm, y_avg_tm, m_avg[tm], 
+                                     shading='gouraud', edgecolors='none', rasterized=True, cmap=cmap, norm=norm)
             except Exception:
                 s_avg = compute_optimal_scatter_size(ax_avg, x_avg_tm, y_avg_tm)
                 ax_avg.scatter(x_avg_tm, y_avg_tm, c=m_avg[tm], s=s_avg,
@@ -1924,8 +2005,15 @@ class DashboardRow:
     def plot(self):
         # Use a unique but persistent figure ID for each detector
         fig_id = f"dash_{self.name}_{id(self.sync)}"
-        self.fig, self.ax = plt.subplots(1, 3, figsize=(10.5, 3.36), num=fig_id)
-        self.fig.subplots_adjust(left=0.06, right=0.97, bottom=0.2, top=0.85, wspace=0.18)
+        is_single_energy = (len(self.sync.all_energies) <= 1)
+        if is_single_energy:
+            self.fig, axes_2 = plt.subplots(1, 2, figsize=(7.5, 3.36), num=fig_id)
+            self.ax = [axes_2[0], None, axes_2[1]]
+            sub_adj = dict(left=0.08, right=0.96, bottom=0.20, top=0.84, wspace=0.24)
+        else:
+            self.fig, self.ax = plt.subplots(1, 3, figsize=(10.5, 3.36), num=fig_id)
+            sub_adj = dict(left=0.06, right=0.97, bottom=0.20, top=0.85, wspace=0.18)
+        self.fig.subplots_adjust(**sub_adj)
         cmap = 'viridis' if self.sync.use_color else 'gray'
         
         if self.is_mcc:
@@ -1991,55 +2079,58 @@ class DashboardRow:
         self.ax[0].set_xlabel("X (mm)")
         self.ax[0].set_ylabel("Y (mm)")
         
-        num_en = max(len(self.sync.all_energies), 1)
-        avg_map_raw = self.ctx['avg_maps'].get(self.name)
-        if avg_map_raw is None:
-            avg_map_raw = np.zeros(self.ctx['x_coords'].size, dtype=np.float32)
-        m_avg = avg_map_raw / num_en
-        m_avg_plot = m_avg[tm]
-        x_avg_tm = self.ctx['x_coords'][:len(m_avg)][tm]
-        y_avg_tm = self.ctx['y_coords'][:len(m_avg)][tm]
-        if self.sync.use_deconv and not self.is_mcc:
-            m_avg_plot = apply_deconvolution_to_map(
-                x_avg_tm,
-                y_avg_tm,
-                m_avg_plot,
-                self.sync.deconv_fwhm_um,
-                self.sync.deconv_iterations,
-                self.sync.deconv_type
-            )
-            
-        if as_scatter:
-            s_avg = compute_optimal_scatter_size(self.ax[1], x_avg_tm, y_avg_tm)
-            self.sc_avg = self.ax[1].scatter(x_avg_tm, y_avg_tm,
-                                             c=m_avg_plot, s=s_avg, cmap=cmap, marker='s', edgecolors='none', rasterized=True)
-            attach_dynamic_scatter_resizer(self.ax[1], self.sc_avg, x_avg_tm, y_avg_tm)
-        else:
-            tri_avg = get_masked_triangulation(x_avg_tm, y_avg_tm)
-            if tri_avg is not None:
-                self.sc_avg = self.ax[1].tripcolor(tri_avg, m_avg_plot,
-                                             shading='gouraud', edgecolors='none', rasterized=True, cmap=cmap)
+        if not is_single_energy and self.ax[1] is not None:
+            num_en = max(len(self.sync.all_energies), 1)
+            avg_map_raw = self.ctx['avg_maps'].get(self.name)
+            if avg_map_raw is None:
+                avg_map_raw = np.zeros(self.ctx['x_coords'].size, dtype=np.float32)
+            m_avg = avg_map_raw / num_en
+            m_avg_plot = m_avg[tm]
+            x_avg_tm = self.ctx['x_coords'][:len(m_avg)][tm]
+            y_avg_tm = self.ctx['y_coords'][:len(m_avg)][tm]
+            if self.sync.use_deconv and not self.is_mcc:
+                m_avg_plot = apply_deconvolution_to_map(
+                    x_avg_tm,
+                    y_avg_tm,
+                    m_avg_plot,
+                    self.sync.deconv_fwhm_um,
+                    self.sync.deconv_iterations,
+                    self.sync.deconv_type
+                )
+                
+            if as_scatter:
+                s_avg = compute_optimal_scatter_size(self.ax[1], x_avg_tm, y_avg_tm)
+                self.sc_avg = self.ax[1].scatter(x_avg_tm, y_avg_tm,
+                                                 c=m_avg_plot, s=s_avg, cmap=cmap, marker='s', edgecolors='none', rasterized=True)
+                attach_dynamic_scatter_resizer(self.ax[1], self.sc_avg, x_avg_tm, y_avg_tm)
             else:
-                try:
-                    self.sc_avg = self.ax[1].tripcolor(x_avg_tm, y_avg_tm, m_avg_plot,
+                tri_avg = get_masked_triangulation(x_avg_tm, y_avg_tm)
+                if tri_avg is not None:
+                    self.sc_avg = self.ax[1].tripcolor(tri_avg, m_avg_plot,
                                                  shading='gouraud', edgecolors='none', rasterized=True, cmap=cmap)
-                except Exception:
-                    s_avg = compute_optimal_scatter_size(self.ax[1], x_avg_tm, y_avg_tm)
-                    self.sc_avg = self.ax[1].scatter(x_avg_tm, y_avg_tm,
-                                                     c=m_avg_plot, s=s_avg, cmap=cmap, marker='s', edgecolors='none', rasterized=True)
-                    attach_dynamic_scatter_resizer(self.ax[1], self.sc_avg, x_avg_tm, y_avg_tm)
-        plt.colorbar(self.sc_avg, ax=self.ax[1]); self.ax[1].set_aspect('equal')
-        
-        if np.any(tm):
-            x_data = self.ctx['x_coords'][:len(m_avg)][tm]
-            y_data = self.ctx['y_coords'][:len(m_avg)][tm]
-            if len(x_data) > 0 and len(y_data) > 0:
-                self.ax[1].set_xlim(np.min(x_data), np.max(x_data))
-                self.ax[1].set_ylim(np.min(y_data), np.max(y_data))
+                else:
+                    try:
+                        self.sc_avg = self.ax[1].tripcolor(x_avg_tm, y_avg_tm, m_avg_plot,
+                                                     shading='gouraud', edgecolors='none', rasterized=True, cmap=cmap)
+                    except Exception:
+                        s_avg = compute_optimal_scatter_size(self.ax[1], x_avg_tm, y_avg_tm)
+                        self.sc_avg = self.ax[1].scatter(x_avg_tm, y_avg_tm,
+                                                         c=m_avg_plot, s=s_avg, cmap=cmap, marker='s', edgecolors='none', rasterized=True)
+                        attach_dynamic_scatter_resizer(self.ax[1], self.sc_avg, x_avg_tm, y_avg_tm)
+            plt.colorbar(self.sc_avg, ax=self.ax[1]); self.ax[1].set_aspect('equal')
             
-        self.ax[1].set_title(f"Stack Average", fontsize='small')
-        self.ax[1].set_xlabel("X (mm)")
-        self.ax[1].set_ylabel("Y (mm)")
+            if np.any(tm):
+                x_data = self.ctx['x_coords'][:len(m_avg)][tm]
+                y_data = self.ctx['y_coords'][:len(m_avg)][tm]
+                if len(x_data) > 0 and len(y_data) > 0:
+                    self.ax[1].set_xlim(np.min(x_data), np.max(x_data))
+                    self.ax[1].set_ylim(np.min(y_data), np.max(y_data))
+                
+            self.ax[1].set_title(f"Stack Average", fontsize='small')
+            self.ax[1].set_xlabel("X (mm)")
+            self.ax[1].set_ylabel("Y (mm)")
+        else:
+            self.sc_avg = None
         
         p_rect = plt.Rectangle((self.current_roi[0], self.current_roi[2]), self.current_roi[1]-self.current_roi[0], 
                              self.current_roi[3]-self.current_roi[2], lw=1.5, ec='r', fc='none', ls='--', zorder=100)
@@ -2054,26 +2145,29 @@ class DashboardRow:
                                             props=dict(color='red', markeredgecolor='red', markerfacecolor='red', alpha=0.5))
         self.sync_to_mode() 
         
-        ax_sync_roi = self.fig.add_axes([0.42, 0.88, 0.15, 0.05])
+        sync_btn_rect = [0.36, 0.88, 0.20, 0.05] if is_single_energy else [0.42, 0.88, 0.15, 0.05]
+        ax_sync_roi = self.fig.add_axes(sync_btn_rect)
         self.btn_sync_roi = Button(ax_sync_roi, 'Sync Map ROI', color='lightgreen', hovercolor='lime')
         self.btn_sync_roi.on_clicked(self.force_roi_sync); self.btn_sync_roi.label.set_fontsize(7)
 
         if self.is_mcc:
-            # Hide the 3rd axis for MCC maps as it is not needed
-            self.ax[2].set_visible(False)
+            self.update_mcc_histogram()
+            if np.any(tm):
+                valid_mcc = m_rep_plot[np.isfinite(m_rep_plot)]
+                if valid_mcc.size > 0:
+                    avg_v = float(np.mean(valid_mcc))
+                    std_v = float(np.std(valid_mcc))
+                    med_v = float(np.median(valid_mcc))
+                    print(
+                        f"  [{title_name} ({self.name}) @ {self.rep_e:.2f} eV] "
+                        f"Pixel Intensity -> Average (Mean): {avg_v:.4g} ± {std_v:.4g} (SD) | "
+                        f"Median: {med_v:.4g} | Min: {np.min(valid_mcc):.4g} | Max: {np.max(valid_mcc):.4g} | N={valid_mcc.size:,} px"
+                    )
             # Use identical layout to SDD maps so MCC maps perfectly match their size/position
-            self.fig.subplots_adjust(left=0.06, right=0.97, bottom=0.2, top=0.85, wspace=0.18)
+            self.fig.subplots_adjust(**sub_adj)
+            mplcursors.cursor(self.sc_en, hover=True)
             self.fig.canvas.mpl_connect('button_press_event', _on_dashboard_click)
             return
-
-        if len(self.sync.all_energies) <= 1:
-            # For single energy, we still want the XRF spectrum to see the peaks
-            # but we use a 1x3 grid or similar? The figure was created as 1x3.
-            # Let's just keep the 3rd axis visible and update it.
-            pass
-        else:
-            # Multi-energy stack logic
-            pass
 
         m_roi = get_dynamic_mask(self.ctx['x_coords'][:len(self.s2d_rep)], self.ctx['y_coords'][:len(self.s2d_rep)], self.ctx['x_trim'], self.ctx['y_trim'], 
                                 roi=self.current_roi, poly=self.current_poly if self.sync.mode=='poly' else None)
@@ -2111,9 +2205,13 @@ class DashboardRow:
         self.ax[2].set_xmargin(0)
         self.ax[2].set_autoscalex_on(False)
         self.ax[2].set_ylim(bottom=0)
+        self.ax[2].tick_params(axis='both', labelsize=8.5)
+        if not self.sync.use_log_spec:
+            self.ax[2].ticklabel_format(axis='y', style='sci', scilimits=(0, 3), useMathText=True)
+            self.ax[2].yaxis.get_offset_text().set_fontsize(7)
         
         # Tighten margins and spacing to ensure the 3rd plot is pulled inward
-        self.fig.subplots_adjust(left=0.06, right=0.97, bottom=0.2, top=0.85, wspace=0.18)
+        self.fig.subplots_adjust(**sub_adj)
         mplcursors.cursor(self.sc_en, hover=True)
         cur_xrf = mplcursors.cursor(self.line_spec, hover=True)
         @cur_xrf.connect("add")
@@ -3146,16 +3244,14 @@ class SummaryDashboard:
             rows, cols = 2, 2
         fig_id = f"dash_summary_{id(self.sync)}"
         if is_single_energy:
-            # We want the UI buttons but no plots. 
-            # We can't return early or we lose all button setup.
-            # Create a thin empty axis for the plots area or just skip plot creation.
+            # We want the UI buttons for a single map/image without XANES plots or XANES-only controls.
             rows, cols = 1, 1
-            # Increased height from 2.0 to 4.0 to give buttons more room
-            self.fig, self.ax = plt.subplots(rows, cols, figsize=(8.9, 2.8), squeeze=False, num=fig_id)
-            self.ax[0,0].axis('off')
-            btn_y = 0.20 # Higher starting Y for buttons in a smaller figure
-            btn_h = 0.15 # Taller buttons for the small figure
-            chk_y = 0.45
+            self.fig, self.ax = plt.subplots(rows, cols, figsize=(8.9, 1.8), squeeze=False, num=fig_id)
+            self.ax[0, 0].axis('off')
+            btn_y = 0.14
+            btn_h = 0.34
+            chk_y = 0.60
+            chk_h = 0.24
         else:
             # Each plot is reduced by 30% to fit comfortably on screen
             is_ext_i0 = (self.ctx.get('ext_i0_values') is not None and "Internal" not in self.ctx.get('i0_source', ''))
@@ -3164,6 +3260,7 @@ class SummaryDashboard:
             btn_y = 0.015
             btn_h = 0.04
             chk_y = 0.06
+            chk_h = 0.03
             
             ax_raw_sdd = self.ax[0, 0]
             ax_raw_mcc = self.ax[0, 1]
@@ -3377,7 +3474,7 @@ class SummaryDashboard:
                     print(f"  [Warning] Unable to attach hover cursor to XANES spectra: {_e_cur}")
         
         # Bottom row buttons - Adjusted positions to avoid overlapping x-axis labels
-        ax_chk = self.fig.add_axes([0.02, chk_y, 0.35, 0.03])
+        ax_chk = self.fig.add_axes([0.02, chk_y, 0.35, chk_h])
         self.chk_meta = CheckButtons(ax_chk, ["Add Sample Specific Information to File Header"], [self.sync.full_metadata])
         for text in self.chk_meta.labels:
             text.set_fontsize(7)
@@ -3387,57 +3484,85 @@ class SummaryDashboard:
                 self.edit_metadata_call()
         self.chk_meta.on_clicked(toggle_meta)
 
-        ax_edit_meta = self.fig.add_axes([0.38, chk_y, 0.10, 0.03])
+        ax_edit_meta = self.fig.add_axes([0.38, chk_y, 0.10, chk_h])
         self.btn_edit_meta = Button(ax_edit_meta, 'Edit Metadata', color='lightgreen', hovercolor='palegreen')
         self.btn_edit_meta.on_clicked(self.edit_metadata_call); self.btn_edit_meta.label.set_fontsize(7)
 
-        # SDD Detector Selector for Averaging
         available_dets = list(self.ctx['detector_names'])
         if getattr(self.sync, 'selected_detectors', None) is None:
             self.sync.selected_detectors = list(available_dets)
-        init_states = [(d in self.sync.selected_detectors) for d in available_dets]
-        
-        ax_chk_sdd = self.fig.add_axes([0.50, chk_y, 0.45, 0.03])
-        self.chk_sdd = CheckButtons(ax_chk_sdd, [f"Average {d}" for d in available_dets], init_states)
-        for text in self.chk_sdd.labels:
-            text.set_fontsize(7)
+
+        if is_single_energy:
+            self.chk_sdd = None
+            self.btn_save_xanes = None
+            self.btn_save_pm3d = None
+
+            ax_save_xrd = self.fig.add_axes([0.02, btn_y, 0.11, btn_h])
+            self.btn_save_xrd = Button(ax_save_xrd, 'Save XRD\nSpectra', color='yellow', hovercolor='khaki')
+            self.btn_save_xrd.on_clicked(self.save_consolidated_xrd_spectrum); self.btn_save_xrd.label.set_fontsize(7)
+
+            ax_toggle = self.fig.add_axes([0.15, btn_y, 0.13, btn_h])
+            label_toggle = "Switch to\nPolygon" if self.sync.mode == 'rect' else "Switch to\nRectangle"
+            self.btn_toggle = Button(ax_toggle, label_toggle, color='yellow', hovercolor='khaki')
+            self.btn_toggle.on_clicked(self.toggle_selection_mode); self.btn_toggle.label.set_fontsize(7)
+
+            ax_theme = self.fig.add_axes([0.30, btn_y, 0.11, btn_h])
+            label_theme = "Switch to\nGray" if self.sync.use_color else "Switch to\nColor"
+            self.btn_theme = Button(ax_theme, label_theme, color='yellow', hovercolor='khaki')
+            self.btn_theme.on_clicked(self.toggle_theme); self.btn_theme.label.set_fontsize(7)
+
+            ax_save_imgs = self.fig.add_axes([0.43, btn_y, 0.11, btn_h])
+            self.btn_save_imgs = Button(ax_save_imgs, 'Save All\nImages', color='yellow', hovercolor='khaki')
+            self.btn_save_imgs.on_clicked(self.save_all_images); self.btn_save_imgs.label.set_fontsize(7)
+
+            ax_save_pm4d = self.fig.add_axes([0.56, btn_y, 0.30, btn_h])
+            self.btn_save_pm4d = Button(ax_save_pm4d, 'Save XRF Spectra for Elemental\nAnalysis using PyMca', color='yellow', hovercolor='khaki')
+            self.btn_save_pm4d.on_clicked(self.save_pymca_4d_stack_call); self.btn_save_pm4d.label.set_fontsize(7)
+        else:
+            # SDD Detector Selector for Averaging
+            init_states = [(d in self.sync.selected_detectors) for d in available_dets]
             
-        def on_sdd_check_toggle(label):
-            status_tuple = self.chk_sdd.get_status()
-            active_dets = [available_dets[i] for i, status in enumerate(status_tuple) if status]
-            self.sync.broadcast_selected_detectors(active_dets)
+            ax_chk_sdd = self.fig.add_axes([0.50, chk_y, 0.45, chk_h])
+            self.chk_sdd = CheckButtons(ax_chk_sdd, [f"Average {d}" for d in available_dets], init_states)
+            for text in self.chk_sdd.labels:
+                text.set_fontsize(7)
+                
+            def on_sdd_check_toggle(label):
+                status_tuple = self.chk_sdd.get_status()
+                active_dets = [available_dets[i] for i, status in enumerate(status_tuple) if status]
+                self.sync.broadcast_selected_detectors(active_dets)
 
-        self.chk_sdd.on_clicked(on_sdd_check_toggle)
+            self.chk_sdd.on_clicked(on_sdd_check_toggle)
 
-        ax_save_xanes = self.fig.add_axes([0.02, btn_y, 0.06, btn_h])
-        self.btn_save_xanes = Button(ax_save_xanes, 'Save XANES\nSpectra', color='yellow', hovercolor='khaki')
-        self.btn_save_xanes.on_clicked(self.save_summary_csv); self.btn_save_xanes.label.set_fontsize(7)
+            ax_save_xanes = self.fig.add_axes([0.02, btn_y, 0.06, btn_h])
+            self.btn_save_xanes = Button(ax_save_xanes, 'Save XANES\nSpectra', color='yellow', hovercolor='khaki')
+            self.btn_save_xanes.on_clicked(self.save_summary_csv); self.btn_save_xanes.label.set_fontsize(7)
 
-        ax_save_xrd = self.fig.add_axes([0.10, btn_y, 0.07, btn_h])
-        self.btn_save_xrd = Button(ax_save_xrd, 'Save XRD\nSpectra', color='yellow', hovercolor='khaki')
-        self.btn_save_xrd.on_clicked(self.save_consolidated_xrd_spectrum); self.btn_save_xrd.label.set_fontsize(7)
-        
-        ax_toggle = self.fig.add_axes([0.18, btn_y, 0.09, btn_h])
-        label_toggle = "Switch to\nPolygon" if self.sync.mode == 'rect' else "Switch to\nRectangle"
-        self.btn_toggle = Button(ax_toggle, label_toggle, color='yellow', hovercolor='khaki')
-        self.btn_toggle.on_clicked(self.toggle_selection_mode); self.btn_toggle.label.set_fontsize(7)
+            ax_save_xrd = self.fig.add_axes([0.10, btn_y, 0.07, btn_h])
+            self.btn_save_xrd = Button(ax_save_xrd, 'Save XRD\nSpectra', color='yellow', hovercolor='khaki')
+            self.btn_save_xrd.on_clicked(self.save_consolidated_xrd_spectrum); self.btn_save_xrd.label.set_fontsize(7)
+            
+            ax_toggle = self.fig.add_axes([0.18, btn_y, 0.09, btn_h])
+            label_toggle = "Switch to\nPolygon" if self.sync.mode == 'rect' else "Switch to\nRectangle"
+            self.btn_toggle = Button(ax_toggle, label_toggle, color='yellow', hovercolor='khaki')
+            self.btn_toggle.on_clicked(self.toggle_selection_mode); self.btn_toggle.label.set_fontsize(7)
 
-        ax_theme = self.fig.add_axes([0.28, btn_y, 0.08, btn_h])
-        label_theme = "Switch to\nGray" if self.sync.use_color else "Switch to\nColor"
-        self.btn_theme = Button(ax_theme, label_theme, color='yellow', hovercolor='khaki')
-        self.btn_theme.on_clicked(self.toggle_theme); self.btn_theme.label.set_fontsize(7)
+            ax_theme = self.fig.add_axes([0.28, btn_y, 0.08, btn_h])
+            label_theme = "Switch to\nGray" if self.sync.use_color else "Switch to\nColor"
+            self.btn_theme = Button(ax_theme, label_theme, color='yellow', hovercolor='khaki')
+            self.btn_theme.on_clicked(self.toggle_theme); self.btn_theme.label.set_fontsize(7)
 
-        ax_save_imgs = self.fig.add_axes([0.37, btn_y, 0.08, btn_h])
-        self.btn_save_imgs = Button(ax_save_imgs, 'Save All\nImages', color='yellow', hovercolor='khaki')
-        self.btn_save_imgs.on_clicked(self.save_all_images); self.btn_save_imgs.label.set_fontsize(7)
+            ax_save_imgs = self.fig.add_axes([0.37, btn_y, 0.08, btn_h])
+            self.btn_save_imgs = Button(ax_save_imgs, 'Save All\nImages', color='yellow', hovercolor='khaki')
+            self.btn_save_imgs.on_clicked(self.save_all_images); self.btn_save_imgs.label.set_fontsize(7)
 
-        ax_save_pm3d = self.fig.add_axes([0.46, btn_y, 0.14, btn_h])
-        self.btn_save_pm3d = Button(ax_save_pm3d, 'Save Normalized XANES\nSpectra for PCA/CA', color='yellow', hovercolor='khaki')
-        self.btn_save_pm3d.on_clicked(self.save_pymca_stack_call); self.btn_save_pm3d.label.set_fontsize(7)
+            ax_save_pm3d = self.fig.add_axes([0.46, btn_y, 0.14, btn_h])
+            self.btn_save_pm3d = Button(ax_save_pm3d, 'Save Normalized XANES\nSpectra for PCA/CA', color='yellow', hovercolor='khaki')
+            self.btn_save_pm3d.on_clicked(self.save_pymca_stack_call); self.btn_save_pm3d.label.set_fontsize(7)
 
-        ax_save_pm4d = self.fig.add_axes([0.61, btn_y, 0.24, btn_h])
-        self.btn_save_pm4d = Button(ax_save_pm4d, 'Save XRF Spectra for Elemental\nAnalysis using PyMca', color='yellow', hovercolor='khaki')
-        self.btn_save_pm4d.on_clicked(self.save_pymca_4d_stack_call); self.btn_save_pm4d.label.set_fontsize(7)
+            ax_save_pm4d = self.fig.add_axes([0.61, btn_y, 0.24, btn_h])
+            self.btn_save_pm4d = Button(ax_save_pm4d, 'Save XRF Spectra for Elemental\nAnalysis using PyMca', color='yellow', hovercolor='khaki')
+            self.btn_save_pm4d.on_clicked(self.save_pymca_4d_stack_call); self.btn_save_pm4d.label.set_fontsize(7)
         
         # top row elements removed as energy selector is now a decoupled widget
         
@@ -3692,8 +3817,8 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
         if mcc_to_map is None:
             if not detector_names and mcc_channels:
                 mcc_to_map = list(mcc_channels)
-            elif mcc_channels and 4 in mcc_channels:
-                mcc_to_map = [4]
+            elif mcc_channels:
+                mcc_to_map = [ch for ch in [1, 4] if ch in mcc_channels]
             else:
                 mcc_to_map = []
 
@@ -3938,76 +4063,89 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                         mcc1_vals = np.array(extracted)
 
                 if mcc1_vals is not None and len(mcc1_vals) > 0:
-                    min_len = min(len(calibrated_energies), len(mcc1_vals))
-                    int_df = pd.DataFrame({'Energy': calibrated_energies[:min_len], 'Au Mesh I0 (mcc1)': mcc1_vals[:min_len]})
-                    dialog = ExternalI0PreviewDialog(root_i0, int_df, 'Energy', 'Au Mesh I0 (mcc1)')
-                    dialog.title("Internal Au Mesh I0 (mcc1) Preview")
-                    dialog.attributes("-topmost", True)
-                    try:
-                        dialog.deiconify()
-                        dialog.lift()
-                        dialog.focus_force()
-                        dialog.grab_set()
-                    except Exception:
-                        pass
-                    dialog.mainloop()
-                    
-                    if dialog.result:
-                        selected_e_col, selected_i_col, x_sorted, y_sorted, extra_str, cal_en, cal_val = dialog.result[:7]
-                        const_offset_val = dialog.result[7] if len(dialog.result) > 7 else getattr(dialog, 'const_val', 0.0)
-                        const_op = dialog.result[8] if len(dialog.result) > 8 else getattr(dialog, 'const_op', 'Add')
-                        if const_offset_val == 0.0 and extra_str:
-                            import re
-                            m_const = re.search(r'\(([+*\/])\s*Constant:\s*([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\)', extra_str)
-                            if m_const:
-                                try:
-                                    op_char = m_const.group(1)
-                                    const_offset_val = float(m_const.group(2))
-                                    const_op = "Multiply" if op_char == "*" else ("Divide" if op_char == "/" else "Add")
-                                except Exception:
-                                    pass
-                        path_pack['i0_const_offset'] = const_offset_val
-                        path_pack['i0_const_op'] = const_op
-                        ext_i0_values = np.interp(calibrated_energies, x_sorted, y_sorted)
-                        i0_source = f"Internal: Au Mesh I0 (mcc1){extra_str}"
+                    if len(all_energies) <= 1 or not HAS_GUI:
+                        ext_i0_values = mcc1_vals.copy()
+                        path_pack['i0_const_offset'] = 0.0
+                        path_pack['i0_const_op'] = 'Add'
                         path_pack['i0_calib_enabled'] = False
                         path_pack['i0_energy_shift'] = 0.0
-
-                        # Preserve original raw mcc1 before modifications
-                        if 'mcc1' in mcc_data and len(mcc_data['mcc1']) > 0:
-                            mcc_data['mcc1_original'] = np.array(mcc_data['mcc1']).copy()
+                    else:
+                        min_len = min(len(calibrated_energies), len(mcc1_vals))
+                        int_df = pd.DataFrame({'Energy': calibrated_energies[:min_len], 'Au Mesh I0 (mcc1)': mcc1_vals[:min_len]})
+                        dialog = ExternalI0PreviewDialog(root_i0, int_df, 'Energy', 'Au Mesh I0 (mcc1)')
+                        dialog.title("Internal Au Mesh I0 (mcc1) Preview")
+                        dialog.attributes("-topmost", True)
+                        try:
+                            dialog.deiconify()
+                            dialog.lift()
+                            dialog.focus_force()
+                            dialog.grab_set()
+                        except Exception:
+                            pass
+                        dialog.mainloop()
                         
-                        # Update mcc1 in mcc_data, path_pack, and mcc_maps so mcc1 reflects the active I0
-                        # (including constant offset, smoothing, OD correction) everywhere
-                        mcc_data['mcc1'] = ext_i0_values
-                        if 'mcc1' in mcc_maps and mcc_maps['mcc1'] is not None:
-                            n_pix = mcc_maps['mcc1'].shape[1]
-                            mcc_maps['mcc1_original'] = mcc_maps['mcc1'].copy()
-                            mcc_maps['mcc1'] = np.tile(ext_i0_values[:, None], (1, n_pix)).astype(mcc_maps['mcc1'].dtype)
-                            if 'mcc_maps' not in path_pack or not isinstance(path_pack['mcc_maps'], dict):
-                                path_pack['mcc_maps'] = mcc_maps.copy()
-                            else:
-                                path_pack['mcc_maps']['mcc1'] = mcc_maps['mcc1']
-                        if 'mcc_data' not in path_pack or not isinstance(path_pack['mcc_data'], dict):
-                            path_pack['mcc_data'] = mcc_data.copy()
-                        else:
-                            path_pack['mcc_data']['mcc1'] = ext_i0_values
+                        if dialog.result:
+                            selected_e_col, selected_i_col, x_sorted, y_sorted, extra_str, cal_en, cal_val = dialog.result[:7]
+                            const_offset_val = dialog.result[7] if len(dialog.result) > 7 else getattr(dialog, 'const_val', 0.0)
+                            const_op = dialog.result[8] if len(dialog.result) > 8 else getattr(dialog, 'const_op', 'Add')
+                            if const_offset_val == 0.0 and extra_str:
+                                import re
+                                m_const = re.search(r'\(([+*\/])\s*Constant:\s*([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\)', extra_str)
+                                if m_const:
+                                    try:
+                                        op_char = m_const.group(1)
+                                        const_offset_val = float(m_const.group(2))
+                                        const_op = "Multiply" if op_char == "*" else ("Divide" if op_char == "/" else "Add")
+                                    except Exception:
+                                        pass
+                            path_pack['i0_const_offset'] = const_offset_val
+                            path_pack['i0_const_op'] = const_op
+                            ext_i0_values = np.interp(calibrated_energies, x_sorted, y_sorted)
+                            i0_source = f"Internal: Au Mesh I0 (mcc1){extra_str}"
+                            path_pack['i0_calib_enabled'] = False
+                            path_pack['i0_energy_shift'] = 0.0
 
-                        if const_offset_val != 0.0:
-                            console_log("\n" + "=" * 70)
-                            if const_op == "Multiply":
-                                console_log(f"  [I0 CONFIGURATION] A constant was multiplied with Au Mesh I0 (mcc1): *{const_offset_val:.4g}")
-                                console_log(f"  [I0 CONFIGURATION] Formula: I0_modified = I0_original * ({const_offset_val:.4g})")
-                            elif const_op == "Divide":
-                                console_log(f"  [I0 CONFIGURATION] Au Mesh I0 (mcc1) was divided by a constant: /{const_offset_val:.4g}")
-                                console_log(f"  [I0 CONFIGURATION] Formula: I0_modified = I0_original / ({const_offset_val:.4g})")
+                            # Preserve original raw mcc1 before modifications
+                            if 'mcc1' in mcc_data and len(mcc_data['mcc1']) > 0:
+                                mcc_data['mcc1_original'] = np.array(mcc_data['mcc1']).copy()
+                            
+                            # Update mcc1 1D energy series in mcc_data, while preserving 2D spatial variation in mcc_maps['mcc1']
+                            mcc_data['mcc1'] = ext_i0_values
+                            if 'mcc1' in mcc_maps and mcc_maps['mcc1'] is not None:
+                                mcc_maps['mcc1_original'] = mcc_maps['mcc1'].copy()
+                                if const_offset_val != 0.0:
+                                    if const_op == "Multiply":
+                                        mcc_maps['mcc1'] = (mcc_maps['mcc1'] * const_offset_val).astype(mcc_maps['mcc1'].dtype)
+                                    elif const_op == "Divide" and const_offset_val != 0.0:
+                                        mcc_maps['mcc1'] = (mcc_maps['mcc1'] / const_offset_val).astype(mcc_maps['mcc1'].dtype)
+                                    else:
+                                        mcc_maps['mcc1'] = (mcc_maps['mcc1'] + const_offset_val).astype(mcc_maps['mcc1'].dtype)
+                                    if 'mcc1' in avg_maps and avg_maps['mcc1'] is not None:
+                                        avg_maps['mcc1'] = np.nansum(mcc_maps['mcc1'], axis=0).astype(np.float32)
+                                if 'mcc_maps' not in path_pack or not isinstance(path_pack['mcc_maps'], dict):
+                                    path_pack['mcc_maps'] = mcc_maps.copy()
+                                else:
+                                    path_pack['mcc_maps']['mcc1'] = mcc_maps['mcc1']
+                            if 'mcc_data' not in path_pack or not isinstance(path_pack['mcc_data'], dict):
+                                path_pack['mcc_data'] = mcc_data.copy()
                             else:
-                                console_log(f"  [I0 CONFIGURATION] A constant was added to Au Mesh I0 (mcc1): {const_offset_val:+.4g}")
-                                console_log(f"  [I0 CONFIGURATION] Formula: I0_modified = I0_original + ({const_offset_val:+.4g})")
-                            console_log(f"  [I0 CONFIGURATION] Normalization Source: {i0_source}")
-                            console_log("=" * 70 + "\n")
-                        else:
-                            console_log(f"\n  [I0 CONFIGURATION] Normalization Source: {i0_source}\n")
+                                path_pack['mcc_data']['mcc1'] = ext_i0_values
+
+                            if const_offset_val != 0.0:
+                                console_log("\n" + "=" * 70)
+                                if const_op == "Multiply":
+                                    console_log(f"  [I0 CONFIGURATION] A constant was multiplied with Au Mesh I0 (mcc1): *{const_offset_val:.4g}")
+                                    console_log(f"  [I0 CONFIGURATION] Formula: I0_modified = I0_original * ({const_offset_val:.4g})")
+                                elif const_op == "Divide":
+                                    console_log(f"  [I0 CONFIGURATION] Au Mesh I0 (mcc1) was divided by a constant: /{const_offset_val:.4g}")
+                                    console_log(f"  [I0 CONFIGURATION] Formula: I0_modified = I0_original / ({const_offset_val:.4g})")
+                                else:
+                                    console_log(f"  [I0 CONFIGURATION] A constant was added to Au Mesh I0 (mcc1): {const_offset_val:+.4g}")
+                                    console_log(f"  [I0 CONFIGURATION] Formula: I0_modified = I0_original + ({const_offset_val:+.4g})")
+                                console_log(f"  [I0 CONFIGURATION] Normalization Source: {i0_source}")
+                                console_log("=" * 70 + "\n")
+                            else:
+                                console_log(f"\n  [I0 CONFIGURATION] Normalization Source: {i0_source}\n")
             except Exception as e:
                 print(f"Error previewing internal I0: {type(e).__name__}: {e}")
                 traceback.print_exc()
@@ -4335,8 +4473,12 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                 
             for d in sync.dashboards:
                 try: 
-                    d.fig.canvas.layout.min_width = '1015px'
-                    d.fig.canvas.layout.max_width = '1050px'
+                    if len(all_energies) <= 1:
+                        d.fig.canvas.layout.min_width = '720px'
+                        d.fig.canvas.layout.max_width = '760px'
+                    else:
+                        d.fig.canvas.layout.min_width = '1015px'
+                        d.fig.canvas.layout.max_width = '1050px'
                 except: pass
                 map_row_widgets.append(d.fig.canvas)
             

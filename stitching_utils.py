@@ -301,7 +301,7 @@ def calculate_initial_zero_overlap_trims(data_packs):
                 if not between:
                     overlap_x = m_a['x_max'] - m_b['x_min']
                     if 0 < overlap_x < 0.90 * min_w:
-                        half_ov = round(float(overlap_x / 2.0) + 0.005, 3)
+                        half_ov = round(float(overlap_x / 2.0), 3)
                         auto_trims[m_a['idx']]['right'] = max(auto_trims[m_a['idx']]['right'], half_ov)
                         auto_trims[m_b['idx']]['left'] = max(auto_trims[m_b['idx']]['left'], half_ov)
 
@@ -320,7 +320,7 @@ def calculate_initial_zero_overlap_trims(data_packs):
                 if not between:
                     overlap_y = m_b['y_max'] - m_a['y_min']
                     if 0 < overlap_y < 0.90 * min_h:
-                        half_ov = round(float(overlap_y / 2.0) + 0.005, 3)
+                        half_ov = round(float(overlap_y / 2.0), 3)
                         auto_trims[m_a['idx']]['bottom'] = max(auto_trims[m_a['idx']]['bottom'], half_ov)
                         auto_trims[m_b['idx']]['top'] = max(auto_trims[m_b['idx']]['top'], half_ov)
 
@@ -500,10 +500,10 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50), auto_trim=Fa
         else:
             init_l, init_r, init_t, init_b = 0.0, 0.0, 0.0, 0.0
         
-        l_s = widgets.FloatSlider(value=init_l, min=0.0, max=round(x_range*0.95, 2), step=0.01, description=f'{label} Left:')
-        r_s = widgets.FloatSlider(value=init_r, min=0.0, max=round(x_range*0.95, 2), step=0.01, description=f'{label} Right:')
-        t_s = widgets.FloatSlider(value=init_t, min=0.0, max=round(y_range*0.95, 2), step=0.01, description=f'{label} Top:')
-        b_s = widgets.FloatSlider(value=init_b, min=0.0, max=round(y_range*0.95, 2), step=0.01, description=f'{label} Bottom:')
+        l_s = widgets.FloatSlider(value=init_l, min=0.0, max=round(x_range*0.95, 3), step=0.001, readout_format='.3f', description=f'{label} Left:')
+        r_s = widgets.FloatSlider(value=init_r, min=0.0, max=round(x_range*0.95, 3), step=0.001, readout_format='.3f', description=f'{label} Right:')
+        t_s = widgets.FloatSlider(value=init_t, min=0.0, max=round(y_range*0.95, 3), step=0.001, readout_format='.3f', description=f'{label} Top:')
+        b_s = widgets.FloatSlider(value=init_b, min=0.0, max=round(y_range*0.95, 3), step=0.001, readout_format='.3f', description=f'{label} Bottom:')
         sliders.append({'L': l_s, 'R': r_s, 'T': t_s, 'B': b_s})
 
     # Trim Mode Toggle
@@ -582,7 +582,7 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50), auto_trim=Fa
                 num_total = len(orig_x)
                 num_trimmed = num_total - num_kept
                 
-                print(f"  [{lbl}] Trims: Left={L:.2f}mm, Right={R:.2f}mm, Top={T:.2f}mm, Bottom={B:.2f}mm | Kept {num_kept}/{num_total} pts ({num_trimmed} trimmed)")
+                print(f"  [{lbl}] Trims: Left={L:.3f}mm, Right={R:.3f}mm, Top={T:.3f}mm, Bottom={B:.3f}mm | Kept {num_kept}/{num_total} pts ({num_trimmed} trimmed)")
 
                 col = colors[i % len(colors)]
                 
@@ -1170,10 +1170,19 @@ def check_stitching_gaps(h5_file_path, verbose=True):
         print("[Error] No stitching metadata found in file. Please re-bake the dataset using interactive_stitching_trim().")
         return None
 
+    is_overlap_only = str(trim_info.get('trim_mode', 'full_edge')).lower().startswith('overlap')
     maps_data = []
     for key, mdata in trim_info['maps'].items():
-        kx_min, kx_max = mdata['kept_x_range']
-        ky_min, ky_max = mdata['kept_y_range']
+        ox_min, ox_max = mdata['orig_x_range']
+        oy_min, oy_max = mdata['orig_y_range']
+        if is_overlap_only:
+            kx_min = ox_min + mdata.get('trim_left_mm', 0.0)
+            kx_max = ox_max - mdata.get('trim_right_mm', 0.0)
+            ky_min = oy_min + mdata.get('trim_bottom_mm', 0.0)
+            ky_max = oy_max - mdata.get('trim_top_mm', 0.0)
+        else:
+            kx_min, kx_max = mdata['kept_x_range']
+            ky_min, ky_max = mdata['kept_y_range']
         xc = (kx_min + kx_max) / 2.0
         yc = (ky_min + ky_max) / 2.0
         w = max(kx_max - kx_min, 1e-4)
@@ -1227,7 +1236,7 @@ def check_stitching_gaps(h5_file_path, verbose=True):
         
         delta_y = bot_y_max - top_y_min
         
-        if abs(delta_y) < 0.02:
+        if abs(delta_y) < 0.005:
             status = "PERFECT ALIGNMENT"
             rec = "No Y-trim adjustment needed."
         elif delta_y > 0:
@@ -1261,7 +1270,7 @@ def check_stitching_gaps(h5_file_path, verbose=True):
             stagger_top = abs(left_img['y_max'] - right_img['y_max'])
             stagger_bot = abs(left_img['y_min'] - right_img['y_min'])
             
-            if abs(delta_x) < 0.02:
+            if abs(delta_x) < 0.005:
                 status = "PERFECT ALIGNMENT"
                 rec = "No X-trim adjustment needed."
             elif delta_x > 0:
