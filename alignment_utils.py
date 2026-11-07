@@ -1266,8 +1266,15 @@ def interactive_roll_align(path_pack, channel_roi=None, max_shift=100, use_color
         )
         
         if intensity is not None:
-            h5_path = path_pack.get('h5_file_path')
-            save_dir = os.path.abspath(os.path.dirname(h5_path)) if h5_path else os.getcwd()
+            save_dir = path_pack.get('save_dir')
+            if not save_dir or save_dir == 'N/A':
+                h5_path = path_pack.get('h5_file_path')
+                raw_dir = os.path.abspath(os.path.dirname(h5_path)) if h5_path else os.getcwd()
+                try:
+                    from analyze_sgm_bsky_data import resolve_preprocessed_save_dir
+                    save_dir = resolve_preprocessed_save_dir(raw_dir)
+                except Exception:
+                    save_dir = raw_dir
             if xrf_roi is not None:
                 default_name = f"{prefix}_XRF_ROI_{xrf_roi[0]:.1f}-{xrf_roi[1]:.1f}eV.png"
             else:
@@ -1290,12 +1297,11 @@ def interactive_roll_align(path_pack, channel_roi=None, max_shift=100, use_color
                                  edgecolors='none', rasterized=True, cmap='viridis')
             clean_ax.set_aspect('equal')
             clean_ax.axis('off')
+            os.makedirs(os.path.dirname(os.path.abspath(save_filename)), exist_ok=True)
             clean_fig.savefig(save_filename, bbox_inches='tight', pad_inches=0, transparent=True)
             print(f"    -> [SAVE] Image saved to: {save_filename}")
             
-            root_fin = get_tk_root()
-            root_fin.attributes("-topmost", True)
-            messagebox.showinfo("Save Successful", f"Image saved to:\n{save_filename}", parent=root_fin)
+            safe_messagebox_showinfo("Save Successful", f"Image saved to:\n{save_filename}")
         else:
             with output:
                 print("Error: Could not load data for saving.")

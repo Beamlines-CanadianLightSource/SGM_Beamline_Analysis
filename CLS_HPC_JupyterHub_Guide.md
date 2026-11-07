@@ -90,6 +90,7 @@ You can open a terminal directly inside **JupyterLab** (File → New → Termina
 ```bash
 ssh <username>@planck.clsi.ca
 ```
+salloc   (allocation)
 
 ### 5.2 Load Modules and Build the Virtual Environment
 Planck uses the Compute Canada / Alliance Lmod software stack:
@@ -97,9 +98,10 @@ Planck uses the Compute Canada / Alliance Lmod software stack:
 ```bash
 # 1. Load an updated environment and Python
 module load StdEnv/2023
-module load python/3.10  # or python/3.11
+module load python/3.13  # or python/3.11
+module list  # to see the loaded modules
 
-# 2. Create a virtual environment in your home directory
+# 2. Create a virtual environment in your home directory (this only needs to be initally)
 mkdir -p ~/envs
 python -m venv ~/envs/sgm_analysis
 
@@ -108,11 +110,12 @@ source ~/envs/sgm_analysis/bin/activate
 
 # 4. Upgrade pip and install standard scientific packages
 pip install --upgrade pip
-pip install numpy scipy matplotlib h5py pandas
+pip install numpy scipy matplotlib h5py pandas scikit-image sklearn
 
 # 5. Install Bluesky / Databroker & PyMca (if needed for stack analysis)
 pip install bluesky databroker
 pip install PyMca5
+pip install mplcursors
 
 # 6. Install ipykernel and register the kernel for JupyterHub
 pip install ipykernel
@@ -136,21 +139,43 @@ git clone https://github.com/Beamlines-CanadianLightSource/SGM_Beamline_Analysis
 cd SGM_Beamline_Analysis
 ```
 
-### Adjusting Notebook Data Paths for Planck
-In [`SGM_BSky_Data_Analysis.ipynb`](file:///c:/Users/dynesj/PycharmProjects/PythonProject/Gemini_CLI2/SGM_Beamline_Analysis/SGM_BSky_Data_Analysis.ipynb):
-* Update the scan catalog location or raw data directory path:
-  ```python
-  # Local workstation example:
-  # data_dir = r"C:\Data\SGM_Scans"
+### Interactive Beamline Data Browser for Planck
 
-  # Planck HPC example:
-  data_dir = "/home/<username>/scratch/sgm_data"
-  # or direct mount to beamline raw data:
-  # data_dir = "/beamline/sgm/data/2026/..."
-  ```
-* Save generated files (such as PyMca 4D stacks or large 2D RIXS exports) to `$SCRATCH`:
+Because Planck runs in a **headless Linux environment** (no desktop GUI), `analyze_sgm_bsky_data()` cannot open a Windows file explorer window.
+
+To easily browse beamline data on Loki (`/gpfs/Primary/beamlinedata/sgm/...`) directly in your Jupyter notebook without hardcoding file paths, you can use the built-in **`browse_beamline_data()`** explorer:
+
+In [`SGM_BSky_Data_Analysis.ipynb`](file:///c:/Users/dynesj/PycharmProjects/PythonProject/Gemini_CLI2/SGM_Beamline_Analysis/SGM_BSky_Data_Analysis.ipynb):
+
+```python
+from analyze_sgm_bsky_data import analyze_sgm_bsky_data, browse_beamline_data
+
+# Launch the interactive Loki/GPFS file explorer:
+browse_beamline_data()
+```
+This renders interactive selection boxes directly in the notebook:
+1. Select your project or subfolder and click **Open Selected Folder**.
+2. Select your `.h5` file and click **Load Selected H5**.
+3. It immediately parses the scan into `sgm_data`, so all downstream analysis and plotting cells work right away!
+
+---
+
+### Alternative: Specifying Direct Data Paths
+If you already know the path to your file, you can pass it directly into `analyze_sgm_bsky_data(...)`:
+
+```python
+# Direct Loki beamline path:
+h5_file = "/gpfs/Primary/beamlinedata/sgm/2026/my_project/raw/my_scan_stack.h5"
+
+# Or if copied to your scratch space:
+# h5_file = "/gpfs/Primary/planck/homedirs/dynesj/scratch/my_scan_stack.h5"
+
+sgm_data = analyze_sgm_bsky_data(h5_file)
+```
+
+* Save generated output files (such as PyMca 4D stacks or large 2D RIXS exports) to `$SCRATCH`:
   ```python
-  output_stack_path = "/home/<username>/scratch/output_stack.h5"
+  output_stack_path = "/home/dynesj/scratch/output_stack.h5"
   ```
 
 ---

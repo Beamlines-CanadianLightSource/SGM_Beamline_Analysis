@@ -991,6 +991,7 @@ class Synchronizer:
         self.contrast_percentiles = (0.0, 100.0)
         self.use_log = False 
         self.use_log_spec = False # New: Log scale for spectra
+        self.hist_scope = 'full' # 'full', 'roi', or 'both'
         self.current_roi = map_roi
         self.current_poly = []
         self.mode = 'rect'
@@ -1413,6 +1414,16 @@ class Synchronizer:
         self.use_log_spec = use_log
         for d in self.dashboards:
             d.update_spectrum()
+            if not d.is_mcc:
+                d.update_histogram()
+        for d in self.dashboards:
+            d.fig.canvas.draw_idle()
+
+    def broadcast_hist_scope(self, new_scope):
+        """Updates histogram scope ('full', 'roi', or 'both') across all rows."""
+        self.hist_scope = new_scope
+        for d in self.dashboards:
+            d.update_histogram()
         for d in self.dashboards:
             d.fig.canvas.draw_idle()
 
@@ -1655,6 +1666,8 @@ class DashboardRow:
             except: pass
 
         self.update_spectrum()
+        if not self.is_mcc:
+            self.update_histogram()
         # Ensure contrast/log is applied to new data
         self.update_contrast()
         self.fig.canvas.draw_idle()
@@ -1733,52 +1746,190 @@ class DashboardRow:
             if len(self.current_poly) > 0:
                 self.poly_line.set_visible(True)
 
-    def update_mcc_histogram(self):
-        """Plot pixel intensity distribution histogram and statistics (Average/Mean, SD, Median) on ax[2] for MCC maps."""
-        if not self.is_mcc or self.ax is None or len(self.ax) < 3:
+    def update_histogram(self):
+        """Plot the pixel intensity distribution (histogram, Average/Mean, SD, Median) of the displayed map.
+
+        MCC rows draw it on ax[2]; SDD rows draw it on their dedicated extra panel (self.ax_hist).
+        Supports histogram scopes:
+          - 'full': All valid pixels in the trimmed map
+          - 'roi': Pixels strictly inside the current spatial ROI / polygon
+          - 'both': Overlay of both Full map and ROI distributions with comparative statistics
+        """
+        ax_hist = getattr(self, 'ax_hist', None)
+        if ax_hist is None or self.s2d_rep is None:
             return
-        ax_hist = self.ax[2]
         ax_hist.clear()
         ax_hist.set_visible(True)
 
-        m_rep = self.s2d_rep if self.s2d_rep is not None else np.array([])
+        if self.is_mcc:
+            m_rep = self.s2d_rep
+        else:
+            if self.sync.use_sdd_calib:
+                e1, e2 = self.sync.energy_roi
+                ch1, ch2 = sdd_calib.get_calibrated_bounds(e1, e2, self.name, self.sync.sdd_calib_data)
+                ch_slice = slice(ch1, ch2)
+            else:
+                ch1, ch2 = self.ctx['channel_roi']
+                ch_slice = slice(ch1, ch2 + 1)
+            m_rep = np.sum(self.s2d_rep[:, ch_slice], axis=1)
+
         if len(m_rep) == 0:
             ax_hist.set_title("Pixel Intensity Distribution (No Data)", fontsize='x-small')
             return
 
-        tm = get_dynamic_mask(
-            self.ctx['x_coords'][:len(m_rep)],
-            self.ctx['y_coords'][:len(m_rep)],
-            self.ctx['x_trim'],
-            self.ctx['y_trim']
-        )
+        x_all = self.ctx['x_coords'][:len(m_rep)]
+        y_all = self.ctx['y_coords'][:len(m_rep)]
+        tm = get_dynamic_mask(x_all, y_all, self.ctx['x_trim'], self.ctx['y_trim'])
         map_data = m_rep[tm] if np.any(tm) else m_rep
-        valid_data = map_data[np.isfinite(map_data)]
+        if self.sync.use_deconv and not self.is_mcc and np.any(tm):
+            map_data = apply_deconvolution_to_map(
+                x_all[tm], y_all[tm], map_data,
+                self.sync.deconv_fwhm_um, self.sync.deconv_iterations, self.sync.deconv_type
+            )
 
-        mcc_num = int(self.name.replace('mcc', '')) if 'mcc' in self.name and self.name.replace('mcc', '').isdigit() else None
-        title_name = MCC_NAMES.get(mcc_num, self.name) if mcc_num is not None else self.name
-
-        if valid_data.size == 0:
-            ax_hist.set_title(f"{title_name} Pixel Distribution (Empty)", fontsize='x-small')
-            return
-
-        avg_val = float(np.mean(valid_data))
-        std_val = float(np.std(valid_data))
-        med_val = float(np.median(valid_data))
-
-        counts, _, _ = ax_hist.hist(
-            valid_data, bins=50, color='skyblue', edgecolor='black', alpha=0.75, linewidth=0.5,
-            label=f"Pixels (N={valid_data.size:,})"
+        # Check if a valid spatial ROI or polygon is active
+        has_spatial_roi = (
+            (getattr(self.sync, 'mode', 'rect') == 'poly' and self.current_poly is not None and len(self.current_poly) > 2)
+            or (getattr(self.sync, 'mode', 'rect') != 'poly' and self.current_roi is not None and len(self.current_roi) >= 4)
         )
 
-        ax_hist.axvline(avg_val, color='red', linestyle='--', linewidth=1.5,
-                        label=f"Average / Mean: {avg_val:.4g}")
-        ax_hist.axvspan(avg_val - std_val, avg_val + std_val, color='red', alpha=0.15,
-                        label=f"Std Dev (±1σ): ±{std_val:.4g}")
-        ax_hist.axvline(med_val, color='darkgreen', linestyle=':', linewidth=1.5,
-                        label=f"Median: {med_val:.4g}")
+        m_roi = get_dynamic_mask(
+            x_all, y_all, self.ctx['x_trim'], self.ctx['y_trim'],
+            roi=self.current_roi if has_spatial_roi and getattr(self.sync, 'mode', 'rect') != 'poly' else None,
+            poly=self.current_poly if has_spatial_roi and getattr(self.sync, 'mode', 'rect') == 'poly' else None
+        ) if has_spatial_roi else np.zeros_like(tm, dtype=bool)
 
-        max_count = float(np.max(counts)) if len(counts) > 0 else 1.0
+        roi_in_map = m_roi[tm] if np.any(tm) else m_roi
+        roi_data = map_data[roi_in_map] if (has_spatial_roi and np.any(roi_in_map)) else np.array([])
+
+        valid_full = np.asarray(map_data, dtype=float)
+        valid_full = valid_full[np.isfinite(valid_full)]
+
+        valid_roi = np.asarray(roi_data, dtype=float)
+        valid_roi = valid_roi[np.isfinite(valid_roi)]
+
+        if self.is_mcc:
+            mcc_num = int(self.name.replace('mcc', '')) if self.name.replace('mcc', '').isdigit() else None
+            title_name = MCC_NAMES.get(mcc_num, self.name) if mcc_num is not None else self.name
+            x_label = "Pixel Intensity"
+        else:
+            det_id = int(self.name.replace('sdd', '')) if 'sdd' in self.name else None
+            title_name = get_sdd_label(det_id, self.ctx) if det_id else self.name
+            x_label = "Pixel Intensity (counts in ROI)"
+
+        scope = str(getattr(self.sync, 'hist_scope', 'full')).lower()
+
+        if scope == 'roi':
+            if not has_spatial_roi:
+                ax_hist.set_title(f"{title_name} Pixel Distribution (No Spatial ROI Drawn)", fontsize='x-small')
+                return
+            if valid_roi.size == 0:
+                ax_hist.set_title(f"{title_name} Pixel Distribution (ROI Empty)", fontsize='x-small')
+                return
+            avg_roi = float(np.mean(valid_roi))
+            std_roi = float(np.std(valid_roi))
+            med_roi = float(np.median(valid_roi))
+
+            counts, _, _ = ax_hist.hist(
+                valid_roi, bins=50, color='coral', edgecolor='darkred', alpha=0.75, linewidth=0.5,
+                label=f"ROI Pixels (N={valid_roi.size:,})"
+            )
+            ax_hist.axvline(avg_roi, color='red', linestyle='--', linewidth=1.5,
+                            label=f"Average / Mean: {avg_roi:.4g}")
+            ax_hist.axvspan(avg_roi - std_roi, avg_roi + std_roi, color='red', alpha=0.15,
+                            label=f"Std Dev (±1σ): ±{std_roi:.4g}")
+            ax_hist.axvline(med_roi, color='darkgreen', linestyle=':', linewidth=1.5,
+                            label=f"Median: {med_roi:.4g}")
+
+            max_count = float(np.max(counts)) if len(counts) > 0 else 1.0
+            ax_hist.set_title(
+                f"Pixel Intensity Distribution ({title_name}) [ROI Only]\n"
+                f"Average (Mean): {avg_roi:.4g} ± {std_roi:.4g} | Median: {med_roi:.4g}",
+                fontsize='x-small'
+            )
+
+        elif scope == 'both':
+            if valid_full.size == 0:
+                ax_hist.set_title(f"{title_name} Pixel Distribution (Empty)", fontsize='x-small')
+                return
+
+            avg_full = float(np.mean(valid_full))
+            std_full = float(np.std(valid_full))
+            med_full = float(np.median(valid_full))
+
+            # Shared bins across the full distribution range
+            all_min = float(np.min(valid_full))
+            all_max = float(np.max(valid_full))
+            bins = 50 if all_min == all_max else np.linspace(all_min, all_max, 51)
+
+            counts_full, _, _ = ax_hist.hist(
+                valid_full, bins=bins, color='skyblue', edgecolor='steelblue', alpha=0.45, linewidth=0.5,
+                label=f"Full Map (N={valid_full.size:,})"
+            )
+            ax_hist.axvline(avg_full, color='blue', linestyle='--', linewidth=1.3,
+                            label=f"Full Mean: {avg_full:.4g}")
+            ax_hist.axvline(med_full, color='navy', linestyle=':', linewidth=1.3,
+                            label=f"Full Med: {med_full:.4g}")
+
+            max_count = float(np.max(counts_full)) if len(counts_full) > 0 else 1.0
+
+            if has_spatial_roi and valid_roi.size > 0:
+                avg_roi = float(np.mean(valid_roi))
+                std_roi = float(np.std(valid_roi))
+                med_roi = float(np.median(valid_roi))
+
+                counts_roi, _, _ = ax_hist.hist(
+                    valid_roi, bins=bins, color='coral', edgecolor='darkred', alpha=0.65, linewidth=0.5,
+                    label=f"ROI (N={valid_roi.size:,})"
+                )
+                ax_hist.axvline(avg_roi, color='red', linestyle='-', linewidth=1.3,
+                                label=f"ROI Mean: {avg_roi:.4g}")
+                ax_hist.axvline(med_roi, color='darkgreen', linestyle=':', linewidth=1.3,
+                                label=f"ROI Med: {med_roi:.4g}")
+                if len(counts_roi) > 0:
+                    max_count = max(max_count, float(np.max(counts_roi)))
+
+                ax_hist.set_title(
+                    f"Pixel Distribution ({title_name}) [Full & ROI]\n"
+                    f"Full: {avg_full:.4g}±{std_full:.4g} (med {med_full:.4g}) | ROI: {avg_roi:.4g}±{std_roi:.4g} (med {med_roi:.4g})",
+                    fontsize='x-small'
+                )
+            else:
+                roi_note = "(Draw ROI to compare)" if not has_spatial_roi else "(ROI Empty)"
+                ax_hist.set_title(
+                    f"Pixel Distribution ({title_name}) [Full & ROI {roi_note}]\n"
+                    f"Full: {avg_full:.4g} ± {std_full:.4g} | Median: {med_full:.4g}",
+                    fontsize='x-small'
+                )
+
+        else: # 'full' (default)
+            if valid_full.size == 0:
+                ax_hist.set_title(f"{title_name} Pixel Distribution (Empty)", fontsize='x-small')
+                return
+
+            avg_val = float(np.mean(valid_full))
+            std_val = float(np.std(valid_full))
+            med_val = float(np.median(valid_full))
+
+            counts, _, _ = ax_hist.hist(
+                valid_full, bins=50, color='skyblue', edgecolor='black', alpha=0.75, linewidth=0.5,
+                label=f"Full Map Pixels (N={valid_full.size:,})"
+            )
+
+            ax_hist.axvline(avg_val, color='red', linestyle='--', linewidth=1.5,
+                            label=f"Average / Mean: {avg_val:.4g}")
+            ax_hist.axvspan(avg_val - std_val, avg_val + std_val, color='red', alpha=0.15,
+                            label=f"Std Dev (±1σ): ±{std_val:.4g}")
+            ax_hist.axvline(med_val, color='darkgreen', linestyle=':', linewidth=1.5,
+                            label=f"Median: {med_val:.4g}")
+
+            max_count = float(np.max(counts)) if len(counts) > 0 else 1.0
+            ax_hist.set_title(
+                f"Pixel Intensity Distribution ({title_name})\n"
+                f"Average (Mean): {avg_val:.4g} ± {std_val:.4g} | Median: {med_val:.4g}",
+                fontsize='x-small'
+            )
+
         if self.sync.use_log_spec:
             ax_hist.set_yscale('log')
             ax_hist.set_ylim(0.8, max(max_count * 5.0, 10.0))
@@ -1789,19 +1940,18 @@ class DashboardRow:
             ax_hist.yaxis.get_offset_text().set_fontsize(7)
 
         ax_hist.tick_params(axis='both', labelsize=8)
-        ax_hist.set_title(
-            f"Pixel Intensity Distribution ({title_name})\n"
-            f"Average (Mean): {avg_val:.4g} ± {std_val:.4g} | Median: {med_val:.4g}",
-            fontsize='x-small'
-        )
-        ax_hist.set_xlabel("Pixel Intensity", fontsize=8.5)
+        ax_hist.set_xlabel(x_label, fontsize=8.5)
         ax_hist.set_ylabel("Pixel Count", fontsize=8.5)
         ax_hist.grid(True, linestyle=':', alpha=0.6)
-        ax_hist.legend(loc='upper right', fontsize=6.5, framealpha=0.92, edgecolor='gray')
+        ax_hist.legend(loc='upper right', fontsize=6.5 if scope != 'both' else 6.0, framealpha=0.92, edgecolor='gray')
+
+    def update_mcc_histogram(self):
+        """Backward-compatible alias for MCC rows."""
+        self.update_histogram()
 
     def update_spectrum(self):
         if self.is_mcc:
-            self.update_mcc_histogram()
+            self.update_histogram()
             self.fig.canvas.draw_idle()
             return
         m = get_dynamic_mask(self.ctx['x_coords'][:len(self.s2d_rep)], self.ctx['y_coords'][:len(self.s2d_rep)], self.ctx['x_trim'], self.ctx['y_trim'], 
@@ -1864,6 +2014,10 @@ class DashboardRow:
                 print(f"  [Warning] Failed to update selector span extents in update_spectrum: {e}")
             finally:
                 self.sync.is_syncing = old_sync
+
+        if hasattr(self, 'ax_hist') and self.ax_hist is not None:
+            if getattr(self.sync, 'hist_scope', 'full') in ('roi', 'both'):
+                self.update_histogram()
 
         self.fig.canvas.draw_idle()
 
@@ -2002,17 +2156,184 @@ class DashboardRow:
             print(f"    ! Warning saving TIFF {path_avg_tif}: {e}")
         print(f"    -> [SAVE] Average Map ({title_name}): {path_avg_png} & {path_avg_tif}", flush=True)
 
+        # Export Histogram Figure
+        try:
+            self.export_histogram_figure(target_dir=target_dir)
+        except Exception as e:
+            print(f"    ! Warning saving Histogram for {self.name}: {e}", flush=True)
+
+    def export_histogram_figure(self, target_dir=None):
+        """Export the histogram figure for this detector as a high-resolution PNG."""
+        if target_dir is None:
+            target_dir = os.path.join(self.ctx['save_dir'], "Images")
+        os.makedirs(target_dir, exist_ok=True)
+
+        if self.is_mcc:
+            m_rep = self.s2d_rep
+            mcc_num = int(self.name.replace('mcc', '')) if self.name.replace('mcc', '').isdigit() else None
+            title_name = MCC_NAMES.get(mcc_num, self.name) if mcc_num is not None else self.name
+            x_label = "Pixel Intensity"
+        else:
+            if self.sync.use_sdd_calib:
+                e1, e2 = self.sync.energy_roi
+                ch1, ch2 = sdd_calib.get_calibrated_bounds(e1, e2, self.name, self.sync.sdd_calib_data)
+                ch_slice = slice(ch1, ch2)
+            else:
+                ch1, ch2 = self.ctx['channel_roi']
+                ch_slice = slice(ch1, ch2 + 1)
+            m_rep = np.sum(self.s2d_rep[:, ch_slice], axis=1)
+            det_id = int(self.name.replace('sdd', '')) if 'sdd' in self.name else None
+            title_name = get_sdd_label(det_id, self.ctx) if det_id else self.name
+            x_label = "Pixel Intensity (counts in ROI)"
+
+        if len(m_rep) == 0:
+            return
+
+        x_all = self.ctx['x_coords'][:len(m_rep)]
+        y_all = self.ctx['y_coords'][:len(m_rep)]
+        tm = get_dynamic_mask(x_all, y_all, self.ctx['x_trim'], self.ctx['y_trim'])
+        map_data = m_rep[tm] if np.any(tm) else m_rep
+        if self.sync.use_deconv and not self.is_mcc and np.any(tm):
+            map_data = apply_deconvolution_to_map(
+                x_all[tm], y_all[tm], map_data,
+                self.sync.deconv_fwhm_um, self.sync.deconv_iterations, self.sync.deconv_type
+            )
+
+        has_spatial_roi = (
+            (getattr(self.sync, 'mode', 'rect') == 'poly' and self.current_poly is not None and len(self.current_poly) > 2)
+            or (getattr(self.sync, 'mode', 'rect') != 'poly' and self.current_roi is not None and len(self.current_roi) >= 4)
+        )
+
+        m_roi = get_dynamic_mask(
+            x_all, y_all, self.ctx['x_trim'], self.ctx['y_trim'],
+            roi=self.current_roi if has_spatial_roi and getattr(self.sync, 'mode', 'rect') != 'poly' else None,
+            poly=self.current_poly if has_spatial_roi and getattr(self.sync, 'mode', 'rect') == 'poly' else None
+        ) if has_spatial_roi else np.zeros_like(tm, dtype=bool)
+
+        roi_in_map = m_roi[tm] if np.any(tm) else m_roi
+        roi_data = map_data[roi_in_map] if (has_spatial_roi and np.any(roi_in_map)) else np.array([])
+
+        valid_full = np.asarray(map_data, dtype=float)
+        valid_full = valid_full[np.isfinite(valid_full)]
+        valid_roi = np.asarray(roi_data, dtype=float)
+        valid_roi = valid_roi[np.isfinite(valid_roi)]
+
+        scope = str(getattr(self.sync, 'hist_scope', 'full')).lower()
+
+        fig_hist = Figure(figsize=(6, 4.5), dpi=150)
+        canvas_hist = FigureCanvasAgg(fig_hist)
+        ax = fig_hist.add_subplot(111)
+
+        max_count = 1.0
+        if scope == 'roi' and has_spatial_roi and valid_roi.size > 0:
+            avg_roi = float(np.mean(valid_roi))
+            std_roi = float(np.std(valid_roi))
+            med_roi = float(np.median(valid_roi))
+            counts, _, _ = ax.hist(
+                valid_roi, bins=50, color='coral', edgecolor='darkred', alpha=0.75, linewidth=0.5,
+                label=f"ROI Pixels (N={valid_roi.size:,})"
+            )
+            ax.axvline(avg_roi, color='red', linestyle='--', linewidth=1.5, label=f"Average: {avg_roi:.4g}")
+            ax.axvspan(avg_roi - std_roi, avg_roi + std_roi, color='red', alpha=0.15, label=f"Std Dev (±1σ): ±{std_roi:.4g}")
+            ax.axvline(med_roi, color='darkgreen', linestyle=':', linewidth=1.5, label=f"Median: {med_roi:.4g}")
+            max_count = float(np.max(counts)) if len(counts) > 0 else 1.0
+            ax.set_title(f"Pixel Intensity Distribution ({title_name}) [ROI Only]\nAverage: {avg_roi:.4g} ± {std_roi:.4g} | Median: {med_roi:.4g}", fontsize=9)
+        elif scope == 'both' and valid_full.size > 0:
+            avg_full = float(np.mean(valid_full))
+            std_full = float(np.std(valid_full))
+            med_full = float(np.median(valid_full))
+            all_min = float(np.min(valid_full))
+            all_max = float(np.max(valid_full))
+            bins = 50 if all_min == all_max else np.linspace(all_min, all_max, 51)
+            counts_full, _, _ = ax.hist(
+                valid_full, bins=bins, color='skyblue', edgecolor='steelblue', alpha=0.45, linewidth=0.5,
+                label=f"Full Map (N={valid_full.size:,})"
+            )
+            ax.axvline(avg_full, color='blue', linestyle='--', linewidth=1.3, label=f"Full Mean: {avg_full:.4g}")
+            ax.axvline(med_full, color='navy', linestyle=':', linewidth=1.3, label=f"Full Median: {med_full:.4g}")
+            max_count = float(np.max(counts_full)) if len(counts_full) > 0 else 1.0
+
+            if has_spatial_roi and valid_roi.size > 0:
+                avg_roi = float(np.mean(valid_roi))
+                std_roi = float(np.std(valid_roi))
+                med_roi = float(np.median(valid_roi))
+                counts_roi, _, _ = ax.hist(
+                    valid_roi, bins=bins, color='coral', edgecolor='darkred', alpha=0.65, linewidth=0.5,
+                    label=f"ROI (N={valid_roi.size:,})"
+                )
+                ax.axvline(avg_roi, color='red', linestyle='-', linewidth=1.3, label=f"ROI Mean: {avg_roi:.4g}")
+                ax.axvline(med_roi, color='darkgreen', linestyle=':', linewidth=1.3, label=f"ROI Median: {med_roi:.4g}")
+                if len(counts_roi) > 0:
+                    max_count = max(max_count, float(np.max(counts_roi)))
+                ax.set_title(f"Pixel Distribution ({title_name}) [Full & ROI]\nFull: {avg_full:.4g}±{std_full:.4g} | ROI: {avg_roi:.4g}±{std_roi:.4g}", fontsize=9)
+            else:
+                ax.set_title(f"Pixel Distribution ({title_name}) [Full Map]\nAverage: {avg_full:.4g} ± {std_full:.4g} | Median: {med_full:.4g}", fontsize=9)
+        elif valid_full.size > 0:
+            avg_val = float(np.mean(valid_full))
+            std_val = float(np.std(valid_full))
+            med_val = float(np.median(valid_full))
+            counts, _, _ = ax.hist(
+                valid_full, bins=50, color='skyblue', edgecolor='black', alpha=0.75, linewidth=0.5,
+                label=f"Full Map Pixels (N={valid_full.size:,})"
+            )
+            ax.axvline(avg_val, color='red', linestyle='--', linewidth=1.5, label=f"Average: {avg_val:.4g}")
+            ax.axvspan(avg_val - std_val, avg_val + std_val, color='red', alpha=0.15, label=f"Std Dev (±1σ): ±{std_val:.4g}")
+            ax.axvline(med_val, color='darkgreen', linestyle=':', linewidth=1.5, label=f"Median: {med_val:.4g}")
+            max_count = float(np.max(counts)) if len(counts) > 0 else 1.0
+            ax.set_title(f"Pixel Intensity Distribution ({title_name})\nAverage: {avg_val:.4g} ± {std_val:.4g} | Median: {med_val:.4g}", fontsize=9)
+
+        if self.sync.use_log_spec:
+            ax.set_yscale('log')
+            ax.set_ylim(0.8, max(max_count * 5.0, 10.0))
+        else:
+            ax.set_yscale('linear')
+            ax.set_ylim(0, max_count * 1.32 if max_count > 0 else 1.0)
+            ax.ticklabel_format(axis='y', style='sci', scilimits=(0, 3), useMathText=True)
+            ax.yaxis.get_offset_text().set_fontsize(7)
+
+        ax.tick_params(axis='both', labelsize=8)
+        ax.set_xlabel(x_label, fontsize=8.5)
+        ax.set_ylabel("Pixel Count", fontsize=8.5)
+        ax.legend(fontsize=7, loc='upper right')
+        ax.grid(True, linestyle=':', alpha=0.6)
+        fig_hist.tight_layout()
+
+        hist_base = f"{self.ctx['scan_name']}_{self.name}_Histogram"
+        path_hist_png = get_safe_save_path(target_dir, f"{hist_base}.png")
+        if path_hist_png:
+            fig_hist.savefig(path_hist_png, bbox_inches='tight', dpi=150)
+            print(f"    -> [SAVE] Histogram ({title_name}): {path_hist_png}", flush=True)
+
     def plot(self):
         # Use a unique but persistent figure ID for each detector
         fig_id = f"dash_{self.name}_{id(self.sync)}"
         is_single_energy = (len(self.sync.all_energies) <= 1)
         if is_single_energy:
-            self.fig, axes_2 = plt.subplots(1, 2, figsize=(7.5, 3.36), num=fig_id)
-            self.ax = [axes_2[0], None, axes_2[1]]
-            sub_adj = dict(left=0.08, right=0.96, bottom=0.20, top=0.84, wspace=0.24)
+            if self.is_mcc:
+                # [Map, Histogram]
+                self.fig, axes_n = plt.subplots(1, 2, figsize=(7.5, 3.36), num=fig_id)
+                self.ax = [axes_n[0], None, axes_n[1]]
+                self.ax_hist = axes_n[1]
+                sub_adj = dict(left=0.08, right=0.96, bottom=0.20, top=0.84, wspace=0.24)
+            else:
+                # [Map, XRD Spectrum, Histogram]
+                self.fig, axes_n = plt.subplots(1, 3, figsize=(10.5, 3.36), num=fig_id)
+                self.ax = [axes_n[0], None, axes_n[1]]
+                self.ax_hist = axes_n[2]
+                sub_adj = dict(left=0.06, right=0.97, bottom=0.20, top=0.85, wspace=0.28)
         else:
-            self.fig, self.ax = plt.subplots(1, 3, figsize=(10.5, 3.36), num=fig_id)
-            sub_adj = dict(left=0.06, right=0.97, bottom=0.20, top=0.85, wspace=0.18)
+            if self.is_mcc:
+                # [Map, Stack Average, Histogram]
+                self.fig, axes_n = plt.subplots(1, 3, figsize=(10.5, 3.36), num=fig_id)
+                self.ax = list(axes_n)
+                self.ax_hist = axes_n[2]
+                sub_adj = dict(left=0.06, right=0.97, bottom=0.20, top=0.85, wspace=0.18)
+            else:
+                # [Map, Stack Average, XRD Spectrum, Histogram]
+                self.fig, axes_n = plt.subplots(1, 4, figsize=(13.8, 3.36), num=fig_id)
+                self.ax = [axes_n[0], axes_n[1], axes_n[2]]
+                self.ax_hist = axes_n[3]
+                sub_adj = dict(left=0.045, right=0.985, bottom=0.20, top=0.85, wspace=0.30)
         self.fig.subplots_adjust(**sub_adj)
         cmap = 'viridis' if self.sync.use_color else 'gray'
         
@@ -2145,13 +2466,16 @@ class DashboardRow:
                                             props=dict(color='red', markeredgecolor='red', markerfacecolor='red', alpha=0.5))
         self.sync_to_mode() 
         
-        sync_btn_rect = [0.36, 0.88, 0.20, 0.05] if is_single_energy else [0.42, 0.88, 0.15, 0.05]
+        if is_single_energy:
+            sync_btn_rect = [0.36, 0.88, 0.20, 0.05] if self.is_mcc else [0.12, 0.88, 0.14, 0.05]
+        else:
+            sync_btn_rect = [0.42, 0.88, 0.15, 0.05] if self.is_mcc else [0.20, 0.88, 0.10, 0.05]
         ax_sync_roi = self.fig.add_axes(sync_btn_rect)
         self.btn_sync_roi = Button(ax_sync_roi, 'Sync Map ROI', color='lightgreen', hovercolor='lime')
         self.btn_sync_roi.on_clicked(self.force_roi_sync); self.btn_sync_roi.label.set_fontsize(7)
 
         if self.is_mcc:
-            self.update_mcc_histogram()
+            self.update_histogram()
             if np.any(tm):
                 valid_mcc = m_rep_plot[np.isfinite(m_rep_plot)]
                 if valid_mcc.size > 0:
@@ -2212,6 +2536,8 @@ class DashboardRow:
         
         # Tighten margins and spacing to ensure the 3rd plot is pulled inward
         self.fig.subplots_adjust(**sub_adj)
+        # Pixel intensity distribution (histogram + average/SD/median) of the displayed SDD map
+        self.update_histogram()
         mplcursors.cursor(self.sc_en, hover=True)
         cur_xrf = mplcursors.cursor(self.line_spec, hover=True)
         @cur_xrf.connect("add")
@@ -2417,8 +2743,10 @@ class SummaryDashboard:
                 i0_src += f" (Energy Shift: {self.sync.i0_energy_shift:+.2f} eV)"
             
             s_name = (self.sync.user_metadata.get('Name') if self.sync.user_metadata else None) or self.ctx.get('sample_name') or self.ctx.get('scan_name')
+            mcc_ch_names = [MCC_NAMES.get(c, f"mcc{c}").split(" (")[0] for c in (self.ctx['mcc_channels'] or [])]
+            mcc_title_str = " and ".join(mcc_ch_names) if mcc_ch_names else "MCC"
             title_sdd = format_norm_title("Normalized Fluorescence Spectra", s_name, roi_label)
-            title_mcc = format_norm_title("Normalized Au Mesh I0 and TEY of Sample Spectra", s_name, None)
+            title_mcc = format_norm_title(f"Normalized {mcc_title_str} Spectra", s_name, None)
             try:
                 # Handle both 1D and 2D axis arrays
                 if self.ax.ndim == 2 and self.ax.shape == (2, 2):
@@ -3336,6 +3664,8 @@ class SummaryDashboard:
                                 lbl = f"Raw Au Mesh I0 {const_offset:+.4g} (mcc1)"
                         else:
                             lbl = "Raw Au Mesh I0 (mcc1)"
+                    elif ch == 2:
+                        lbl = "Raw Photodiode (mcc2)"
                     elif ch == 4:
                         lbl = "Raw TEY of Sample (mcc4)"
                     else:
@@ -3343,11 +3673,13 @@ class SummaryDashboard:
                     l, = ax_raw_mcc.plot(self.ctx['calibrated_energies'], data, m_fmt, label=lbl)
                     self.mcc_lines_raw[ch] = l
 
-            title_raw_mcc = format_norm_title("Raw Au Mesh I0 and TEY of Sample Spectra", s_name)
+            mcc_ch_names = [MCC_NAMES.get(c, f"mcc{c}").split(" (")[0] for c in (self.ctx['mcc_channels'] or [])]
+            mcc_title_str = " and ".join(mcc_ch_names) if mcc_ch_names else "MCC"
+            title_raw_mcc = format_norm_title(f"Raw {mcc_title_str} Spectra", s_name)
             ax_raw_mcc.set_title(title_raw_mcc, fontsize=8.5, pad=5)
             ax_raw_mcc.set_xlabel("Energy (eV)")
             if is_ext_i0:
-                ax_raw_mcc.set_ylabel("Raw Au Mesh I0 & TEY (Counts)")
+                ax_raw_mcc.set_ylabel(f"Raw {mcc_title_str} (Counts)")
                 ax_raw_mcc.relim()
                 ax_raw_mcc.autoscale_view(scalex=False, scaley=True)
                 lines1, labels1 = ax_raw_mcc.get_legend_handles_labels()
@@ -3411,6 +3743,13 @@ class SummaryDashboard:
                         lbl = "Normalized Scan Mesh (mcc1) / External I0"
                     elif ch == 1 and "Internal" in self.ctx.get('i0_source', ''):
                         lbl = "Normalized Au Mesh I0 = 1.0 (mcc1)"
+                    elif ch == 2:
+                        if is_ext_i0:
+                            lbl = "Normalized Photodiode (mcc2) / External I0"
+                        elif "Internal" in self.ctx.get('i0_source', ''):
+                            lbl = "Normalized Photodiode (mcc2) / Au Mesh I0 (mcc1)"
+                        else:
+                            lbl = "Normalized Photodiode (mcc2)"
                     elif ch == 4:
                         if is_ext_i0:
                             lbl = "Normalized TEY of Sample (mcc4) / External I0"
@@ -3422,11 +3761,13 @@ class SummaryDashboard:
                         lbl = f"Normalized {base_label}"
                     l, = ax_norm_mcc.plot(self.ctx['calibrated_energies'], norm_mcc, m_fmt, label=lbl)
                     self.mcc_lines_norm[ch] = l
-            title_norm_mcc = format_norm_title("Normalized Au Mesh I0 and TEY of Sample Spectra", s_name, None)
+            mcc_ch_names = [MCC_NAMES.get(c, f"mcc{c}").split(" (")[0] for c in (self.ctx['mcc_channels'] or [])]
+            mcc_title_str = " and ".join(mcc_ch_names) if mcc_ch_names else "MCC"
+            title_norm_mcc = format_norm_title(f"Normalized {mcc_title_str} Spectra", s_name, None)
             ax_norm_mcc.set_title(title_norm_mcc, fontsize=8.5, pad=5)
             ax_norm_mcc.set_xlabel("Energy (eV)")
             if is_ext_i0:
-                ax_norm_mcc.set_ylabel("Normalized TEY & Au Mesh")
+                ax_norm_mcc.set_ylabel(f"Normalized {mcc_title_str}")
                 ax_norm_mcc.relim()
                 ax_norm_mcc.autoscale_view(scalex=False, scaley=True)
                 lines1, labels1 = ax_norm_mcc.get_legend_handles_labels()
@@ -3655,7 +3996,7 @@ def read_csv_with_comments(filepath):
 
 # --- Main Entry Point ---
 
-def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 256), xrf_roi=None, auto_element_roi: bool = False, element=None, n_sigma: float = 2.0, roll_shift=0, as_scatter_plot: bool = False, map_roi=None, contrast=None, show_markers: bool = True, output_csv: bool = False, energy_shift=0.0, mcc_channels=None, mcc_to_map=None, x_trim=0.0, y_trim=0.0, save_images: bool = False, fixed_roi: bool = False, use_color: bool = True, use_full_metadata: bool = False):
+def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 256), xrf_roi=None, auto_element_roi: bool = False, element=None, n_sigma: float = 2.0, roll_shift=0, as_scatter_plot: bool = False, map_roi=None, contrast=None, show_markers: bool = True, output_csv: bool = False, energy_shift=0.0, mcc_channels=None, mcc_to_map=None, x_trim=0.0, y_trim=0.0, save_images: bool = False, fixed_roi: bool = False, use_color: bool = True, use_full_metadata: bool = False, histogram_scope: str = 'full'):
     """
     Beautiful Stack Dashboard (Refactored for Fresh Starts).
     """
@@ -3812,7 +4153,14 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
 
         # Auto-detect MCC channels if not passed explicitly
         if mcc_channels is None and path_pack.get('mcc_files'):
-            mcc_channels = [1, 4]
+            if mcc_to_map is not None:
+                # Synchronize spectral channels with mapped channels requested by user
+                mcc_channels = list(mcc_to_map)
+                # Keep channel 1 (Au Mesh) available for I0 normalization and spectra if present
+                if 1 not in mcc_channels and path_pack.get('mcc_files'):
+                    mcc_channels = [1] + mcc_channels
+            else:
+                mcc_channels = [1, 4]
 
         if mcc_to_map is None:
             if not detector_names and mcc_channels:
@@ -3827,9 +4175,9 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
         stack_maps = {det: np.full((len(all_energies), x_coords.size), 0.0, dtype=np.float32) for det in detector_names}
 
         # mcc_channels are for the spectrum; mcc_to_map are for spatial images
-        all_mccs = sorted(list(set((mcc_channels or []) + (mcc_to_map or []))))
+        all_mccs = sorted(list(set((mcc_channels or []) + (mcc_to_map or []) + ([1] if path_pack.get('mcc_files') else []))))
         mcc_maps = {f'mcc{ch}': np.full((len(all_energies), x_coords.size), 0.0, dtype=np.float32) for ch in all_mccs}
-        mcc_data = {f'mcc{ch}': [] for ch in (mcc_channels or [])}
+        mcc_data = {f'mcc{ch}': [] for ch in all_mccs}
         
         # We also need average maps for MCCs that are mapped
         for ch in (mcc_to_map or []):
@@ -3861,7 +4209,7 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
             
             if all_mccs:
                 mf = path_pack['mcc_files'].get(energy)
-                current_mcc_vals = {ch: 0.0 for ch in (mcc_channels or [])}
+                current_mcc_vals = {ch: 0.0 for ch in all_mccs}
                 if mf and os.path.exists(mf):
                     try:
                         # Robustly read CSV/TSV without skipping the header if it contains column names
@@ -3885,7 +4233,13 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                                 if ch == 1 and c_lower in ['i0', 'aumesh', 'i0_aumesh', 'au_mesh', 'mesh', 'scaler1_ch1']:
                                     col = c
                                     break
-                                if ch == 2 and c_lower in ['tey', 'sample', 'tey_sample', 'scaler1_ch2']:
+                                if ch == 2 and c_lower in ['photodiode', 'diode', 'pd', 'scaler1_ch2']:
+                                    col = c
+                                    break
+                                if ch == 3 and c_lower in ['aux', 'auxiliary', 'scaler1_ch3']:
+                                    col = c
+                                    break
+                                if ch == 4 and c_lower in ['tey', 'sample', 'tey_sample', 'scaler1_ch4']:
                                     col = c
                                     break
                             
@@ -3899,7 +4253,7 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                                     if avg_maps[f'mcc{ch}'] is None: avg_maps[f'mcc{ch}'] = col_data[:pts].copy()
                                     else: avg_maps[f'mcc{ch}'] += col_data[:pts]
 
-                                if mcc_channels and ch in mcc_channels:
+                                if ch in all_mccs:
                                     val = df[col].values[:num_pts][m_mcc].mean() if np.any(m_mcc) else 0.0
                                     current_mcc_vals[ch] = 0.0 if np.isnan(val) else val
                             else:
@@ -3909,9 +4263,8 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                         print(f"  [Error] Failed to load MCC file {mf}: {e}")
                 
                 # Commit values once per energy step to prevent double-appends or mismatches
-                if mcc_channels:
-                    for ch in mcc_channels:
-                        mcc_data[f'mcc{ch}'].append(current_mcc_vals.get(ch, 0.0))
+                for ch in all_mccs:
+                    mcc_data[f'mcc{ch}'].append(current_mcc_vals.get(ch, 0.0))
 
         # Ensure all avg_maps entries are non-None arrays
         for k in list(avg_maps.keys()):
@@ -3940,8 +4293,8 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
         if root_i0:
             root_i0.withdraw()
         
-        # If single energy, or if headless without GUI, default to internal I0 (mcc1)
-        if len(all_energies) <= 1 or not HAS_GUI:
+        # If headless without GUI, default to internal I0 (mcc1); otherwise always prompt the user
+        if not HAS_GUI:
             use_internal = True
         else:
             use_internal = safe_messagebox_askyesno("I0 Selection", "Use INTERNAL Au Mesh I0 (mcc1) for I0 normalization?\n\n(Select 'No' to load an EXTERNAL I0 CSV)")
@@ -4063,7 +4416,8 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                         mcc1_vals = np.array(extracted)
 
                 if mcc1_vals is not None and len(mcc1_vals) > 0:
-                    if len(all_energies) <= 1 or not HAS_GUI:
+                    # Always show the I0 preview dialog (even for a single energy) when a GUI is available
+                    if not HAS_GUI:
                         ext_i0_values = mcc1_vals.copy()
                         path_pack['i0_const_offset'] = 0.0
                         path_pack['i0_const_op'] = 'Add'
@@ -4160,6 +4514,8 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
 
         # 3. Class Instantiation (Fresh State)
         sync = Synchronizer(all_energies, representative_energy, map_roi, use_color=use_color, use_full_metadata=use_full_metadata, calibrated_energies=calibrated_energies, channel_roi=channel_roi, xrf_roi=xrf_roi, auto_element_roi=auto_element_roi, element=detected_element, edge=detected_edge, n_sigma=n_sigma)
+        if histogram_scope in ('full', 'roi', 'both'):
+            sync.hist_scope = histogram_scope
         
         # Load initial calibration state from path_pack if set by dialog
         sync.i0_calib_enabled = path_pack.get('i0_calib_enabled', False)
@@ -4280,7 +4636,7 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
         contrast_slider = widgets.FloatRangeSlider(
             value=[0.0, 100.0], min=0.0, max=100.0, step=0.1,
             description='Image Contrast %:',
-            layout=widgets.Layout(width='800px'),
+            layout=widgets.Layout(width='520px'),
             style={'description_width': 'initial', 'handle_color': 'cyan'}
         )
         
@@ -4295,6 +4651,15 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
 
         log_spec_toggle = widgets.Checkbox(value=False, description='Use Log Scale (Spectra)', indent=False)
         log_spec_toggle.observe(lambda c: sync.broadcast_log_spec(c['new']), names='value')
+
+        hist_scope_dropdown = widgets.Dropdown(
+            options=[('Full Map', 'full'), ('Spatial ROI', 'roi'), ('Both (Overlay)', 'both')],
+            value=sync.hist_scope,
+            description='Hist Scope:',
+            layout=widgets.Layout(width='200px'),
+            style={'description_width': 'initial'}
+        )
+        hist_scope_dropdown.observe(lambda c: sync.broadcast_hist_scope(c['new']), names='value')
 
         # New: ROI Limits numeric inputs
         roi_start_input = widgets.FloatText(value=round(sync.energy_roi[0], 2) if sync.use_sdd_calib else round(sync.channel_roi[0] * 10.0, 2), 
@@ -4329,7 +4694,7 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
         roi_start_input.observe(on_roi_input_change, names='value')
         roi_end_input.observe(on_roi_input_change, names='value')
 
-        contrast_hbox = widgets.HBox([contrast_slider, log_toggle, log_spec_toggle])
+        contrast_hbox = widgets.HBox([contrast_slider, log_toggle, log_spec_toggle, hist_scope_dropdown])
         calib_hbox = widgets.HBox([
             widgets.Label("Calibration Toggles:", layout=widgets.Layout(width='200px')),
             widgets.Checkbox(value=sync.i0_calib_enabled, description='Enable I0 Shift', indent=False),
@@ -4474,11 +4839,18 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
             for d in sync.dashboards:
                 try: 
                     if len(all_energies) <= 1:
-                        d.fig.canvas.layout.min_width = '720px'
-                        d.fig.canvas.layout.max_width = '760px'
-                    else:
+                        if d.is_mcc:
+                            d.fig.canvas.layout.min_width = '720px'
+                            d.fig.canvas.layout.max_width = '760px'
+                        else:
+                            d.fig.canvas.layout.min_width = '1015px'
+                            d.fig.canvas.layout.max_width = '1050px'
+                    elif d.is_mcc:
                         d.fig.canvas.layout.min_width = '1015px'
                         d.fig.canvas.layout.max_width = '1050px'
+                    else:
+                        d.fig.canvas.layout.min_width = '1330px'
+                        d.fig.canvas.layout.max_width = '1380px'
                 except: pass
                 map_row_widgets.append(d.fig.canvas)
             
@@ -4631,10 +5003,11 @@ if __name__ == '__main__':
     parser.add_argument("--x_trim", type=float, default=0.0)
     parser.add_argument("--map_roi", type=float, nargs=4, required=True)
     parser.add_argument("--save_images", action="store_true")
+    parser.add_argument("--hist_scope", type=str, choices=['full', 'roi', 'both'], default='full', help="Histogram pixel scope ('full', 'roi', or 'both')")
     parser.add_argument("--minimum_metadata", action="store_false", dest="full_metadata")
     parser.set_defaults(full_metadata=False)
     args = parser.parse_args()
     pp = analyze_sgm_bsky_data(args.h5)
     if pp:
         pp['h5_dir'] = os.path.dirname(args.h5)
-        plot_sgm_bsky_data(pp, args.energy, channel_roi=(args.roi_s, args.roi_e), xrf_roi=args.xrf_roi, auto_element_roi=args.auto_element_roi, element=args.element, n_sigma=args.n_sigma, roll_shift=args.roll_shift, x_trim=args.x_trim, map_roi=args.map_roi, save_images=args.save_images, use_full_metadata=args.full_metadata)
+        plot_sgm_bsky_data(pp, args.energy, channel_roi=(args.roi_s, args.roi_e), xrf_roi=args.xrf_roi, auto_element_roi=args.auto_element_roi, element=args.element, n_sigma=args.n_sigma, roll_shift=args.roll_shift, x_trim=args.x_trim, map_roi=args.map_roi, save_images=args.save_images, use_full_metadata=args.full_metadata, histogram_scope=args.hist_scope)

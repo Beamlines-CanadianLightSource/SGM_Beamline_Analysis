@@ -121,19 +121,24 @@ The dashboard is organized vertically to provide immediate access to global spec
 2. **Summary Dashboard (XRD / XANES Spectra):** Plots the extracted XANES spectra (Energy vs Intensity) for the selected spatial ROI across all detectors, with its own horizontal scrollbar right below it.
 3. **Settings & Calibration Controls:**
    - **Image Energy Selector (Top):** `Select Image Energy for Display:` slider and calibrated energy button.
-   - **Image Contrast %:** Global contrast percentile slider (`[0.0, 100.0]`) and log scaling toggles.
+   - **Image Contrast % & Log Toggles:** Global contrast percentile slider (`[0.0, 100.0]`), `Use Log Scale (Images)`, and `Use Log Scale (Spectra)`.
+   - **Hist Scope Dropdown:** Choose the pixel population for intensity distribution histograms across both MCC and SDD rows:
+     - `Full Map` (default): Computes statistics and distribution over all valid pixels of the active map.
+     - `Spatial ROI`: Restricts histogram and statistics exclusively to pixels inside the currently drawn spatial rectangle or polygon ROI.
+     - `Both (Overlay)`: Overlays both Full Map (skyblue) and Spatial ROI (coral) histograms onto aligned bins with comparative Mean and Median reference lines.
    - **Calibration Toggles:** `Enable I0 Shift` with numerical shift input (eV), and `Enable SDD Energy Calibration`.
    - **Spectral ROI Limits:** Numerical inputs for `ROI Start (eV)` and `ROI End (eV)`.
    - **Deconvolution (Live):** PSF FWHM and iterations controls for deblurring.
 4. **Top Horizontal View Scrollbar:** A dedicated horizontal scrollbar ("simple grey slider") located directly above the detector images with quick buttons (`◄ Show Maps` / `Show XRD Spectra ►`). This lets you slide between the maps (left) and the XRD emission spectra (right) without scrolling down to the bottom of the page.
 5. **Detector & MCC Rows (`sdd1` to `sdd4`, `mcc1` Au Mesh $I_0$, & `mcc4` TEY):**
-   - **Multi-Energy Stack Mode (`len(all_energies) > 1`):** Each row displays a **3-panel layout**: `[Energy Map, Stack Average, XRD Emission Spectrum / Pixel Intensity Histogram]`.
-   - **Single-Energy Map / Image Mode (`len(all_energies) <= 1`):** When plotting a single map/image, the redundant `Stack Average` panel is automatically omitted so each row displays a clean **2-panel layout**: `[Energy Map, XRD Emission Spectrum / Pixel Intensity Histogram]`. Furthermore, the top control bar automatically hides XANES-specific buttons (**Save XANES Spectra**, **Save Normalized XANES Spectra for PCA/CA**) and the **Average `sdd1..sdd4`** checkboxes.
-   - **MCC Pixel Intensity Distribution Histogram (`mcc1` Au Mesh $I_0$ & `mcc4` TEY):** In the right-hand panel of each mapped MCC row (where the XRD/XRF spectrum appears for SDD rows), the dashboard plots a 50-bin **Pixel Intensity Distribution Histogram** across all valid pixels of the map, complete with vertical reference lines, a shaded $\pm 1\sigma$ band, and a legend/title summary reporting:
-     - **Average / Mean** intensity
-     - **Standard Deviation ($\pm 1\sigma$)**
-     - **Median** intensity
-     - **Total Pixel Count ($N$)**
+   - **Multi-Energy Stack Mode (`len(all_energies) > 1`):** SDD rows display a 4-panel layout: `[Energy Map, Stack Average, XRD Emission Spectrum, Pixel Intensity Histogram]`. MCC rows display a 3-panel layout: `[Energy Map, Stack Average, Pixel Intensity Histogram]`.
+   - **Single-Energy Map / Image Mode (`len(all_energies) <= 1`):** When plotting a single map/image, the redundant `Stack Average` panel is automatically omitted: SDD rows display a 3-panel layout `[Energy Map, XRD Emission Spectrum, Pixel Intensity Histogram]`, and MCC rows display a clean 2-panel layout `[Energy Map, Pixel Intensity Histogram]`. Furthermore, the top control bar automatically hides XANES-specific buttons (**Save XANES Spectra**, **Save Normalized XANES Spectra for PCA/CA**) and the **Average `sdd1..sdd4`** checkboxes.
+   - **Pixel Intensity Distribution Histogram (MCC & SDD Rows):** Every row features a 50-bin **Pixel Intensity Distribution Histogram** reflecting strictly valid pixels of the scanned area (ignoring empty whitespace in stitched scans). It includes:
+     - Vertical dashed line for **Average / Mean** intensity
+     - Shaded band for **Standard Deviation ($\pm 1\sigma$)**
+     - Vertical dotted line for **Median** intensity
+     - Total **Pixel Count ($N$)**
+     - Dynamic updates when changing the **Hist Scope** (`Full Map`, `Spatial ROI`, or `Both (Overlay)`) or drawing/moving a spatial ROI.
    - **Automatic Date-Dependent SDD Position Labels:** Because the physical positions of the SDD detectors changed after **August 12, 2026**, the pipeline automatically detects the scan date (`YYYY-MM-DD` / `YYMMDD` from HDF5 metadata or file paths) and labels all figure titles, legends, exported CSV headers, and HDF5 datasets accordingly:
      - **On or Before Aug 12, 2026 ($\le \text{2026-08-12}$):** `sdd1 (90, top)`, `sdd2 (45, front, in-plane)`, `sdd3 (90, side)`, `sdd4 (45, front, out-plane)`
      - **After Aug 12, 2026 ($> \text{2026-08-12}$):** `sdd1 (90, side)`, `sdd2 (45, front, in-plane)`, `sdd3 (45, front, out of plane)`, `sdd4 (90, top)`
@@ -366,6 +371,12 @@ If you are running Jupyter in a web browser:
 Once you have the HTML file, open it in any modern web browser (Edge, Chrome, Firefox). Press `Ctrl + P` (or right-click and select Print). Change the printer destination to **"Save as PDF"** and save the file. 
 
 *Note: Exporting to HTML first and then printing to PDF is highly recommended over direct PDF export, as it prevents wide code blocks and interactive plots from being awkwardly cut off across printed pages.*
+
+### Exporting Images and Histograms
+When you click **"Save All Images"** on the dashboard toolbar:
+- High-resolution PNG and TIFF files are saved for every detector's representative energy map and stack average map.
+- In addition, a standalone high-resolution **Pixel Intensity Distribution Histogram** PNG is automatically saved for each detector (`<scan_name>_<detector>_Histogram.png`).
+- All exported image and histogram files are saved directly into an `Images/` subdirectory within the scan's `preprocessed` folder (automatically created if not present).
 
 ### PyMca Analysis (XANES vs XRF)
 When you export data from the dashboard for use in PyMca, pay attention to the file suffix:

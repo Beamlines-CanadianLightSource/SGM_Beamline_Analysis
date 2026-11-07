@@ -53,8 +53,8 @@ class SDDCalibrationGUI:
         self.threshold = widgets.FloatSlider(value=0.05, min=0.001, max=0.9, step=0.001, 
                                              description="Threshold:", continuous_update=False, readout_format='.3f')
         self.distance = widgets.IntSlider(value=10, min=2, max=100, step=1, description="Distance:", continuous_update=False)
-        self.log_scale = widgets.Checkbox(value=False, description="Log Scale")
-        self.num_points = widgets.Dropdown(options=[2, 3, 4], value=2, description="Points:", layout=widgets.Layout(width='150px'))
+        self.log_scale = widgets.Checkbox(value=False, description="Log Scale", indent=False, layout=widgets.Layout(width='110px'))
+        self.num_points = widgets.Dropdown(options=[2, 3, 4], value=2, description="Points:", style={'description_width': '55px'}, layout=widgets.Layout(width='150px'))
         
         self.threshold.observe(self.update_ui_on_params, names='value')
         self.distance.observe(self.update_ui_on_params, names='value')
@@ -68,8 +68,8 @@ class SDDCalibrationGUI:
         for i in range(4):
             p_name = widgets.Dropdown(options=list(self.standard_peaks.keys()) + ["Custom"], 
                                       value=list(self.standard_peaks.keys())[i] if i < len(self.standard_peaks) else "Custom",
-                                      description=f"Point {i+1}:", layout=widgets.Layout(width='180px'))
-            p_val = widgets.FloatText(value=self.standard_peaks.get(p_name.value, 0.0), description="eV:", layout=widgets.Layout(width='150px'))
+                                      description=f"Point {i+1}:", style={'description_width': '65px'}, layout=widgets.Layout(width='220px'))
+            p_val = widgets.FloatText(value=self.standard_peaks.get(p_name.value, 0.0), description="eV:", style={'description_width': '35px'}, layout=widgets.Layout(width='170px'))
             
             def make_updater(name_w, val_w):
                 def update_val(change):
@@ -221,27 +221,36 @@ class SDDCalibrationGUI:
             if sdd_id not in self.detector_active:
                 self.detector_active[sdd_id] = widgets.Checkbox(
                     value=not is_zero_signal, 
-                    description="Active", 
-                    layout=widgets.Layout(width='80px')
+                    description="Active",
+                    indent=False,
+                    layout=widgets.Layout(width='90px', min_width='85px')
                 )
             
             active_checkbox = self.detector_active[sdd_id]
             
             peak_options = [("Manual", -1)] + [(f"Peak {i} (Ch {p})", i) for i, p in enumerate(peaks)]
             
-            det_label = widgets.HTML(value=f"<b>{sdd_id} Assignments:</b>", layout=widgets.Layout(width='130px'))
+            det_label = widgets.HTML(
+                value=f"<b>{sdd_id} Assignments:</b>",
+                layout=widgets.Layout(width='150px', min_width='145px')
+            )
             
             point_selectors = []
             for i in range(n_pts):
-                sel = widgets.Dropdown(options=peak_options, value=i if i < len(peaks) else -1, 
-                                       description=f"P{i+1}:", layout=widgets.Layout(width='200px'))
+                sel = widgets.Dropdown(
+                    options=peak_options,
+                    value=i if i < len(peaks) else -1,
+                    description=f"P{i+1}:",
+                    style={'description_width': '35px'},
+                    layout=widgets.Layout(width='270px', min_width='240px')
+                )
                 # Default distinct manual channel values (e.g. 50, 100, 150) to prevent duplicate [0,0,0] errors
                 default_man_ch = peaks[i] if i < len(peaks) else (i + 1) * 50
                 man = widgets.IntText(
                     value=default_man_ch, 
                     description="Manual Ch:", 
                     style={'description_width': '75px'}, 
-                    layout=widgets.Layout(width='170px')
+                    layout=widgets.Layout(width='190px', min_width='180px')
                 )
                 
                 # Hide manual if peak ID selected
@@ -251,7 +260,11 @@ class SDDCalibrationGUI:
                 sel.observe(make_man_toggle(sel, man), names='value')
                 man.layout.display = 'none' if sel.value != -1 else 'flex'
                 
-                point_selectors.append({'sel': sel, 'man': man, 'box': widgets.HBox([sel, man])})
+                point_selectors.append({
+                    'sel': sel,
+                    'man': man,
+                    'box': widgets.HBox([sel, man], layout=widgets.Layout(margin='0 10px 0 0'))
+                })
             
             # Setup active state change observer to disable/enable dropdowns
             def make_active_observer(selectors_list):
@@ -350,12 +363,19 @@ class SDDCalibrationGUI:
 
         dp = self.data_pack or {}
         scan_name = dp.get('scan_name', 'scan')
-        h5_dir = dp.get('h5_dir', '')
-        if not h5_dir or not os.path.isdir(h5_dir):
-            if dp.get('h5_file_path') and os.path.exists(dp['h5_file_path']):
-                h5_dir = os.path.dirname(os.path.abspath(dp['h5_file_path']))
-            else:
-                h5_dir = os.getcwd()
+        target_dir = dp.get('save_dir')
+        if not target_dir or target_dir == 'N/A':
+            h5_dir = dp.get('h5_dir', '')
+            if not h5_dir or not os.path.isdir(h5_dir):
+                if dp.get('h5_file_path') and os.path.exists(dp['h5_file_path']):
+                    h5_dir = os.path.dirname(os.path.abspath(dp['h5_file_path']))
+                else:
+                    h5_dir = os.getcwd()
+            try:
+                from analyze_sgm_bsky_data import resolve_preprocessed_save_dir
+                target_dir = resolve_preprocessed_save_dir(h5_dir)
+            except Exception:
+                target_dir = h5_dir
 
         default_name = f"{scan_name}_Calibration_XRF_Spectra.csv"
 
@@ -370,7 +390,7 @@ class SDDCalibrationGUI:
             save_path = safe_filedialog_call(
                 func,
                 title="Export SDD XRF Spectra (CSV)",
-                initialdir=h5_dir,
+                initialdir=target_dir,
                 initialfile=default_name,
                 defaultextension=".csv",
                 filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
@@ -379,11 +399,14 @@ class SDDCalibrationGUI:
             save_path = None
 
         if not save_path:
-            save_path = os.path.join(h5_dir, default_name)
+            save_path = os.path.join(target_dir, default_name)
 
         if not save_path:
             self.status.value = "<b>Status:</b> Export cancelled."
             return
+
+        # Ensure directory exists before writing
+        os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
 
         sorted_dets = sorted(self.current_spectra.keys())
         active_dets = [d for d in sorted_dets if self.detector_active.get(d, None) is None or self.detector_active[d].value]
