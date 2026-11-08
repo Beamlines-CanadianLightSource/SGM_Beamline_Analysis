@@ -854,16 +854,16 @@ def analyze_sgm_bsky_data(file_path=None, verbose=True):
     return data_pack
 
 
-def browse_beamline_data(start_dir=None, on_load=None):
+def browse_beamline_data(start_dir=None, on_load=None, file_filter=".h5", title="CLS Beamline Data Explorer"):
     """
     Launches an interactive, non-blocking Jupyter GUI browser for CLS Loki beamline data.
-    Allows navigating through subfolders and selecting .h5 stack files directly inside JupyterLab.
+    Allows navigating through subfolders and selecting .h5 stack files or .csv files directly inside JupyterLab.
     """
     try:
         import ipywidgets as widgets
         from IPython.display import display
     except ImportError:
-        print("[Warning] ipywidgets / IPython not available. Use analyze_sgm_bsky_data(file_path) directly.")
+        print("[Warning] ipywidgets / IPython not available. Use file path directly.")
         return None
 
     candidates = [
@@ -879,13 +879,20 @@ def browse_beamline_data(start_dir=None, on_load=None):
     ]
     base_dir = next((p for p in candidates if p and os.path.isdir(p)), os.getcwd())
 
+    # Support multiple extensions (e.g. '.h5' or ('.csv', '.txt') or '.csv')
+    if isinstance(file_filter, str):
+        filters = (file_filter.lower(),)
+    else:
+        filters = tuple(f.lower() for f in file_filter)
+
     path_box = widgets.Text(value=base_dir, description="Folder:", layout=widgets.Layout(width="650px"))
     btn_up = widgets.Button(description="Up ⬆", layout=widgets.Layout(width="80px"))
     folder_select = widgets.Select(description="Subfolders:", rows=8, layout=widgets.Layout(width="650px"))
-    file_select = widgets.Select(description="H5 Files:", rows=6, layout=widgets.Layout(width="650px"))
+    lbl_files = f"Files ({', '.join(filters)}):"
+    file_select = widgets.Select(description=lbl_files, rows=6, layout=widgets.Layout(width="650px"))
     btn_open = widgets.Button(description="Open Selected Folder", button_style="info", layout=widgets.Layout(width="200px"))
-    btn_load = widgets.Button(description="Load Selected H5", button_style="success", icon="folder-open", layout=widgets.Layout(width="200px"))
-    status_msg = widgets.HTML(value="<i>Select a folder to navigate, or select an .h5 file to load</i>")
+    btn_load = widgets.Button(description="Select File", button_style="success", icon="folder-open", layout=widgets.Layout(width="200px"))
+    status_msg = widgets.HTML(value=f"<i>Select a folder to navigate, or select a file to load</i>")
 
     def refresh_view():
         current = path_box.value.strip()
@@ -897,10 +904,10 @@ def browse_beamline_data(start_dir=None, on_load=None):
             with os.scandir(current) as it:
                 entries = sorted(list(it), key=lambda e: e.name.lower())
                 dirs = [e.name for e in entries if e.is_dir() and not e.name.startswith('.')]
-                h5s = [e.name for e in entries if e.is_file() and e.name.endswith('.h5')]
+                matched_files = [e.name for e in entries if e.is_file() and any(e.name.lower().endswith(ext) for ext in filters)]
 
             folder_select.options = dirs if dirs else ["(No subfolders)"]
-            file_select.options = h5s if h5s else ["(No .h5 files in this folder)"]
+            file_select.options = matched_files if matched_files else [f"(No matching files in this folder)"]
             status_msg.value = f"Current path: <code>{current}</code>"
         except Exception as e:
             status_msg.value = f"<b style='color:red;'>Error reading folder: {e}</b>"
@@ -921,18 +928,21 @@ def browse_beamline_data(start_dir=None, on_load=None):
 
     def on_load_clicked(b):
         chosen_file = file_select.value
-        if chosen_file and chosen_file.endswith('.h5'):
+        if chosen_file and any(chosen_file.lower().endswith(ext) for ext in filters):
             full_path = os.path.join(path_box.value.strip(), chosen_file)
-            status_msg.value = f"<b>Loading:</b> {full_path} ..."
-            res = analyze_sgm_bsky_data(full_path)
+            status_msg.value = f"<b>Selected:</b> {full_path} ..."
             if on_load and callable(on_load):
-                on_load(res)
+                on_load(full_path)
             else:
-                import __main__
-                setattr(__main__, 'sgm_data', res)
-            status_msg.value = f"<b style='color:green;'>✓ Successfully loaded:</b> {chosen_file} (stored in <code>sgm_data</code>)"
+                if chosen_file.lower().endswith('.h5'):
+                    res = analyze_sgm_bsky_data(full_path)
+                    import __main__
+                    setattr(__main__, 'sgm_data', res)
+                    status_msg.value = f"<b style='color:green;'>✓ Successfully loaded:</b> {chosen_file} (stored in <code>sgm_data</code>)"
+                else:
+                    status_msg.value = f"<b style='color:green;'>✓ Selected:</b> {chosen_file}"
         else:
-            status_msg.value = "<b style='color:red;'>Please select a valid .h5 file from the list</b>"
+            status_msg.value = f"<b style='color:red;'>Please select a valid file ({', '.join(filters)}) from the list</b>"
 
     btn_open.on_click(on_open_clicked)
     btn_up.on_click(on_up_clicked)
@@ -940,7 +950,7 @@ def browse_beamline_data(start_dir=None, on_load=None):
     path_box.observe(lambda c: refresh_view(), names="value")
 
     ui = widgets.VBox([
-        widgets.HTML("<h3>CLS Beamline Data Explorer</h3>"),
+        widgets.HTML(f"<h3>{title}</h3>"),
         widgets.HBox([path_box, btn_up]),
         folder_select,
         btn_open,

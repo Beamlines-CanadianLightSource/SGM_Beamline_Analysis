@@ -4296,7 +4296,7 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
         # If running headless (HPC / JupyterHub), prompt interactively in the notebook console
         if not HAS_GUI:
             try:
-                ans = input("Use INTERNAL Au Mesh I0 (mcc1) for I0 normalization? [Y/n] (type 'n' to load an External I0 CSV): ").strip().lower()
+                ans = input("Use INTERNAL Au Mesh I0 (mcc1) for I0 normalization? [Y/n] (type 'n' to browse for an External I0 CSV): ").strip().lower()
                 use_internal = not (ans == 'n' or ans == 'no')
             except (EOFError, KeyboardInterrupt):
                 use_internal = True
@@ -4312,12 +4312,33 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
         i0_source = "Internal: Au Mesh I0 (mcc1)" if (mcc_channels and 1 in mcc_channels) else "None (Raw Only)"
         
         if use_ext:
-            func_i0 = getattr(filedialog, 'askopenfilename', 'askopenfilename') if filedialog else 'askopenfilename'
-            ext_path = safe_filedialog_call(
-                func_i0,
-                title="Select External I0 CSV",
-                filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
-            )
+            ext_path = None
+            if not HAS_GUI:
+                # Offer option to navigate Loki folders or type a path
+                print("\n[External I0 Selection]")
+                mode_ans = input("Enter 'b' to Browse Loki folders interactively, or press Enter to type/paste a path: ").strip().lower()
+                if mode_ans in ('b', 'browse'):
+                    selected_holder = {'path': None}
+                    def on_i0_selected(p):
+                        selected_holder['path'] = p
+
+                    from analyze_sgm_bsky_data import browse_beamline_data
+                    print("Launching Loki CSV file browser below...")
+                    browse_ui = browse_beamline_data(
+                        file_filter=('.csv', '.txt'),
+                        title="Select External I0 CSV from Loki",
+                        on_load=on_i0_selected
+                    )
+                    input("👉 Use the file browser widget above to navigate to your CSV, select it, click 'Select File', then press ENTER here to continue: ")
+                    ext_path = selected_holder['path']
+
+            if not ext_path:
+                func_i0 = getattr(filedialog, 'askopenfilename', 'askopenfilename') if filedialog else 'askopenfilename'
+                ext_path = safe_filedialog_call(
+                    func_i0,
+                    title="Select External I0 CSV",
+                    filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+                )
             if ext_path:
                 try:
                     ext_df = read_csv_with_comments(ext_path)
