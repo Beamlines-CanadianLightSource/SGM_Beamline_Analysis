@@ -138,9 +138,13 @@ class SDDCalibrationGUI:
             self.browser_box.children = []
             return
 
-        def on_scan_loaded(loaded_pack):
-            if loaded_pack:
-                self.data_pack = loaded_pack
+        def on_scan_loaded(loaded_item):
+            if loaded_item:
+                if isinstance(loaded_item, str):
+                    self.status.value = f"<b>Loading:</b> {os.path.basename(loaded_item)} ..."
+                    self.data_pack = analyze_sgm_bsky_data(loaded_item)
+                else:
+                    self.data_pack = loaded_item
                 self.browser_box.children = []
                 self._apply_loaded_data_pack()
 

@@ -888,10 +888,10 @@ def browse_beamline_data(start_dir=None, on_load=None, file_filter=".h5", title=
     path_box = widgets.Text(value=base_dir, description="Folder:", layout=widgets.Layout(width="650px"))
     btn_up = widgets.Button(description="Up ⬆", layout=widgets.Layout(width="80px"))
     sort_dropdown = widgets.Dropdown(
-        options=[("Most Recent First (Date/Time)", "mtime"), ("Alphabetical (A-Z)", "name_asc"), ("Reverse (Z-A)", "name_desc")],
-        value="mtime",
+        options=[("Most Recent Projects First (prj43..., Date)", "project_desc"), ("Alphabetical (A-Z)", "name_asc"), ("Reverse (Z-A)", "name_desc")],
+        value="project_desc",
         description="Sort by:",
-        layout=widgets.Layout(width="300px")
+        layout=widgets.Layout(width="380px")
     )
     folder_select = widgets.Select(description="Subfolders:", rows=8, layout=widgets.Layout(width="650px"))
     lbl_files = f"Files ({', '.join(filters)}):"
@@ -914,15 +914,26 @@ def browse_beamline_data(start_dir=None, on_load=None, file_filter=".h5", title=
             file_entries = [e for e in raw_entries if e.is_file() and any(e.name.lower().endswith(ext) for ext in filters)]
 
             sort_mode = sort_dropdown.value
-            if sort_mode == "mtime":
-                # Sort by modification time descending (most recent first)
-                def get_mtime(e):
-                    try:
-                        return e.stat().st_mtime
-                    except Exception:
-                        return 0.0
-                dirs = [e.name for e in sorted(dir_entries, key=get_mtime, reverse=True)]
-                matched_files = [e.name for e in sorted(file_entries, key=get_mtime, reverse=True)]
+            def natural_project_key(entry):
+                s = entry.name.strip()
+                # Match CLS project patterns like prj43G15689, prj40S15086, 41S15109
+                m = re.match(r'^(prj)?(\d+)([a-zA-Z]?)(\d+)?(.*)$', s, re.IGNORECASE)
+                if m:
+                    has_prj = 1 if m.group(1) else 0
+                    cycle = int(m.group(2))
+                    sub_num = int(m.group(4)) if m.group(4) else 0
+                    letter = (m.group(3) or '').lower()
+                    rest = (m.group(5) or '').lower()
+                    return (1, has_prj, cycle, sub_num, letter, rest)
+                # General natural sort for dates (e.g. 2026-08-13) and other alphanumeric names
+                parts = re.split(r'(\d+)', s.lower())
+                parsed = [int(p) if p.isdigit() else p for p in parts]
+                return (0, 0, 0, 0, '', parsed)
+
+            if sort_mode == "project_desc":
+                # Groups by cycle number descending (prj43..., prj42..., prj41...), ignoring the letter between
+                dirs = [e.name for e in sorted(dir_entries, key=natural_project_key, reverse=True)]
+                matched_files = [e.name for e in sorted(file_entries, key=natural_project_key, reverse=True)]
             elif sort_mode == "name_desc":
                 dirs = [e.name for e in sorted(dir_entries, key=lambda e: e.name.lower(), reverse=True)]
                 matched_files = [e.name for e in sorted(file_entries, key=lambda e: e.name.lower(), reverse=True)]
