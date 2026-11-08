@@ -7,12 +7,13 @@ import ipywidgets as widgets
 from IPython.display import display, clear_output
 
 # Import project utilities
-from analyze_sgm_bsky_data import analyze_sgm_bsky_data
+from analyze_sgm_bsky_data import analyze_sgm_bsky_data, browse_beamline_data
+from alignment_utils import HAS_GUI
 import sdd_calibration_utils as calib_utils
 
 class SDDCalibrationGUI:
-    def __init__(self):
-        self.data_pack = None
+    def __init__(self, data_pack=None):
+        self.data_pack = data_pack
         self.current_spectra = {} # {sdd_id: array_of_256}
         self.calibrations = calib_utils.load_calibration()
         self.detected_peaks_all = {} # {sdd_id: array_of_peak_channels}
@@ -42,10 +43,13 @@ class SDDCalibrationGUI:
     def setup_ui(self):
         self.out = widgets.Output()
         self.out_plot = widgets.Output()
+        self.browser_box = widgets.VBox([])
         
         # 1. File Loading Row
         self.btn_load = widgets.Button(description="Load Standard Scan", button_style='info')
         self.btn_load.on_click(self.on_load_clicked)
+        self.btn_browse = widgets.Button(description="Browse Beamline Data", button_style='warning', icon='folder-open')
+        self.btn_browse.on_click(self.on_browse_clicked)
         self.txt_file = widgets.Label(value="No file loaded.")
         
         # 2. Global Detection Settings
@@ -102,7 +106,8 @@ class SDDCalibrationGUI:
         # Main Layout
         self.ui = widgets.VBox([
             widgets.HTML("<h2>XRF SDD Energy Calibration Tool</h2>"),
-            widgets.HBox([self.btn_load, self.txt_file]),
+            widgets.HBox([self.btn_load, self.btn_browse, self.txt_file]),
+            self.browser_box,
             widgets.HTML("<hr><b>1. Detection Settings</b>"),
             settings_box,
             widgets.HTML("<hr><b>2. Target Energies (eV)</b>"),
@@ -127,26 +132,52 @@ class SDDCalibrationGUI:
             self.plot_spectra()
             self.rebuild_detector_widgets()
 
+    def on_browse_clicked(self, b):
+        """Toggle inline Loki/GPFS beamline explorer directly within the calibration tool."""
+        if len(self.browser_box.children) > 0:
+            self.browser_box.children = []
+            return
+
+        def on_scan_loaded(loaded_pack):
+            if loaded_pack:
+                self.data_pack = loaded_pack
+                self.browser_box.children = []
+                self._apply_loaded_data_pack()
+
+        # Build inline browser
+        browser_ui = browse_beamline_data(on_load=on_scan_loaded)
+        if browser_ui:
+            self.browser_box.children = [
+                widgets.HTML("<hr><b>Browse Beamline Scans:</b>"),
+                browser_ui,
+                widgets.HTML("<hr>")
+            ]
+
+    def _apply_loaded_data_pack(self):
+        if not self.data_pack:
+            return
+        h5_path = self.data_pack['h5_file_path']
+        norm = os.path.normpath(h5_path)
+        parts = norm.split(os.sep)
+        display_name = os.path.join(parts[-2], parts[-1]) if len(parts) >= 2 else os.path.basename(h5_path)
+        self.txt_file.value = display_name
+        self.process_data()
+        self.plot_spectra()
+        self.rebuild_detector_widgets()
+        self.btn_calc.disabled = False
+        self.btn_export.disabled = False
+        self.status.value = "<b>Status:</b> Data loaded. Assign peaks for each detector."
+
     def on_load_clicked(self, b):
         with self.out:
             clear_output()
+            # If running headless, offer to open the browser inline if dialog would block
             print("Opening file browser...")
             self.data_pack = analyze_sgm_bsky_data()
             if not self.data_pack:
                 self.status.value = "<b>Status:</b> No file selected."
                 return
-            
-            h5_path = self.data_pack['h5_file_path']
-            norm = os.path.normpath(h5_path)
-            parts = norm.split(os.sep)
-            display_name = os.path.join(parts[-2], parts[-1]) if len(parts) >= 2 else os.path.basename(h5_path)
-            self.txt_file.value = display_name
-            self.process_data()
-            self.plot_spectra()
-            self.rebuild_detector_widgets()
-            self.btn_calc.disabled = False
-            self.btn_export.disabled = False
-            self.status.value = "<b>Status:</b> Data loaded. Assign peaks for each detector."
+            self._apply_loaded_data_pack()
 
     def process_data(self):
         """Sums spectra for each detector across a subset of energies for speed."""
@@ -519,8 +550,10 @@ class SDDCalibrationGUI:
             self.status.value = f"<b>Status:</b> <font color='red'>Error saving CSV file: {e}</font>"
             print(f"  [Error] Failed to export XRF spectra: {e}")
 
-def run_calibration():
-    gui = SDDCalibrationGUI()
+def run_calibration(data_pack=None):
+    gui = SDDCalibrationGUI(data_pack=data_pack)
+    if data_pack:
+        gui._apply_loaded_data_pack()
     display(gui.ui)
 
 if __name__ == "__main__":
