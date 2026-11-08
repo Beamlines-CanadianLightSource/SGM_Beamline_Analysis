@@ -2489,8 +2489,15 @@ class DashboardRow:
                     )
             # Use identical layout to SDD maps so MCC maps perfectly match their size/position
             self.fig.subplots_adjust(**sub_adj)
-            mplcursors.cursor(self.sc_en, hover=True)
+            try:
+                mplcursors.cursor(self.sc_en, hover=True)
+            except Exception:
+                pass
             self.fig.canvas.mpl_connect('button_press_event', _on_dashboard_click)
+            try:
+                self.fig.canvas.draw_idle()
+            except Exception:
+                pass
             return
 
         m_roi = get_dynamic_mask(self.ctx['x_coords'][:len(self.s2d_rep)], self.ctx['y_coords'][:len(self.s2d_rep)], self.ctx['x_trim'], self.ctx['y_trim'], 
@@ -4909,6 +4916,10 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                         d.fig.canvas.layout.min_width = '1330px'
                         d.fig.canvas.layout.max_width = '1380px'
                 except: pass
+                try:
+                    d.fig.canvas.draw_idle()
+                except Exception:
+                    pass
                 map_row_widgets.append(d.fig.canvas)
             
             # Separate scrollable boxes for independent horizontal scrolling
