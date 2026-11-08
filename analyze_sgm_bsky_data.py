@@ -887,6 +887,12 @@ def browse_beamline_data(start_dir=None, on_load=None, file_filter=".h5", title=
 
     path_box = widgets.Text(value=base_dir, description="Folder:", layout=widgets.Layout(width="650px"))
     btn_up = widgets.Button(description="Up ⬆", layout=widgets.Layout(width="80px"))
+    sort_dropdown = widgets.Dropdown(
+        options=[("Most Recent First (Date/Time)", "mtime"), ("Alphabetical (A-Z)", "name_asc"), ("Reverse (Z-A)", "name_desc")],
+        value="mtime",
+        description="Sort by:",
+        layout=widgets.Layout(width="300px")
+    )
     folder_select = widgets.Select(description="Subfolders:", rows=8, layout=widgets.Layout(width="650px"))
     lbl_files = f"Files ({', '.join(filters)}):"
     file_select = widgets.Select(description=lbl_files, rows=6, layout=widgets.Layout(width="650px"))
@@ -902,9 +908,27 @@ def browse_beamline_data(start_dir=None, on_load=None, file_filter=".h5", title=
             return
         try:
             with os.scandir(current) as it:
-                entries = sorted(list(it), key=lambda e: e.name.lower())
-                dirs = [e.name for e in entries if e.is_dir() and not e.name.startswith('.')]
-                matched_files = [e.name for e in entries if e.is_file() and any(e.name.lower().endswith(ext) for ext in filters)]
+                raw_entries = list(it)
+
+            dir_entries = [e for e in raw_entries if e.is_dir() and not e.name.startswith('.')]
+            file_entries = [e for e in raw_entries if e.is_file() and any(e.name.lower().endswith(ext) for ext in filters)]
+
+            sort_mode = sort_dropdown.value
+            if sort_mode == "mtime":
+                # Sort by modification time descending (most recent first)
+                def get_mtime(e):
+                    try:
+                        return e.stat().st_mtime
+                    except Exception:
+                        return 0.0
+                dirs = [e.name for e in sorted(dir_entries, key=get_mtime, reverse=True)]
+                matched_files = [e.name for e in sorted(file_entries, key=get_mtime, reverse=True)]
+            elif sort_mode == "name_desc":
+                dirs = [e.name for e in sorted(dir_entries, key=lambda e: e.name.lower(), reverse=True)]
+                matched_files = [e.name for e in sorted(file_entries, key=lambda e: e.name.lower(), reverse=True)]
+            else: # "name_asc"
+                dirs = [e.name for e in sorted(dir_entries, key=lambda e: e.name.lower())]
+                matched_files = [e.name for e in sorted(file_entries, key=lambda e: e.name.lower())]
 
             folder_select.options = dirs if dirs else ["(No subfolders)"]
             file_select.options = matched_files if matched_files else [f"(No matching files in this folder)"]
@@ -948,10 +972,12 @@ def browse_beamline_data(start_dir=None, on_load=None, file_filter=".h5", title=
     btn_up.on_click(on_up_clicked)
     btn_load.on_click(on_load_clicked)
     path_box.observe(lambda c: refresh_view(), names="value")
+    sort_dropdown.observe(lambda c: refresh_view(), names="value")
 
     ui = widgets.VBox([
         widgets.HTML(f"<h3>{title}</h3>"),
         widgets.HBox([path_box, btn_up]),
+        sort_dropdown,
         folder_select,
         btn_open,
         file_select,
