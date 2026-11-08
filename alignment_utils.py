@@ -563,6 +563,7 @@ def safe_filedialog_call(func, *args, **kwargs):
         console_log(f"safe_filedialog_call: Headless environment detected for {func_name}.")
         prompt_title = title or "File Input"
         prompt_hint = f" (default dir: {initialdir})" if initialdir else ""
+        target_base = initialdir if initialdir else os.getcwd()
         if func_name == "askdirectory":
             prompt = f"[{prompt_title}]{prompt_hint} Enter directory path: "
         elif func_name in ("askopenfilenames",):
@@ -578,11 +579,35 @@ def safe_filedialog_call(func, *args, **kwargs):
             if func_name == "askopenfilenames":
                 paths = [p.strip().strip('\"\'') for p in val.split(',') if p.strip()]
                 return tuple(paths) if paths else ()
-            if not val and func_name == "asksaveasfilename" and initialfile:
-                target_base = initialdir if initialdir else os.getcwd()
-                return os.path.join(target_base, initialfile)
+            if func_name == "asksaveasfilename":
+                if not val and initialfile:
+                    chosen_path = os.path.join(target_base, initialfile)
+                elif val:
+                    chosen_path = val if os.path.isabs(val) else os.path.join(target_base, val)
+                else:
+                    return None
+                
+                # Check for existing file to prevent accidental overwrite
+                if os.path.exists(chosen_path):
+                    try:
+                        ow_ans = input(f"  File '{os.path.basename(chosen_path)}' already exists. Overwrite? [y/N (N=auto-increment)]: ").strip().lower()
+                        if ow_ans in ('y', 'yes'):
+                            console_log(f"  [OVERWRITE] User confirmed overwrite of: {chosen_path}")
+                            return chosen_path
+                    except Exception:
+                        pass
+                    # Auto-increment using get_safe_save_path to guarantee no overwrite
+                    safe_path = get_safe_save_path(os.path.dirname(chosen_path), os.path.basename(chosen_path))
+                    console_log(f"  [SAFE SAVE] Auto-incremented to avoid overwrite: {safe_path}")
+                    return safe_path
+                return chosen_path
             return val if val else None
-        except Exception:
+        except Exception as e_in:
+            # Background callback / non-interactive context where input() is unavailable
+            if func_name == "asksaveasfilename" and initialfile:
+                safe_path = get_safe_save_path(target_base, initialfile)
+                console_log(f"safe_filedialog_call: interactive stdin unavailable ({e_in}); using safe path: {safe_path}")
+                return safe_path
             return None
     
     console_log(f"safe_filedialog_call: launching subprocess for {func_name}")

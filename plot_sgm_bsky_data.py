@@ -2053,6 +2053,8 @@ class DashboardRow:
             return
         base_png_no_ext, _ = os.path.splitext(path_en_png)
         path_en_tif = f"{base_png_no_ext}.tiff"
+        if os.path.exists(path_en_tif):
+            path_en_tif = get_safe_save_path(target_dir, f"{os.path.basename(base_png_no_ext)}.tiff")
         
         data_en = m_rep[tm]
         vmin = np.nanpercentile(data_en, p_low) if len(data_en) > 0 else 0
@@ -2109,6 +2111,8 @@ class DashboardRow:
             return
         base_avg_no_ext, _ = os.path.splitext(path_avg_png)
         path_avg_tif = f"{base_avg_no_ext}.tiff"
+        if os.path.exists(path_avg_tif):
+            path_avg_tif = get_safe_save_path(target_dir, f"{os.path.basename(base_avg_no_ext)}.tiff")
         
         num_en = max(len(self.sync.all_energies), 1)
         avg_map_raw = self.ctx['avg_maps'].get(self.name)
@@ -2967,11 +2971,11 @@ class SummaryDashboard:
                 )
                 console_log(f"  safe_filedialog_call returned: {save_path}")
             else:
-                save_path = os.path.join(self.ctx['save_dir'], default_name)
+                save_path = get_safe_save_path(self.ctx['save_dir'], default_name)
             
             if not save_path:
-                save_path = os.path.join(self.ctx['save_dir'], default_name)
-                console_log(f"  [Fallback] Saving directly to starting folder: {save_path}")
+                save_path = get_safe_save_path(self.ctx['save_dir'], default_name)
+                console_log(f"  [Fallback] Saving directly to safe path: {save_path}")
             
             if save_path:
                 os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
@@ -3267,6 +3271,10 @@ class SummaryDashboard:
                 filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
             )
             console_log(f"  safe_filedialog_call returned: {save_path}")
+            
+            if not save_path:
+                save_path = get_safe_save_path(self.ctx['save_dir'], default_name)
+                console_log(f"  [Fallback] Saving directly to safe path: {save_path}")
             
             if save_path:
                 os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
@@ -4940,7 +4948,49 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                 sync.summary_dash.update_plots(sync.current_roi, sync.current_poly, sync.mode)
         ipfy_chk.observe(on_ipfy_change, names='value')
 
-        controls = widgets.HBox([sync.status_widget, btn_refresh, ipfy_chk])
+        # Export / Save Buttons for reliable one-click export in Jupyter notebooks
+        btn_save_xanes = widgets.Button(description="💾 Save XANES (CSV)", button_style='warning', tooltip='Export active ROI XANES spectra CSV')
+        btn_save_xrd = widgets.Button(description="💾 Save XRF (CSV)", button_style='info', tooltip='Export active ROI Consolidated XRF/XRD spectra CSV')
+        btn_save_imgs = widgets.Button(description="🖼️ Save All Images", button_style='primary', tooltip='Export all detector energy maps, average maps (PNG/TIFF), and standalone histograms')
+        btn_save_pm4d = widgets.Button(description="📦 Save 4D XRF (PyMca)", button_style='', tooltip='Save 4D HDF5 stack for elemental analysis in PyMca')
+        btn_save_pm3d = widgets.Button(description="📊 Save 3D XANES (PCA)", button_style='', tooltip='Save 3D HDF5 stack for PCA/CA in PyMca')
+
+        def _on_save_xanes(b):
+            if sync.summary_dash:
+                sync.summary_dash.save_summary_csv(None)
+        btn_save_xanes.on_click(_on_save_xanes)
+
+        def _on_save_xrd(b):
+            if sync.summary_dash:
+                sync.summary_dash.save_consolidated_xrd_spectrum(None)
+        btn_save_xrd.on_click(_on_save_xrd)
+
+        def _on_save_imgs(b):
+            if sync.summary_dash:
+                sync.summary_dash.save_all_images(None)
+        btn_save_imgs.on_click(_on_save_imgs)
+
+        def _on_save_pm4d(b):
+            if sync.summary_dash:
+                sync.summary_dash.save_pymca_4d_stack_call(None)
+        btn_save_pm4d.on_click(_on_save_pm4d)
+
+        def _on_save_pm3d(b):
+            if sync.summary_dash:
+                sync.summary_dash.save_pymca_stack_call(None)
+        btn_save_pm3d.on_click(_on_save_pm3d)
+
+        top_controls_row = widgets.HBox([sync.status_widget, btn_refresh, ipfy_chk], layout=widgets.Layout(align_items='center'))
+        save_controls_row = widgets.HBox([
+            widgets.HTML("<b style='margin-right: 6px; color: #222;'>Export:</b>"),
+            btn_save_xanes,
+            btn_save_xrd,
+            btn_save_imgs,
+            btn_save_pm4d,
+            btn_save_pm3d
+        ], layout=widgets.Layout(margin='6px 0 4px 0', align_items='center'))
+
+        controls = widgets.VBox([top_controls_row, save_controls_row])
 
         # 9. Decoupled & Synced Energy Sliders
         all_energy_sliders = []

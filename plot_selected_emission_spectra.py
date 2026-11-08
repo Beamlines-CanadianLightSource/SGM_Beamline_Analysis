@@ -646,6 +646,11 @@ def plot_selected_emission_spectra(
             ]
         )
 
+        if not out_filename:
+            from alignment_utils import get_safe_save_path
+            out_filename = get_safe_save_path(save_directory, initial_name)
+            print(f"  [Fallback] Saving directly to safe path: {out_filename}", flush=True)
+
         if out_filename:
             fig.savefig(out_filename, dpi=dpi, bbox_inches='tight')
             print(f"  -> [SAVE SUCCESS] Saved emission spectra plot to: {out_filename}", flush=True)
@@ -690,6 +695,11 @@ def plot_selected_emission_spectra(
                 ("All files", "*.*")
             ]
         )
+
+        if not out_csv:
+            from alignment_utils import get_safe_save_path
+            out_csv = get_safe_save_path(save_directory, initial_csv_name)
+            print(f"  [Fallback] Saving directly to safe path: {out_csv}", flush=True)
 
         if not out_csv:
             print("Save CSV operation cancelled.")

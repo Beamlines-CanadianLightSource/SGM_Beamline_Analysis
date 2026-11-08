@@ -50,7 +50,14 @@ def save_pymca_4d_stack_h5(path_pack, output_path=None, normalize=True, channel_
             filetypes=[("HDF5 files", "*.h5"), ("All files", "*.*")]
         )
         if not final_save_path:
-            final_save_path = os.path.join(initial_dir, initial_name)
+            from alignment_utils import get_safe_save_path
+            final_save_path = get_safe_save_path(initial_dir, initial_name)
+        elif not HAS_GUI and os.path.exists(final_save_path):
+            from alignment_utils import get_safe_save_path
+            safe_final = get_safe_save_path(os.path.dirname(final_save_path), os.path.basename(final_save_path))
+            if safe_final != final_save_path:
+                print(f"    -> [SAFE SAVE] File exists; auto-incremented to: {os.path.basename(safe_final)}")
+                final_save_path = safe_final
         if not final_save_path:
             print("    -> Save operation cancelled.")
             return

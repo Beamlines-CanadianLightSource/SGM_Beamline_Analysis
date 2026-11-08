@@ -202,24 +202,29 @@ def save_pymca_stack_h5(path_pack, output_path=None, channel_roi=None, xrf_roi=N
         )
         
         if not final_save_path:
-            print("    -> Save operation cancelled by user.")
-            return
+            final_save_path = get_safe_save_path(initial_dir, initial_name)
 
     # --- Check if file exists and prompt user (only if not already handled by filedialog) ---
     # Note: asksaveasfilename already handles the overwrite prompt, but we keep this for CLI safety
-    if os.path.exists(final_save_path) and final_save_path == output_path:
-        action = get_user_file_action(os.path.basename(final_save_path), final_save_path)
-        if action == 'overwrite':
-            print(f"    -> Overwriting {os.path.basename(final_save_path)}.")
-        elif action == 'skip':
-            print(f"    -> Skipping save operation for {os.path.basename(final_save_path)}.")
-            return
-        elif isinstance(action, tuple) and action[0] == 'rename':
-            final_save_path = action[1]
-            print(f"    -> Saving as {os.path.basename(final_save_path)}.")
-        else:
-            print("    -> Save operation cancelled.")
-            return
+    if os.path.exists(final_save_path):
+        if not HAS_GUI:
+            safe_final = get_safe_save_path(os.path.dirname(final_save_path), os.path.basename(final_save_path))
+            if safe_final != final_save_path:
+                print(f"    -> [SAFE SAVE] File exists; auto-incremented to: {os.path.basename(safe_final)}")
+                final_save_path = safe_final
+        elif final_save_path == output_path:
+            action = get_user_file_action(os.path.basename(final_save_path), final_save_path)
+            if action == 'overwrite':
+                print(f"    -> Overwriting {os.path.basename(final_save_path)}.")
+            elif action == 'skip':
+                print(f"    -> Skipping save operation for {os.path.basename(final_save_path)}.")
+                return
+            elif isinstance(action, tuple) and action[0] == 'rename':
+                final_save_path = action[1]
+                print(f"    -> Saving as {os.path.basename(final_save_path)}.")
+            else:
+                print("    -> Save operation cancelled.")
+                return
 
     x_raw = path_pack.get('x', np.array([]))
     y_raw = path_pack.get('y', np.array([]))
