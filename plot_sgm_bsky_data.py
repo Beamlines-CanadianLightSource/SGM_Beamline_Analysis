@@ -4190,6 +4190,7 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
         for ch in (mcc_to_map or []):
             avg_maps[f'mcc{ch}'] = None
 
+        print(f"  Mapping detectors: {detector_names} | MCC channels to map: {mcc_to_map} | Spectral MCC: {mcc_channels}")
         print("  Pass 1: Pre-loading energy dependence...")
         for e_idx, energy in enumerate(all_energies):
             for det_name in detector_names:
