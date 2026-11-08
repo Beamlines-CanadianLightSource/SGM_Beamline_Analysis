@@ -4293,9 +4293,13 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
         if root_i0:
             root_i0.withdraw()
         
-        # If headless without GUI, default to internal I0 (mcc1); otherwise always prompt the user
+        # If running headless (HPC / JupyterHub), prompt interactively in the notebook console
         if not HAS_GUI:
-            use_internal = True
+            try:
+                ans = input("Use INTERNAL Au Mesh I0 (mcc1) for I0 normalization? [Y/n] (type 'n' to load an External I0 CSV): ").strip().lower()
+                use_internal = not (ans == 'n' or ans == 'no')
+            except (EOFError, KeyboardInterrupt):
+                use_internal = True
         else:
             use_internal = safe_messagebox_askyesno("I0 Selection", "Use INTERNAL Au Mesh I0 (mcc1) for I0 normalization?\n\n(Select 'No' to load an EXTERNAL I0 CSV)")
         
@@ -4323,21 +4327,45 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                     e_col = next((c for c in ext_df.columns if 'energy' in c.lower()), ext_df.columns[0])
                     i_col = next((c for c in ext_df.columns if any(k in c.lower() for k in ['i0', 'intensity', 'norm', 'tey'])), ext_df.columns[1])
                     
-                    dialog = ExternalI0PreviewDialog(root_i0, ext_df, e_col, i_col)
-                    dialog.attributes("-topmost", True)
-                    try:
-                        dialog.deiconify()
-                        dialog.lift()
-                        dialog.focus_force()
-                        dialog.grab_set()
-                    except Exception:
-                        pass
-                    dialog.mainloop()
-                    
-                    if dialog.result:
-                        selected_e_col, selected_i_col, x_sorted, y_sorted, extra_str, cal_en, cal_val = dialog.result[:7]
-                        const_offset_val = dialog.result[7] if len(dialog.result) > 7 else getattr(dialog, 'const_val', 0.0)
-                        const_op = dialog.result[8] if len(dialog.result) > 8 else getattr(dialog, 'const_op', 'Add')
+                    if HAS_GUI and tk is not None:
+                        dialog = ExternalI0PreviewDialog(root_i0, ext_df, e_col, i_col)
+                        dialog.attributes("-topmost", True)
+                        try:
+                            dialog.deiconify()
+                            dialog.lift()
+                            dialog.focus_force()
+                            dialog.grab_set()
+                        except Exception:
+                            pass
+                        dialog.mainloop()
+                        
+                        if dialog.result:
+                            selected_e_col, selected_i_col, x_sorted, y_sorted, extra_str, cal_en, cal_val = dialog.result[:7]
+                            const_offset_val = dialog.result[7] if len(dialog.result) > 7 else getattr(dialog, 'const_val', 0.0)
+                            const_op = dialog.result[8] if len(dialog.result) > 8 else getattr(dialog, 'const_op', 'Add')
+                        else:
+                            selected_e_col, selected_i_col = None, None
+                    else:
+                        # Headless fallback: print available columns and auto-select or prompt
+                        print(f"\n[External I0 Loaded] Columns: {list(ext_df.columns)}")
+                        print(f"  Auto-selected Energy column: '{e_col}'")
+                        print(f"  Auto-selected Intensity/I0 column: '{i_col}'")
+                        selected_e_col = e_col
+                        selected_i_col = i_col
+                        # Parse coordinates
+                        x_raw = pd.to_numeric(ext_df[selected_e_col], errors='coerce').values
+                        y_raw = pd.to_numeric(ext_df[selected_i_col], errors='coerce').values
+                        valid_mask = np.isfinite(x_raw) & np.isfinite(y_raw)
+                        sort_idx = np.argsort(x_raw[valid_mask])
+                        x_sorted = x_raw[valid_mask][sort_idx]
+                        y_sorted = y_raw[valid_mask][sort_idx]
+                        extra_str = ""
+                        cal_en = False
+                        cal_val = 0.0
+                        const_offset_val = 0.0
+                        const_op = 'Add'
+
+                    if selected_e_col and selected_i_col:
                         if const_offset_val == 0.0 and extra_str:
                             import re
                             m_const = re.search(r'\(([+*\/])\s*Constant:\s*([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\)', extra_str)
