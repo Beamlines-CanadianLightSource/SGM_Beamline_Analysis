@@ -81,27 +81,29 @@ In the resource request form:
 
 ---
 
-## 5. Setting Up the SGM Analysis Environment on Planck
+## 5. Part 1: Initial One-Time Setup on Planck (First-Time Only)
 
-To run [`SGM_BSky_Data_Analysis.ipynb`](file:///c:/Users/dynesj/PycharmProjects/PythonProject/Gemini_CLI2/SGM_Beamline_Analysis/SGM_BSky_Data_Analysis.ipynb), you need a Python environment containing the required beamline libraries, registered as a Jupyter kernel.
+> [!IMPORTANT]
+> **Run this section ONLY ONCE** when setting up your account on Planck for the first time.
+> Once the virtual environment and Jupyter kernel are registered and the repository is cloned, you do **not** need to re-run this setup for future sessions.
 
 ### 5.1 Open a Terminal on Planck
-You can open a terminal directly inside **JupyterLab** (File → New → Terminal) or connect via SSH:
+Open a terminal directly inside **JupyterLab** (File → New → Terminal) or connect via SSH from your local workstation:
 ```bash
 ssh <username>@planck.clsi.ca
 ```
-salloc   (allocation)
+*(Optional: if you need to run compute-intensive terminal commands, you can request an interactive Slurm allocation with `salloc --cpus-per-task=4 --mem=16G --time=02:00:00`)*.
 
 ### 5.2 Load Modules and Build the Virtual Environment
 Planck uses the Compute Canada / Alliance Lmod software stack:
 
 ```bash
-# 1. Load an updated environment and Python
+# 1. Load the modern environment and Python
 module load StdEnv/2023
 module load python/3.13  # or python/3.11
-module list  # to see the loaded modules
+module list              # inspect loaded modules
 
-# 2. Create a virtual environment in your home directory (this only needs to be initally)
+# 2. Create the virtual environment in your home directory (ONCE ONLY)
 mkdir -p ~/envs
 python -m venv ~/envs/sgm_analysis
 
@@ -112,40 +114,58 @@ source ~/envs/sgm_analysis/bin/activate
 pip install --upgrade pip
 pip install numpy scipy matplotlib h5py pandas scikit-image sklearn
 
-# 5. Install Bluesky / Databroker & PyMca (if needed for stack analysis)
+# 5. Install Bluesky, Databroker, PyMca, and UI dependencies
 pip install bluesky databroker
 pip install PyMca5
-pip install mplcursors
+pip install mplcursors ipykernel
+```
 
-# 6. Install ipykernel and register the kernel for JupyterHub
-pip install ipykernel
+### 5.3 Register the Kernel for JupyterHub
+Register the virtual environment with JupyterHub so it appears permanently in your kernel dropdown:
+```bash
 python -m ipykernel install --user --name=sgm_analysis --display-name="Python (SGM Analysis)"
 ```
 
-### 5.3 Verify the Kernel in JupyterHub
-* Refresh your JupyterLab page in your browser.
-* In the launcher or top-right kernel dropdown, select **`Python (SGM Analysis)`**.
-* Any notebook running with this kernel will now have access to all installed libraries.
+### 5.4 Initial Clone of the Repository
+Clone the latest `SGM_Beamline_Analysis` code into your home directory:
+```bash
+cd ~
+git clone https://github.com/Beamlines-CanadianLightSource/SGM_Beamline_Analysis.git
+```
 
 ---
 
-## 6. Deploying the Analysis Code on Planck
+## 6. Part 2: Returning Workflow & Everyday Analysis (Already Initialized)
 
-Clone the latest `SGM_Beamline_Analysis` repository directly into your Planck `$HOME` or scientific project workspace:
+> [!TIP]
+> **Use this section for your everyday analysis sessions!**
+> You do **NOT** need to create the virtual environment (`venv`) or reinstall packages (`numpy`, `scipy`, etc.). Your **`Python (SGM Analysis)`** kernel is already configured and ready to use.
 
+### Step 1: Start Your JupyterHub Session
+1. Navigate to `https://jupyter.clsi.ca` in your web browser.
+2. Authenticate using your CLS Active Directory username and password.
+3. In the **Slurm Form Spawner**, choose your compute resources:
+   * **Partition**: `batch`
+   * **Cores / CPUs**: `4` to `8` cores
+   * **Memory**: `16 GB` to `32 GB` (or up to `64 GB` for large 4D RIXS datasets)
+   * **Time**: e.g., `04:00:00` (4 hours)
+4. Click **Start**. JupyterHub will allocate a Slurm compute node and open your JupyterLab workspace.
+
+### Step 2: Pull the Latest Code Updates (1 Command)
+Whenever new features or bug fixes are pushed to GitHub, simply open a terminal in JupyterLab (File → New → Terminal) and run:
 ```bash
-cd $HOME
-git clone https://github.com/Beamlines-CanadianLightSource/SGM_Beamline_Analysis.git
-cd SGM_Beamline_Analysis
+cd ~/SGM_Beamline_Analysis
+git pull origin main
 ```
+*(Note: You only need to `cd ~/SGM_Beamline_Analysis` once, followed by `git pull origin main`).*
 
-### Interactive Beamline Data Browser for Planck
+### Step 3: Open Notebook & Select the Kernel
+1. In the JupyterLab file browser on the left, navigate into `SGM_Beamline_Analysis/`.
+2. Open [`SGM_BSky_Data_Analysis.ipynb`](file:///c:/Users/dynesj/PycharmProjects/PythonProject/Gemini_CLI2/SGM_Beamline_Analysis/SGM_BSky_Data_Analysis.ipynb) (or [`SGM_BSky_Data_Analysis-4quad.ipynb`](file:///c:/Users/dynesj/PycharmProjects/PythonProject/Gemini_CLI2/SGM_Beamline_Analysis/SGM_BSky_Data_Analysis-4quad.ipynb)).
+3. In the top-right corner of the notebook, make sure the kernel is set to **`Python (SGM Analysis)`**.
 
-Because Planck runs in a **headless Linux environment** (no desktop GUI), `analyze_sgm_bsky_data()` cannot open a Windows file explorer window.
-
-To easily browse beamline data on Loki (`/gpfs/Primary/beamlinedata/sgm/...`) directly in your Jupyter notebook without hardcoding file paths, you can use the built-in **`browse_beamline_data()`** explorer:
-
-In [`SGM_BSky_Data_Analysis.ipynb`](file:///c:/Users/dynesj/PycharmProjects/PythonProject/Gemini_CLI2/SGM_Beamline_Analysis/SGM_BSky_Data_Analysis.ipynb):
+### Step 4: Browse and Load Your Beamline Scan
+In [`SGM_BSky_Data_Analysis.ipynb`](file:///c:/Users/dynesj/PycharmProjects/PythonProject/Gemini_CLI2/SGM_Beamline_Analysis/SGM_BSky_Data_Analysis.ipynb), run the interactive file browser cell:
 
 ```python
 from analyze_sgm_bsky_data import analyze_sgm_bsky_data, browse_beamline_data
@@ -153,30 +173,22 @@ from analyze_sgm_bsky_data import analyze_sgm_bsky_data, browse_beamline_data
 # Launch the interactive Loki/GPFS file explorer:
 browse_beamline_data()
 ```
-This renders interactive selection boxes directly in the notebook:
-1. Select your project or subfolder and click **Open Selected Folder**.
-2. Select your `.h5` file and click **Load Selected H5**.
-3. It immediately parses the scan into `sgm_data`, so all downstream analysis and plotting cells work right away!
+* Project folders are automatically sorted naturally by cycle number (`prj43...`, `prj42...`, `prj41...`).
+* Select your project folder, select your `.h5` file, and click **Load Selected H5**.
+* The scan is immediately parsed into `sgm_data`.
 
----
+*(Alternative: You can also specify direct file paths with `sgm_data = analyze_sgm_bsky_data("/gpfs/Primary/beamlinedata/sgm/.../scan.h5")`).*
 
-### Alternative: Specifying Direct Data Paths
-If you already know the path to your file, you can pass it directly into `analyze_sgm_bsky_data(...)`:
-
-```python
-# Direct Loki beamline path:
-h5_file = "/gpfs/Primary/beamlinedata/sgm/2026/my_project/raw/my_scan_stack.h5"
-
-# Or if copied to your scratch space:
-# h5_file = "/gpfs/Primary/planck/homedirs/dynesj/scratch/my_scan_stack.h5"
-
-sgm_data = analyze_sgm_bsky_data(h5_file)
-```
-
-* Save generated output files (such as PyMca 4D stacks or large 2D RIXS exports) to `$SCRATCH`:
-  ```python
-  output_stack_path = "/home/dynesj/scratch/output_stack.h5"
-  ```
+### Step 5: Execute Dashboard & Export Data
+Run the `plot_sgm_bsky_data(...)` cell:
+* **Interactive $I_0$ Preview**: If modifying Internal or External $I_0$ (smoothing, constant arithmetic, Optical Density division), an inline preview comparison plot will display in the notebook. You can inspect the changes and type **`Y`** (accept), **`r`** (retry with new parameters), or **`n`** (revert to raw $I_0$).
+* **Native Jupyter Export Toolbar**: A row of export buttons is embedded directly above the plots in the notebook:
+  - **`💾 Save XANES (CSV)`**: Exports active ROI XANES spectra.
+  - **`💾 Save XRF (CSV)`**: Exports active ROI Consolidated XRF/XRD spectra.
+  - **`🖼️ Save All Images`**: Exports all detector energy maps, average maps (PNG & TIFF), and standalone histograms with complete statistics.
+  - **`📦 Save 4D XRF (PyMca)`**: Exports full 4D stack for elemental analysis in PyMca.
+  - **`📊 Save 3D XANES (PCA)`**: Exports 3D normalized stack for PCA/CA.
+* **Anti-Overwrite Protection**: All export operations verify if a file with the same name already exists. In headless mode, filenames automatically increment (`_1`, `_2`, `_3`, etc.) so that **your previously saved data is never overwritten**.
 
 ---
 
