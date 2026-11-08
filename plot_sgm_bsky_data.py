@@ -2556,7 +2556,10 @@ class DashboardRow:
         
         # Enable double-click to copy to clipboard
         self.fig.canvas.mpl_connect('button_press_event', _on_dashboard_click)
-        # plt.show() removed to prevent double-plotting in Jupyter notebooks
+        try:
+            self.fig.canvas.draw_idle()
+        except Exception:
+            pass
 
 class SummaryDashboard:
     def __init__(self, sync_obj, context):
@@ -3923,7 +3926,10 @@ class SummaryDashboard:
         
         # Enable double-click to copy to clipboard
         self.fig.canvas.mpl_connect('button_press_event', _on_dashboard_click)
-        # plt.show() removed to prevent double-plotting in Jupyter notebooks
+        try:
+            self.fig.canvas.draw_idle()
+        except Exception:
+            pass
 
 def read_csv_with_comments(filepath):
     import re
@@ -4897,7 +4903,9 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                 try: 
                     sync.summary_dash.fig.canvas.layout.min_width = '890px'
                     sync.summary_dash.fig.canvas.layout.max_width = '100%'
-                except: pass
+                    sync.summary_dash.fig.canvas.draw_idle()
+                except Exception:
+                    pass
                 summary_canvases.append(sync.summary_dash.fig.canvas)
                 
             for d in sync.dashboards:
