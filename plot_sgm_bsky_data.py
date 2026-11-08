@@ -4017,6 +4017,251 @@ def read_csv_with_comments(filepath):
                 
     return pd.read_csv(filepath, comment='#', sep=delimiter if delimiter else r'\s+', engine='python' if delimiter is None else None)
 
+def display_i0_preview_figure(fig):
+    """Renders and displays an I0 preview figure inline in Jupyter notebooks or CLI."""
+    try:
+        from IPython.display import display, Image
+        buf = io.BytesIO()
+        fig.tight_layout()
+        fig.savefig(buf, format='png', bbox_inches='tight', dpi=100)
+        buf.seek(0)
+        display(Image(data=buf.getvalue()))
+    except Exception as e:
+        try:
+            plt.show()
+        except Exception:
+            pass
+    finally:
+        try:
+            plt.close(fig)
+        except Exception:
+            pass
+
+def render_i0_preview(x_sorted, y_sorted, y_proc, label_name="Au Mesh I0 (mcc1)", mod_desc_list=None, od_vals=None, od_comp="", shift=0.0):
+    """Constructs and displays a matplotlib preview figure comparing raw I0 to processed I0."""
+    try:
+        if mod_desc_list is None:
+            mod_desc_list = []
+        top_desc = ", ".join(mod_desc_list) if mod_desc_list else "Raw"
+        top_label = f"Modified ({top_desc})" if mod_desc_list else f"Raw {label_name}"
+
+        if od_vals is not None and len(od_vals) == len(x_sorted):
+            fig = plt.figure(figsize=(8, 5.2))
+            gs = fig.add_gridspec(2, 1, height_ratios=[1.6, 1], hspace=0.18)
+            ax_top = fig.add_subplot(gs[0, 0])
+            ax_bot = fig.add_subplot(gs[1, 0], sharex=ax_top)
+
+            # Top subplot: Raw vs Modified I0
+            ax_top.plot(x_sorted, y_sorted, color='gray', linestyle='--', alpha=0.6, label=f'Raw {label_name}')
+            x_plot = x_sorted + shift if shift != 0.0 else x_sorted
+            ax_top.plot(x_plot, y_proc, 'b.-', label=top_label, linewidth=1.5)
+            ax_top.set_ylabel(label_name, fontsize=9)
+            title_text = f"I0 Preview: {label_name}"
+            if mod_desc_list:
+                title_text += f" [{top_desc}]"
+            ax_top.set_title(title_text, fontsize=10, fontweight='bold')
+            ax_top.legend(loc='best', fontsize=8)
+            ax_top.grid(True, linestyle='--', alpha=0.6)
+            plt.setp(ax_top.get_xticklabels(), visible=False)
+
+            # Bottom subplot: Optical Density curve
+            ax_bot.plot(x_sorted, od_vals, color='#2ca02c', linewidth=1.8, label=f"OD ({od_comp})")
+            ax_bot.set_xlabel("Energy (eV)", fontsize=9)
+            ax_bot.set_ylabel("Optical Density", fontsize=9)
+            ax_bot.legend(loc='best', fontsize=8)
+            ax_bot.grid(True, linestyle='--', alpha=0.6)
+        else:
+            fig, ax = plt.subplots(figsize=(8, 3.8))
+            ax.plot(x_sorted, y_sorted, color='gray', linestyle='--', alpha=0.6, label=f'Raw {label_name}')
+            x_plot = x_sorted + shift if shift != 0.0 else x_sorted
+            ax.plot(x_plot, y_proc, 'b.-', label=top_label, linewidth=1.5)
+            ax.set_xlabel("Energy (eV)", fontsize=9)
+            ax.set_ylabel(label_name, fontsize=9)
+            title_text = f"I0 Preview: {label_name}"
+            if mod_desc_list:
+                title_text += f" [{top_desc}]"
+            ax.set_title(title_text, fontsize=10, fontweight='bold')
+            ax.legend(loc='best', fontsize=8)
+            ax.grid(True, linestyle='--', alpha=0.6)
+
+        display_i0_preview_figure(fig)
+    except Exception as e_prev:
+        console_log(f"  ! Preview plot rendering error: {e_prev}")
+
+def configure_and_preview_i0_headless(x_sorted, y_sorted, label_name="Au Mesh I0 (mcc1)", allow_energy_shift=False):
+    """
+    Headless interactive configuration and inline preview for I0 (Internal or External).
+    Prompts user for options, computes modifications, renders an inline preview plot,
+    and asks for confirmation before applying.
+    """
+    x_sorted = np.asarray(x_sorted, dtype=float)
+    y_sorted = np.asarray(y_sorted, dtype=float)
+
+    while True:
+        try:
+            mod_prompt = (
+                f"\nConfigure {label_name} (Smoothing, Constant, OD{', Shift' if allow_energy_shift else ''})? "
+                f"[y/N/p (p=preview raw)]: "
+            )
+            mod_ans = input(mod_prompt).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            mod_ans = 'n'
+
+        if mod_ans in ('p', 'preview'):
+            console_log(f"\n--- [I0 PREVIEW] Raw {label_name} ---")
+            render_i0_preview(x_sorted, y_sorted, y_sorted, label_name=label_name, mod_desc_list=[])
+            continue
+        elif mod_ans in ('y', 'yes'):
+            break
+        else:
+            # Default to no modifications
+            return y_sorted.copy(), "", 0.0, 'Add', False, 0.0
+
+    # User chose 'yes': enter parameter input and preview loop
+    while True:
+        y_proc = np.array(y_sorted.copy(), dtype=float)
+        extra_str = ""
+        mod_desc = []
+        const_offset_val = 0.0
+        const_op = 'Add'
+        cal_en = False
+        cal_val = 0.0
+        od_vals = None
+        od_comp_str = ""
+
+        # 1. Smoothing
+        try:
+            sm_ans = input("  Enable Smoothing (Savitzky-Golay)? [y/N]: ").strip().lower()
+            if sm_ans in ('y', 'yes'):
+                w_val = input("    Window length (odd integer >= 3, default 11): ").strip()
+                w = int(w_val) if w_val else 11
+                if w % 2 == 0: w += 1
+                if w < 3: w = 3
+                if len(y_proc) >= w:
+                    y_proc = savgol_filter(y_proc, window_length=w, polyorder=2)
+                    extra_str += f" (Smoothed w={w})"
+                    mod_desc.append(f"Smoothed w={w}")
+                    console_log(f"    ✓ Smoothing applied (w={w})")
+                else:
+                    console_log(f"    ! Data length ({len(y_proc)}) smaller than window ({w}); skipped smoothing.")
+        except Exception as e_sm:
+            console_log(f"    ! Smoothing error: {e_sm}")
+
+        # 2. Constant modification
+        try:
+            const_ans = input("  Modify by a Constant (+, *, /)? [y/N]: ").strip().lower()
+            if const_ans in ('y', 'yes'):
+                op_in = input("    Operation: '+' (Add), '*' (Multiply), or '/' (Divide) [default '+']: ").strip()
+                val_in = input("    Constant value (e.g. 100, 1.25): ").strip()
+                if val_in:
+                    c_val = float(val_in)
+                    if op_in == '*':
+                        const_op = "Multiply"
+                        y_proc = y_proc * c_val
+                        extra_str += f" (* Constant: {c_val:.4g})"
+                        mod_desc.append(f"Scale *{c_val:.4g}")
+                    elif op_in == '/':
+                        const_op = "Divide"
+                        if c_val != 0:
+                            y_proc = y_proc / c_val
+                            extra_str += f" (/ Constant: {c_val:.4g})"
+                            mod_desc.append(f"Scale /{c_val:.4g}")
+                        else:
+                            console_log("    ! Division by zero avoided.")
+                    else:
+                        const_op = "Add"
+                        y_proc = y_proc + c_val
+                        extra_str += f" (+ Constant: {c_val:+.4g})"
+                        mod_desc.append(f"Offset {c_val:+.4g}")
+                    const_offset_val = c_val
+                    console_log(f"    ✓ Constant operation applied ({const_op} {c_val})")
+        except Exception as e_c:
+            console_log(f"    ! Constant modification error: {e_c}")
+
+        # 3. Energy calibration shift (external I0 only)
+        if allow_energy_shift:
+            try:
+                sh_ans = input("  Apply Energy Calibration Shift (eV)? [y/N]: ").strip().lower()
+                if sh_ans in ('y', 'yes'):
+                    sh_val = input("    Energy shift in eV (e.g. +0.5, -1.2) [default 0.0]: ").strip()
+                    if sh_val:
+                        cal_val = float(sh_val)
+                        if cal_val != 0.0:
+                            cal_en = True
+                            extra_str += f" (Shift {cal_val:+.2f} eV)"
+                            mod_desc.append(f"Shift {cal_val:+.2f} eV")
+                            console_log(f"    ✓ Energy shift set ({cal_val:+.2f} eV)")
+            except Exception as e_sh:
+                console_log(f"    ! Energy shift error: {e_sh}")
+
+        # 4. Optical Density (sf.py)
+        try:
+            od_ans = input("  Divide by Optical Density (OD using Henke data)? [y/N]: ").strip().lower()
+            if od_ans in ('y', 'yes'):
+                if not HAS_SF:
+                    console_log("    ! sf.py module or Henke database not found; skipping OD.")
+                else:
+                    comp = input("    Compound formula (e.g. BN, Si3N4, SiO2) [default 'BN']: ").strip() or "BN"
+                    dens_str = input("    Density (g/cm3) [default 2.1]: ").strip()
+                    dens = float(dens_str) if dens_str else 2.1
+                    thick_str = input("    Thickness (microns) [default 0.1]: ").strip()
+                    thick = float(thick_str) if thick_str else 0.1
+                    auto_sc = input("    Auto-scale magnitude to original I0? [Y/n]: ").strip().lower() != 'n'
+
+                    od_raw = sf(comp, x_sorted, result_type='od', density=dens, thickness=thick)
+                    if od_raw is not None:
+                        od_vals = np.array(od_raw, dtype=float)
+                        od_safe = np.maximum(od_vals, 1e-12)
+                        y_od_div = y_proc / od_safe
+                        if auto_sc:
+                            mean_orig = np.nanmean(y_proc)
+                            mean_div = np.nanmean(y_od_div)
+                            if mean_div != 0 and not np.isnan(mean_div):
+                                y_od_div = y_od_div * (mean_orig / mean_div)
+                        y_proc = y_od_div
+                        od_comp_str = comp
+                        extra_str += f" (Divided by OD: {comp} ρ={dens} t={thick}µm{' auto-scaled' if auto_sc else ''})"
+                        mod_desc.append(f"OD-Div ({comp})")
+                        console_log(f"    ✓ Optical Density division applied for {comp}")
+                    else:
+                        console_log(f"    ! Failed to compute OD for compound '{comp}'.")
+        except Exception as e_od:
+            console_log(f"    ! OD division error: {e_od}")
+
+        # Summary statistics
+        console_log(f"\n--- [I0 PREVIEW] Modified {label_name} vs Raw {label_name} ---")
+        console_log(f"  Raw: min={np.nanmin(y_sorted):.4g}, max={np.nanmax(y_sorted):.4g}, mean={np.nanmean(y_sorted):.4g}")
+        console_log(f"  Mod: min={np.nanmin(y_proc):.4g}, max={np.nanmax(y_proc):.4g}, mean={np.nanmean(y_proc):.4g}")
+
+        # Render preview plot comparing Raw vs Modified
+        render_i0_preview(
+            x_sorted, y_sorted, y_proc,
+            label_name=label_name,
+            mod_desc_list=mod_desc,
+            od_vals=od_vals,
+            od_comp=od_comp_str,
+            shift=cal_val if cal_en else 0.0
+        )
+
+        # Ask user confirmation
+        try:
+            acc = input(
+                f"\nAccept this modified {label_name} for normalization? "
+                f"[Y/n/r] (Y = accept, n = discard/use raw, r = retry settings) [default 'Y']: "
+            ).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            acc = 'y'
+
+        if acc in ('', 'y', 'yes'):
+            console_log(f"  ✓ Modified {label_name} accepted for normalization.")
+            return y_proc, extra_str, const_offset_val, const_op, cal_en, cal_val
+        elif acc in ('r', 'retry'):
+            console_log(f"  -> Retrying {label_name} configuration...\n")
+            continue
+        else:
+            console_log(f"  ✓ Modifications discarded; using raw {label_name}.")
+            return y_sorted.copy(), "", 0.0, 'Add', False, 0.0
+
 # --- Main Entry Point ---
 
 def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 256), xrf_roi=None, auto_element_roi: bool = False, element=None, n_sigma: float = 2.0, roll_shift=0, as_scatter_plot: bool = False, map_roi=None, contrast=None, show_markers: bool = True, output_csv: bool = False, energy_shift=0.0, mcc_channels=None, mcc_to_map=None, x_trim=0.0, y_trim=0.0, save_images: bool = False, fixed_roi: bool = False, use_color: bool = True, use_full_metadata: bool = False, histogram_scope: str = 'full'):
@@ -4404,11 +4649,11 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                         sort_idx = np.argsort(x_raw[valid_mask])
                         x_sorted = x_raw[valid_mask][sort_idx]
                         y_sorted = y_raw[valid_mask][sort_idx]
-                        extra_str = ""
-                        cal_en = False
-                        cal_val = 0.0
-                        const_offset_val = 0.0
-                        const_op = 'Add'
+                        
+                        y_proc, extra_str, const_offset_val, const_op, cal_en, cal_val = configure_and_preview_i0_headless(
+                            x_sorted, y_sorted, label_name=f"{os.path.basename(ext_path)} [{selected_i_col}]", allow_energy_shift=True
+                        )
+                        y_sorted = y_proc
 
                     if selected_e_col and selected_i_col:
                         if const_offset_val == 0.0 and extra_str:
@@ -4491,121 +4736,46 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                 if mcc1_vals is not None and len(mcc1_vals) > 0:
                     # Always show the I0 preview dialog (even for a single energy) when a GUI is available
                     if not HAS_GUI:
-                        # Prompt the user interactively in Jupyter console whether to modify Internal I0
-                        mod_ans = input("Configure Internal Au Mesh I0 (Smoothing, Constant offset/mult/div, OD)? [y/N]: ").strip().lower()
-                        if mod_ans in ('y', 'yes'):
-                            x_sorted = np.array(calibrated_energies[:len(mcc1_vals)], dtype=float)
-                            y_proc = np.array(mcc1_vals.copy(), dtype=float)
-                            extra_str = ""
+                        x_raw = np.array(calibrated_energies[:len(mcc1_vals)], dtype=float)
+                        y_raw = np.array(mcc1_vals.copy(), dtype=float)
+                        # Ensure strictly increasing energy coordinates for interpolation
+                        sort_idx = np.argsort(x_raw)
+                        x_sorted = x_raw[sort_idx]
+                        y_sorted = y_raw[sort_idx]
 
-                            # 1. Smoothing
-                            sm_ans = input("  Enable Smoothing (Savitzky-Golay)? [y/N]: ").strip().lower()
-                            if sm_ans in ('y', 'yes'):
-                                try:
-                                    w_val = input("    Window length (odd integer >= 3, default 11): ").strip()
-                                    w = int(w_val) if w_val else 11
-                                    if w % 2 == 0: w += 1
-                                    if w < 3: w = 3
-                                    if len(y_proc) >= w:
-                                        y_proc = savgol_filter(y_proc, window_length=w, polyorder=2)
-                                        extra_str += f" (Smoothed w={w})"
-                                        print(f"    ✓ Smoothing applied (w={w})")
-                                except Exception as e_sm:
-                                    print(f"    ! Smoothing failed: {e_sm}")
+                        y_proc, extra_str, const_offset_val, const_op, _, _ = configure_and_preview_i0_headless(
+                            x_sorted, y_sorted, label_name="Au Mesh I0 (mcc1)", allow_energy_shift=False
+                        )
 
-                            # 2. Constant modification
-                            const_ans = input("  Modify by a Constant (+, *, /)? [y/N]: ").strip().lower()
-                            const_offset_val = 0.0
-                            const_op = 'Add'
-                            if const_ans in ('y', 'yes'):
-                                try:
-                                    op_in = input("    Operation: '+' (Add), '*' (Multiply), or '/' (Divide) [default '+']: ").strip()
-                                    val_in = input("    Constant value (e.g. 100, 1.25): ").strip()
-                                    if val_in:
-                                        c_val = float(val_in)
-                                        if op_in == '*':
-                                            const_op = "Multiply"
-                                            y_proc = y_proc * c_val
-                                            extra_str += f" (* Constant: {c_val:.4g})"
-                                        elif op_in == '/':
-                                            const_op = "Divide"
-                                            if c_val != 0:
-                                                y_proc = y_proc / c_val
-                                                extra_str += f" (/ Constant: {c_val:.4g})"
-                                        else:
-                                            const_op = "Add"
-                                            y_proc = y_proc + c_val
-                                            extra_str += f" (+ Constant: {c_val:+.4g})"
-                                        const_offset_val = c_val
-                                        print(f"    ✓ Constant operation applied ({const_op} {c_val})")
-                                except Exception as e_c:
-                                    print(f"    ! Constant modification failed: {e_c}")
+                        path_pack['i0_const_offset'] = const_offset_val
+                        path_pack['i0_const_op'] = const_op
+                        ext_i0_values = np.interp(calibrated_energies, x_sorted, y_proc)
+                        i0_source = f"Internal: Au Mesh I0 (mcc1){extra_str}"
+                        path_pack['i0_calib_enabled'] = False
+                        path_pack['i0_energy_shift'] = 0.0
 
-                            # 3. Optical Density (sf.py)
-                            od_ans = input("  Divide by Optical Density (OD using Henke data)? [y/N]: ").strip().lower()
-                            if od_ans in ('y', 'yes'):
-                                if not HAS_SF:
-                                    print("    ! sf.py module or Henke database not found; skipping OD.")
+                        if 'mcc1' in mcc_data and len(mcc_data['mcc1']) > 0:
+                            mcc_data['mcc1_original'] = np.array(mcc_data['mcc1']).copy()
+                        mcc_data['mcc1'] = ext_i0_values
+                        if 'mcc1' in mcc_maps and mcc_maps['mcc1'] is not None:
+                            mcc_maps['mcc1_original'] = mcc_maps['mcc1'].copy()
+                            if const_offset_val != 0.0:
+                                if const_op == "Multiply":
+                                    mcc_maps['mcc1'] = (mcc_maps['mcc1'] * const_offset_val).astype(mcc_maps['mcc1'].dtype)
+                                elif const_op == "Divide" and const_offset_val != 0.0:
+                                    mcc_maps['mcc1'] = (mcc_maps['mcc1'] / const_offset_val).astype(mcc_maps['mcc1'].dtype)
                                 else:
-                                    try:
-                                        comp = input("    Compound formula (e.g. BN, Si3N4, SiO2) [default 'BN']: ").strip() or "BN"
-                                        dens_str = input("    Density (g/cm3) [default 2.1]: ").strip()
-                                        dens = float(dens_str) if dens_str else 2.1
-                                        thick_str = input("    Thickness (microns) [default 0.1]: ").strip()
-                                        thick = float(thick_str) if thick_str else 0.1
-                                        auto_sc = input("    Auto-scale magnitude to original I0? [Y/n]: ").strip().lower() != 'n'
-
-                                        od_raw = sf(comp, x_sorted, result_type='od', density=dens, thickness=thick)
-                                        if od_raw is not None:
-                                            od_vals = np.array(od_raw, dtype=float)
-                                            od_safe = np.maximum(od_vals, 1e-12)
-                                            y_od_div = y_proc / od_safe
-                                            if auto_sc:
-                                                mean_orig = np.nanmean(y_proc)
-                                                mean_div = np.nanmean(y_od_div)
-                                                if mean_div != 0 and not np.isnan(mean_div):
-                                                    y_od_div = y_od_div * (mean_orig / mean_div)
-                                            y_proc = y_od_div
-                                            extra_str += f" (Divided by OD: {comp} ρ={dens} t={thick}µm{' auto-scaled' if auto_sc else ''})"
-                                            print(f"    ✓ Optical Density division applied for {comp}")
-                                    except Exception as e_od:
-                                        print(f"    ! OD division failed: {e_od}")
-
-                            path_pack['i0_const_offset'] = const_offset_val
-                            path_pack['i0_const_op'] = const_op
-                            ext_i0_values = np.interp(calibrated_energies, x_sorted, y_proc)
-                            i0_source = f"Internal: Au Mesh I0 (mcc1){extra_str}"
-                            path_pack['i0_calib_enabled'] = False
-                            path_pack['i0_energy_shift'] = 0.0
-
-                            if 'mcc1' in mcc_data and len(mcc_data['mcc1']) > 0:
-                                mcc_data['mcc1_original'] = np.array(mcc_data['mcc1']).copy()
-                            mcc_data['mcc1'] = ext_i0_values
-                            if 'mcc1' in mcc_maps and mcc_maps['mcc1'] is not None:
-                                mcc_maps['mcc1_original'] = mcc_maps['mcc1'].copy()
-                                if const_offset_val != 0.0:
-                                    if const_op == "Multiply":
-                                        mcc_maps['mcc1'] = (mcc_maps['mcc1'] * const_offset_val).astype(mcc_maps['mcc1'].dtype)
-                                    elif const_op == "Divide" and const_offset_val != 0.0:
-                                        mcc_maps['mcc1'] = (mcc_maps['mcc1'] / const_offset_val).astype(mcc_maps['mcc1'].dtype)
-                                    else:
-                                        mcc_maps['mcc1'] = (mcc_maps['mcc1'] + const_offset_val).astype(mcc_maps['mcc1'].dtype)
-                                    if 'mcc1' in avg_maps and avg_maps['mcc1'] is not None:
-                                        avg_maps['mcc1'] = np.nansum(mcc_maps['mcc1'], axis=0).astype(np.float32)
-                                if 'mcc_maps' not in path_pack or not isinstance(path_pack['mcc_maps'], dict):
-                                    path_pack['mcc_maps'] = mcc_maps.copy()
-                                else:
-                                    path_pack['mcc_maps']['mcc1'] = mcc_maps['mcc1']
-                            if 'mcc_data' not in path_pack or not isinstance(path_pack['mcc_data'], dict):
-                                path_pack['mcc_data'] = mcc_data.copy()
+                                    mcc_maps['mcc1'] = (mcc_maps['mcc1'] + const_offset_val).astype(mcc_maps['mcc1'].dtype)
+                                if 'mcc1' in avg_maps and avg_maps['mcc1'] is not None:
+                                    avg_maps['mcc1'] = np.nansum(mcc_maps['mcc1'], axis=0).astype(np.float32)
+                            if 'mcc_maps' not in path_pack or not isinstance(path_pack['mcc_maps'], dict):
+                                path_pack['mcc_maps'] = mcc_maps.copy()
                             else:
-                                path_pack['mcc_data']['mcc1'] = ext_i0_values
+                                path_pack['mcc_maps']['mcc1'] = mcc_maps['mcc1']
+                        if 'mcc_data' not in path_pack or not isinstance(path_pack['mcc_data'], dict):
+                            path_pack['mcc_data'] = mcc_data.copy()
                         else:
-                            ext_i0_values = mcc1_vals.copy()
-                            path_pack['i0_const_offset'] = 0.0
-                            path_pack['i0_const_op'] = 'Add'
-                            path_pack['i0_calib_enabled'] = False
-                            path_pack['i0_energy_shift'] = 0.0
+                            path_pack['mcc_data']['mcc1'] = ext_i0_values
                     else:
                         min_len = min(len(calibrated_energies), len(mcc1_vals))
                         int_df = pd.DataFrame({'Energy': calibrated_energies[:min_len], 'Au Mesh I0 (mcc1)': mcc1_vals[:min_len]})
