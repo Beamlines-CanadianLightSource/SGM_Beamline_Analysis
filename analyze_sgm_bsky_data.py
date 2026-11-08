@@ -854,7 +854,7 @@ def analyze_sgm_bsky_data(file_path=None, verbose=True):
     return data_pack
 
 
-def browse_beamline_data(start_dir=None, on_load=None, file_filter=".h5", title="CLS Beamline Data Explorer"):
+def browse_beamline_data(start_dir=None, on_load=None, file_filter=".h5", title="CLS Beamline Data Explorer", auto_display=True):
     """
     Launches an interactive, non-blocking Jupyter GUI browser for CLS Loki beamline data.
     Allows navigating through subfolders and selecting .h5 stack files or .csv files directly inside JupyterLab.
@@ -995,8 +995,10 @@ def browse_beamline_data(start_dir=None, on_load=None, file_filter=".h5", title=
         btn_load,
         status_msg
     ])
-    display(ui)
     refresh_view()
+    if auto_display:
+        display(ui)
+        return None
     return ui
 
 

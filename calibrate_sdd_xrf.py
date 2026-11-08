@@ -149,7 +149,7 @@ class SDDCalibrationGUI:
                 self._apply_loaded_data_pack()
 
         # Build inline browser
-        browser_ui = browse_beamline_data(on_load=on_scan_loaded)
+        browser_ui = browse_beamline_data(on_load=on_scan_loaded, auto_display=False)
         if browser_ui:
             self.browser_box.children = [
                 widgets.HTML("<hr><b>Browse Beamline Scans:</b>"),
