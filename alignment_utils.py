@@ -568,7 +568,7 @@ def safe_filedialog_call(func, *args, **kwargs):
         elif func_name in ("askopenfilenames",):
             prompt = f"[{prompt_title}]{prompt_hint} Enter file path(s) (comma-separated): "
         elif func_name == "asksaveasfilename":
-            prompt = f"[{prompt_title}]{prompt_hint} Enter save file path: "
+            prompt = f"[{prompt_title}]{prompt_hint} Enter save file path [press Enter for '{initialfile}']: "
         else:
             prompt = f"[{prompt_title}]{prompt_hint} Enter file path: "
         try:
@@ -578,6 +578,9 @@ def safe_filedialog_call(func, *args, **kwargs):
             if func_name == "askopenfilenames":
                 paths = [p.strip().strip('\"\'') for p in val.split(',') if p.strip()]
                 return tuple(paths) if paths else ()
+            if not val and func_name == "asksaveasfilename" and initialfile:
+                target_base = initialdir if initialdir else os.getcwd()
+                return os.path.join(target_base, initialfile)
             return val if val else None
         except Exception:
             return None

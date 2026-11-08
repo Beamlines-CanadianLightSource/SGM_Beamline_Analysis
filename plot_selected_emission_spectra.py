@@ -13,7 +13,7 @@ from scipy.optimize import curve_fit
 from analyze_sgm_bsky_data import analyze_sgm_bsky_data, get_sdd_label
 import sdd_calibration_utils as sdd_calib
 import sdd_element_roi_utils as elem_utils
-from alignment_utils import safe_filedialog_call, HAS_GUI
+from alignment_utils import safe_filedialog_call, safe_messagebox_showinfo, HAS_GUI
 
 
 # -----------------------------------------------------------------------------
@@ -648,10 +648,11 @@ def plot_selected_emission_spectra(
 
         if out_filename:
             fig.savefig(out_filename, dpi=dpi, bbox_inches='tight')
-            print(f"Saved plot to: {out_filename}")
+            print(f"  -> [SAVE SUCCESS] Saved emission spectra plot to: {out_filename}", flush=True)
+            safe_messagebox_showinfo("Save Complete", f"Successfully saved emission plot to:\n{out_filename}")
             saved_files.append(out_filename)
         else:
-            print("Save plot operation cancelled.")
+            print("  [CANCEL] Save plot operation cancelled.", flush=True)
 
         ax_save_btn.set_visible(True)
         ax_save_csv_btn.set_visible(True)
@@ -788,7 +789,8 @@ def plot_selected_emission_spectra(
         try:
             with open(out_csv, 'wb') as f:
                 f.write("\r\n".join(rows).encode('utf-8-sig'))
-            print(f"  -> [SAVE] Selected emission spectra CSV exported to: {out_csv}")
+            print(f"  -> [SAVE SUCCESS] Selected emission spectra CSV exported to: {out_csv}", flush=True)
+            safe_messagebox_showinfo("Save Complete", f"Successfully exported emission spectra CSV to:\n{out_csv}")
             saved_files.append(out_csv)
         except Exception as e:
             print(f"Error saving CSV file {out_csv}: {e}", file=sys.stderr)

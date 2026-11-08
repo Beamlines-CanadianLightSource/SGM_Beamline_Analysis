@@ -3173,6 +3173,9 @@ class SummaryDashboard:
                     save_last_dir(os.path.dirname(os.path.abspath(save_path)))
                 except Exception:
                     pass
+                if self.sync.status_widget:
+                    self.sync.status_widget.value = f"✓ XANES CSV SAVED: {os.path.basename(save_path)}"
+                print(f"\n=======================================================\n✓ [SUCCESS] XANES spectra saved to:\n  {save_path}\n=======================================================\n", flush=True)
                 root_msg = get_tk_root()
                 if root_msg:
                     root_msg.attributes("-topmost", True)
@@ -3393,6 +3396,9 @@ class SummaryDashboard:
                     rows.append(",".join(row_data))
                 console_log(f"  Writing XRD spectra to {save_path}...")
                 save_csv_idl(save_path, rows)
+                if self.sync.status_widget:
+                    self.sync.status_widget.value = f"✓ XRD CSV SAVED: {os.path.basename(save_path)}"
+                print(f"\n=======================================================\n✓ [SUCCESS] XRD spectra saved to:\n  {save_path}\n=======================================================\n", flush=True)
                 root_msg = get_tk_root()
                 if root_msg:
                     root_msg.attributes("-topmost", True)
@@ -3449,7 +3455,8 @@ class SummaryDashboard:
             safe_messagebox_showinfo("Export Complete", f"Successfully exported all maps (PNG & TIFF) to:\n{save_dir_abs}", parent=root_msg)
             
             if self.sync.status_widget:
-                self.sync.status_widget.value = f"EXPORT COMPLETE: All {total} maps saved to {save_dir_abs}"
+                self.sync.status_widget.value = f"✓ EXPORT COMPLETE: All {total} maps & histograms saved to {save_dir_abs}"
+            print(f"\n=======================================================\n✓ [SUCCESS] All {total} detector maps & histograms saved to:\n  {save_dir_abs}\n=======================================================\n", flush=True)
             console_log(f"--- [EXPORT COMPLETE] All {total} detectors saved to {save_dir_abs} ---\n")
         except Exception as e:
             console_log(f"[ERROR] Exception in save_all_images: {e}")
