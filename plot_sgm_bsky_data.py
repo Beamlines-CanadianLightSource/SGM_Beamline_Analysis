@@ -3664,9 +3664,10 @@ class SummaryDashboard:
                 if not np.allclose(orig_mcc1, self.ctx['mcc_data']['mcc1']):
                     ax_raw_mcc.plot(self.ctx['calibrated_energies'], orig_mcc1, color='gray', alpha=0.5, linestyle=':', label='Original Au Mesh I0 (mcc1)')
 
-            for ch in (self.ctx['mcc_channels'] or []):
-                data = self.ctx['mcc_data'][f'mcc{ch}']
-                if not np.all(np.array(data) == 0):
+            for ch in (self.ctx.get('mcc_channels') or []):
+                key = f'mcc{ch}'
+                data = self.ctx.get('mcc_data', {}).get(key, [])
+                if len(data) > 0 and not np.all(np.array(data) == 0):
                     m_fmt = 's-' if self.ctx.get('show_markers', True) else '-'
                     base_label = MCC_NAMES.get(ch, f'mcc{ch}')
                     if is_ext_i0 and ch == 1:
@@ -3749,9 +3750,11 @@ class SummaryDashboard:
                 self.ax_norm_ext.tick_params(axis='y', labelcolor='b', labelsize=8)
                 self.ax_norm_ext.set_ylim(0.0, 1.2)
 
-            for ch in (self.ctx['mcc_channels'] or []):
-                data = np.array(self.ctx['mcc_data'][f'mcc{ch}'])
-                if not np.all(data == 0):
+            for ch in (self.ctx.get('mcc_channels') or []):
+                key = f'mcc{ch}'
+                data = self.ctx.get('mcc_data', {}).get(key, [])
+                if len(data) > 0 and not np.all(np.array(data) == 0):
+                    data = np.array(data)
                     i0_safe = np.where(i0_init <= 0, 1.0, i0_init)
                     norm_mcc = data / i0_safe
                     m_fmt = 's-' if self.ctx.get('show_markers', True) else '-'
@@ -4626,8 +4629,14 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
             row.load_rep_data(); row.plot()
             sync.dashboards.append(row)
         
-        summary = SummaryDashboard(sync, context); summary.plot()
-        sync.summary_dash = summary
+        try:
+            summary = SummaryDashboard(sync, context)
+            summary.plot()
+            sync.summary_dash = summary
+        except Exception as e_sum:
+            print(f"  [ERROR] Failed to plot SummaryDashboard: {e_sum}", flush=True)
+            import traceback
+            traceback.print_exc()
         
         if save_images:
             summary.save_all_images()
