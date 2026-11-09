@@ -3,6 +3,7 @@ import h5py
 import os
 import shutil
 import re
+import io
 import matplotlib.pyplot as plt
 import ipywidgets as widgets
 from IPython.display import display
@@ -419,7 +420,7 @@ def calculate_aligned_flush_trims(data_packs, base_trims=None):
     return flush_trims
 
 
-def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50), auto_trim=False, trim_mode='full_edge', start_dir=None):
+def interactive_stitching_trim(h5_files=None, channel_roi=None, auto_trim=False, trim_mode='full_edge', start_dir=None):
     """
     Interactive widget to adjust trims for multiple maps before stitching.
     Includes contrast control, trim mode selection ('full_edge' vs 'overlap_only'),
@@ -429,8 +430,8 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50), auto_trim=Fa
     -----------
     h5_files : list, optional
         List of HDF5 file paths to stitch. If None, opens interactive Loki explorer in Jupyter.
-    channel_roi : tuple, default (30, 50)
-        Channel ROI to sum for live contrast preview.
+    channel_roi : tuple, optional
+        Channel ROI (start, end) to sum for live contrast preview. Defaults to full spectrum (0, 256).
     auto_trim : bool, default False
         If True, pre-calculates and populates sliders with zero-overlap trims.
         If False (default), sliders start at 0.00 mm (no trimming).
@@ -484,6 +485,7 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50), auto_trim=Fa
         for i, dp in enumerate(data_packs):
             loaded_inten = None
             h5_f = files_to_trim[i]
+            x_pts = len(dp.get('x', []))
             
             # Try 1: Load from SDD raw binary file
             det = list(dp['sdd_files'].keys())[0] if (dp.get('sdd_files') and len(dp['sdd_files']) > 0) else None
@@ -494,25 +496,31 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50), auto_trim=Fa
                 if en in sdd_dict:
                     f_path = sdd_dict[en]
                 elif len(sdd_dict) > 0:
-                    valid_keys = [k for k in sdd_dict.keys() if isinstance(k, (int, float))]
+                    valid_keys = [k for k in sdd_dict.keys() if isinstance(k, (int, float, np.floating))]
                     if valid_keys and en is not None:
-                        closest_k = min(valid_keys, key=lambda k: abs(k - en))
+                        closest_k = min(valid_keys, key=lambda k: abs(float(k) - float(en)))
                         f_path = sdd_dict[closest_k]
                     else:
                         f_path = list(sdd_dict.values())[0]
 
             if f_path and os.path.exists(f_path):
                 try:
-                    raw = np.fromfile(f_path, dtype=np.uint32).reshape(-1, 256)
-                    loaded_inten = np.sum(raw[:, channel_roi[0]:channel_roi[1]], axis=1)
+                    raw = np.fromfile(f_path, dtype=np.uint32)
+                    num_spectra = len(raw) // 256
+                    n_match = min(num_spectra, x_pts) if x_pts > 0 else num_spectra
+                    spectra = raw[:n_match * 256].reshape(n_match, 256)
+                    
+                    ch_start, ch_end = (channel_roi[0], channel_roi[1]) if channel_roi else (0, 256)
+                    loaded_inten = np.sum(spectra[:, ch_start:ch_end], axis=1)
                 except Exception as e:
                     print(f"  [Notice] Could not load raw SDD for Image {i+1}: {e}")
 
             # Try 2: Load directly from HDF5 if raw binary was not found or failed
-            if loaded_inten is None and os.path.exists(h5_f):
+            if (loaded_inten is None or len(loaded_inten) == 0) and os.path.exists(h5_f):
                 try:
                     with h5py.File(h5_f, 'r') as hf:
-                        for ds_candidate in ['entry/measurement/sdd1', 'entry/measurement/average', 'measurement/sdd1', 'measurement/average', 'map_data']:
+                        for ds_candidate in ['entry/measurement/sdd1', 'entry/measurement/average', 'entry/measurement/mcc4',
+                                             'measurement/sdd1', 'measurement/average', 'measurement/mcc4', 'map_data']:
                             if ds_candidate in hf:
                                 ds = hf[ds_candidate]
                                 if ds.ndim == 3:
@@ -528,16 +536,20 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50), auto_trim=Fa
                     pass
 
             # Try 3: Coordinate fallback so spatial layout and trims are always visualizable
-            n_pts = len(dp.get('x', []))
-            if loaded_inten is None or len(loaded_inten) != n_pts:
-                if n_pts > 0:
+            if loaded_inten is None or len(loaded_inten) != x_pts:
+                if loaded_inten is not None and len(loaded_inten) > 0 and x_pts > 0:
+                    if len(loaded_inten) > x_pts:
+                        loaded_inten = loaded_inten[:x_pts]
+                    else:
+                        loaded_inten = np.pad(loaded_inten, (0, x_pts - len(loaded_inten)), mode='edge')
+                elif x_pts > 0:
                     x_span = max(float(np.max(dp['x']) - np.min(dp['x'])), 1e-4)
                     y_span = max(float(np.max(dp['y']) - np.min(dp['y'])), 1e-4)
                     x_norm = (dp['x'] - np.min(dp['x'])) / x_span
                     y_norm = (dp['y'] - np.min(dp['y'])) / y_span
                     loaded_inten = 100.0 * (x_norm + y_norm) + 10.0 * (i + 1)
                 else:
-                    loaded_inten = np.zeros(n_pts, dtype=float)
+                    loaded_inten = np.zeros(x_pts, dtype=float)
 
             intensities.append(loaded_inten)
             all_vals.extend(loaded_inten)
@@ -596,143 +608,139 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50), auto_trim=Fa
         btn_flush_trims = widgets.Button(description="Align Flush Bounds (Crop)", button_style='warning', icon='crop', layout=widgets.Layout(width='200px'))
         btn_redraw = widgets.Button(description="🔄 Redraw Preview", button_style='', icon='refresh', layout=widgets.Layout(width='150px'))
         stitch_btn = widgets.Button(description="Bake Stitched Image", button_style='success', layout=widgets.Layout(width='180px'))
-        output = widgets.Output()
         
-        fig_id = f"stitch_trim_{id(files_to_trim)}"
+        img_widget = widgets.Image(format='png', layout=widgets.Layout(max_width='100%', align_self='center'))
+        status_box = widgets.HTML(value="")
+        bake_status = widgets.Output()
+        
         batch_updating = [False]
 
         def update_plot(change=None):
             if batch_updating[0]:
                 return
-            with output:
-                output.clear_output(wait=True)
-                fig, ax = plt.subplots(1, 1, figsize=(6.5, 5.0))
+            
+            fig, ax = plt.subplots(1, 1, figsize=(7.0, 5.2))
 
-                # Calculate contrast limits based on percentiles
-                p_low, p_high = contrast_slider.value
-                flat_intensities = np.concatenate(intensities) if intensities else np.array([0, 1])
-                vmin = np.percentile(flat_intensities, p_low)
-                vmax = np.percentile(flat_intensities, p_high)
-                if vmin == vmax:
-                    vmax = vmin + 1.0
+            # Calculate contrast limits based on percentiles
+            p_low, p_high = contrast_slider.value
+            flat_intensities = np.concatenate(intensities) if intensities else np.array([0, 1])
+            vmin = np.percentile(flat_intensities, p_low)
+            vmax = np.percentile(flat_intensities, p_high)
+            if vmin == vmax:
+                vmax = vmin + 1.0
 
-                colors = ['#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4', '#46f0f0', '#f032e6', '#bcf60c', '#fabebe']
-                active_mode = trim_mode_toggle.value
-                current_trims = [
-                    {'left': s['L'].value, 'right': s['R'].value, 'top': s['T'].value, 'bottom': s['B'].value}
-                    for s in sliders
-                ]
+            colors = ['#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4', '#46f0f0', '#f032e6', '#bcf60c', '#fabebe']
+            active_mode = trim_mode_toggle.value
+            current_trims = [
+                {'left': s['L'].value, 'right': s['R'].value, 'top': s['T'].value, 'bottom': s['B'].value}
+                for s in sliders
+            ]
+            
+            mode_label = "OVERLAP-ONLY (2D Intersection)" if active_mode == 'overlap_only' else "FULL EDGE (Rectangular)"
+            status_lines = [
+                f"<div style='background-color:#f8f9fa; border:1px solid #ddd; border-radius:4px; padding:6px 10px; margin-top:6px; font-size:0.9em;'>"
+                f"<b style='color:#004085;'>Live Trimming Status [Mode: {mode_label}]:</b><br/>"
+            ]
+            
+            for i in range(num_maps):
+                lbl = labels[i] if i < len(labels) else f"Image {i+1}"
+                dp = data_packs[i]
+                s = sliders[i]
+                L, R, T, B = s['L'].value, s['R'].value, s['T'].value, s['B'].value
                 
-                mode_label = "OVERLAP-ONLY (2D Intersection)" if active_mode == 'overlap_only' else "FULL EDGE (Rectangular)"
-                for i in range(num_maps):
-                    lbl = labels[i] if i < len(labels) else f"Image {i+1}"
-                    dp = data_packs[i]
-                    s = sliders[i]
-                    L, R, T, B = s['L'].value, s['R'].value, s['T'].value, s['B'].value
-                    
-                    orig_x, orig_y = dp['x'], dp['y']
-                    all_idx = np.arange(len(orig_x))
-                    
-                    if active_mode == 'overlap_only':
-                        tx, ty, ti_idx = apply_overlap_only_trim(i, data_packs, current_trims)
-                    else:
-                        tx, ty, ti_idx = apply_asymmetric_trim(
-                            orig_x, orig_y, all_idx,
-                            left=L, right=R, top=T, bottom=B
-                        )
-                    
-                    num_kept = len(tx)
-                    num_total = len(orig_x)
-                    num_trimmed = num_total - num_kept
+                orig_x, orig_y = dp['x'], dp['y']
+                all_idx = np.arange(len(orig_x))
+                
+                if active_mode == 'overlap_only':
+                    tx, ty, ti_idx = apply_overlap_only_trim(i, data_packs, current_trims)
+                else:
+                    tx, ty, ti_idx = apply_asymmetric_trim(
+                        orig_x, orig_y, all_idx,
+                        left=L, right=R, top=T, bottom=B
+                    )
+                
+                num_kept = len(tx)
+                num_total = len(orig_x)
+                num_trimmed = num_total - num_kept
+                status_lines.append(f"• <b>[{lbl}]</b> Trims: L={L:.3f}mm, R={R:.3f}mm, T={T:.3f}mm, B={B:.3f}mm &nbsp;|&nbsp; Kept {num_kept}/{num_total} pts ({num_trimmed} trimmed)<br/>")
 
-                    col = colors[i % len(colors)]
+                col = colors[i % len(colors)]
+                
+                # 1. Draw Original Boundary (faint grey dotted box)
+                if num_total > 0:
+                    ox_min, ox_max = np.min(orig_x), np.max(orig_x)
+                    oy_min, oy_max = np.min(orig_y), np.max(orig_y)
+                    ax.plot([ox_min, ox_max, ox_max, ox_min, ox_min],
+                            [oy_min, oy_min, oy_max, oy_max, oy_min],
+                            color='gray', lw=1.2, ls=':', alpha=0.6)
+
+                # 2. Draw Trimmed Out Points (Subtle red x markers)
+                if num_trimmed > 0:
+                    kept_set = set(ti_idx)
+                    trimmed_mask = np.array([idx not in kept_set for idx in all_idx])
+                    ax.scatter(orig_x[trimmed_mask], orig_y[trimmed_mask], 
+                               color='red', marker='x', s=14, alpha=0.6, label='Trimmed Points' if i==0 else "")
+
+                # 3. Draw Kept Data Area and Active Trimmed Boundary Box
+                if num_kept > 0:
+                    kept_inten = intensities[i][ti_idx]
+                    triang_drawn = False
+                    try:
+                        triang = get_masked_triangulation(tx, ty)
+                        if triang is not None:
+                            ax.tripcolor(triang, kept_inten, shading='gouraud', 
+                                         edgecolors='none', vmin=vmin, vmax=vmax, cmap='viridis', alpha=0.90)
+                            triang_drawn = True
+                    except Exception:
+                        pass
                     
-                    # 1. Draw Original Boundary (faint grey dotted box)
-                    if num_total > 0:
-                        ox_min, ox_max = np.min(orig_x), np.max(orig_x)
-                        oy_min, oy_max = np.min(orig_y), np.max(orig_y)
-                        ax.plot([ox_min, ox_max, ox_max, ox_min, ox_min],
-                                [oy_min, oy_min, oy_max, oy_max, oy_min],
-                                color='gray', lw=1.2, ls=':', alpha=0.6)
-
-                    # 2. Draw Trimmed Out Points (Subtle red x markers)
-                    if num_trimmed > 0:
-                        kept_set = set(ti_idx)
-                        trimmed_mask = np.array([idx not in kept_set for idx in all_idx])
-                        ax.scatter(orig_x[trimmed_mask], orig_y[trimmed_mask], 
-                                   color='red', marker='x', s=14, alpha=0.6, label='Trimmed Points' if i==0 else "")
-
-                    # 3. Draw Kept Data Area and Active Trimmed Boundary Box
-                    if num_kept > 0:
-                        kept_inten = intensities[i][ti_idx]
-                        triang_drawn = False
+                    if not triang_drawn:
                         try:
-                            triang = get_masked_triangulation(tx, ty)
-                            if triang is not None:
-                                ax.tripcolor(triang, kept_inten, shading='gouraud', 
-                                             edgecolors='none', vmin=vmin, vmax=vmax, cmap='viridis', alpha=0.85)
-                                triang_drawn = True
+                            ax.tripcolor(tx, ty, kept_inten, shading='gouraud', 
+                                         edgecolors='none', vmin=vmin, vmax=vmax, cmap='viridis', alpha=0.90)
+                            triang_drawn = True
                         except Exception:
                             pass
-                        
-                        if not triang_drawn:
-                            try:
-                                ax.tripcolor(tx, ty, kept_inten, shading='gouraud', 
-                                             edgecolors='none', vmin=vmin, vmax=vmax, cmap='viridis', alpha=0.85)
-                                triang_drawn = True
-                            except Exception:
-                                pass
-                                
-                        if not triang_drawn:
-                            # Robust fallback to scatter plot
-                            ax.scatter(tx, ty, c=kept_inten, s=12, vmin=vmin, vmax=vmax,
-                                       cmap='viridis', marker='s', edgecolors='none', alpha=0.85)
-                        
-                        # Draw prominent active boundary box
-                        kx_min, kx_max = np.min(tx), np.max(tx)
-                        ky_min, ky_max = np.min(ty), np.max(ty)
-                        ax.plot([kx_min, kx_max, kx_max, kx_min, kx_min], 
-                                [ky_min, ky_min, ky_max, ky_max, ky_min], 
-                                color=col, lw=2.0, ls='-' if active_mode == 'full_edge' else '--', label=f"{lbl} Kept Bounds")
-                        
-                        # Text label for image
-                        ax.text((kx_min + kx_max) / 2.0, (ky_min + ky_max) / 2.0, lbl, 
-                                color=col, fontsize=9, fontweight='bold', ha='center', va='center',
-                                bbox=dict(boxstyle="round,pad=0.2", facecolor='white', alpha=0.75, edgecolor=col))
+                            
+                    if not triang_drawn:
+                        ax.scatter(tx, ty, c=kept_inten, s=14, vmin=vmin, vmax=vmax,
+                                   cmap='viridis', marker='s', edgecolors='none', alpha=0.90)
+                    
+                    # Draw prominent active boundary box
+                    kx_min, kx_max = np.min(tx), np.max(tx)
+                    ky_min, ky_max = np.min(ty), np.max(ty)
+                    ax.plot([kx_min, kx_max, kx_max, kx_min, kx_min], 
+                            [ky_min, ky_min, ky_max, ky_max, ky_min], 
+                            color=col, lw=2.0, ls='-' if active_mode == 'full_edge' else '--', label=f"{lbl} Kept Bounds")
+                    
+                    # Text label for image
+                    ax.text((kx_min + kx_max) / 2.0, (ky_min + ky_max) / 2.0, lbl, 
+                            color=col, fontsize=9, fontweight='bold', ha='center', va='center',
+                            bbox=dict(boxstyle="round,pad=0.2", facecolor='white', alpha=0.75, edgecolor=col))
 
-                ax.set_aspect('equal')
-                ax.set_title(f"Stitching Preview [{mode_label}] (Contrast: {p_low}% - {p_high}%)", fontsize=10, fontweight='bold')
-                ax.set_xlabel("X (mm)", fontsize=9)
-                ax.set_ylabel("Y (mm)", fontsize=9)
-                ax.legend(loc='upper right', fontsize=8)
+            ax.set_aspect('equal')
+            ax.set_title(f"Stitching Preview [{mode_label}] (Contrast: {p_low:.1f}% - {p_high:.1f}%)", fontsize=10, fontweight='bold')
+            ax.set_xlabel("X (mm)", fontsize=9)
+            ax.set_ylabel("Y (mm)", fontsize=9)
+            ax.legend(loc='upper right', fontsize=8)
 
-                # Add colorbar
-                sm = plt.cm.ScalarMappable(cmap='viridis', norm=plt.Normalize(vmin=vmin, vmax=vmax))
-                sm.set_array([])
-                cbar = plt.colorbar(sm, ax=ax, fraction=0.046, pad=0.04)
-                cbar.set_label('Counts (ROI)', fontsize=8)
+            # Add colorbar
+            sm = plt.cm.ScalarMappable(cmap='viridis', norm=plt.Normalize(vmin=vmin, vmax=vmax))
+            sm.set_array([])
+            cbar = plt.colorbar(sm, ax=ax, fraction=0.046, pad=0.04)
+            cbar.set_label('Counts (ROI)', fontsize=8)
 
-                plt.tight_layout()
-                plt.show()
-                plt.close(fig)
-
-                # Summary status printed cleanly below the plot
-                print(f"--- LIVE TRIMMING & STITCHING STATUS [Mode: {mode_label}] ---")
-                for i in range(num_maps):
-                    lbl = labels[i] if i < len(labels) else f"Image {i+1}"
-                    s = sliders[i]
-                    L, R, T, B = s['L'].value, s['R'].value, s['T'].value, s['B'].value
-                    dp = data_packs[i]
-                    orig_x, orig_y = dp['x'], dp['y']
-                    all_idx = np.arange(len(orig_x))
-                    if active_mode == 'overlap_only':
-                        tx, ty, ti_idx = apply_overlap_only_trim(i, data_packs, current_trims)
-                    else:
-                        tx, ty, ti_idx = apply_asymmetric_trim(orig_x, orig_y, all_idx, left=L, right=R, top=T, bottom=B)
-                    num_kept = len(tx)
-                    num_total = len(orig_x)
-                    num_trimmed = num_total - num_kept
-                    print(f"  [{lbl}] Trims: Left={L:.3f}mm, Right={R:.3f}mm, Top={T:.3f}mm, Bottom={B:.3f}mm | Kept {num_kept}/{num_total} pts ({num_trimmed} trimmed)")
+            plt.tight_layout()
+            
+            # Save into in-memory buffer and update image widget
+            buf = io.BytesIO()
+            fig.savefig(buf, format='png', bbox_inches='tight', dpi=110)
+            buf.seek(0)
+            img_widget.value = buf.read()
+            plt.close(fig)
+            
+            status_lines.append("</div>")
+            status_box.value = "".join(status_lines)
 
         # Link all sliders and mode toggle to update_plot
         for s_set in sliders:
@@ -804,7 +812,8 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50), auto_trim=Fa
                     'top': s['T'].value, 'bottom': s['B'].value
                 })
             
-            with output:
+            with bake_status:
+                bake_status.clear_output()
                 print(f"\n[PROCESS STARTED] Baking Stitched Image (Mode: {trim_mode_toggle.value})... Please wait.")
                 try:
                     stitch_quadrant_maps(files_to_trim, trims=final_trims, trim_mode=trim_mode_toggle.value)
@@ -850,7 +859,17 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50), auto_trim=Fa
         btn_redraw.on_click(lambda b: update_plot())
         buttons_list.extend([btn_zero_trims, btn_auto_trims, btn_flush_trims, btn_redraw, stitch_btn])
         action_box = widgets.HBox(buttons_list)
-        trim_view = widgets.VBox([notice_label, trim_mode_toggle, tab_widget, widgets.Label("Global Contrast Control:"), contrast_slider, action_box, output])
+        trim_view = widgets.VBox([
+            notice_label,
+            trim_mode_toggle,
+            tab_widget,
+            widgets.Label("Global Contrast Control:"),
+            contrast_slider,
+            action_box,
+            img_widget,
+            status_box,
+            bake_status
+        ])
         container.children = [trim_view]
         update_plot()
 
