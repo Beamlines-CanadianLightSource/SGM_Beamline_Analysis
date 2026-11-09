@@ -9,6 +9,9 @@ import warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning, message=".*OpenMP.*")
 warnings.filterwarnings("ignore", module="threadpoolctl")
 
+import logging
+logging.getLogger('matplotlib.font_manager').setLevel(logging.ERROR)
+
 import h5py
 import numpy as np
 import pandas as pd
@@ -312,8 +315,9 @@ def plot_multi_detector_results(all_results, h5_path, i0_info=None):
     base_dir = os.path.dirname(os.path.abspath(h5_path))
 
     # --- Figure 1: Eigenimages Comparison ---
-    fig_img, axes_img = plt.subplots(n_comp, n_det, figsize=(2.8*n_det, 2.8*n_comp), squeeze=False)
-    fig_img.suptitle(f"PCA Eigenimage Comparison: {scan_name}\n[Normalized: {i0_info}]", fontsize=15)
+    # Reduced by 30% for compact notebook display
+    fig_img, axes_img = plt.subplots(n_comp, n_det, figsize=(1.96*n_det, 1.96*n_comp), squeeze=False)
+    fig_img.suptitle(f"PCA Eigenimage Comparison: {scan_name}\n[Normalized: {i0_info}]", fontsize=12, fontweight='bold')
     
     for c in range(n_comp):
         for d in range(n_det):
@@ -337,8 +341,9 @@ def plot_multi_detector_results(all_results, h5_path, i0_info=None):
     plt.savefig(img_plot_path, dpi=150)
     
     # --- Figure 2: Eigenvectors Comparison ---
-    fig_vec, axes_vec = plt.subplots(n_comp, n_det, figsize=(2.8*n_det, 2.2*n_comp), squeeze=False)
-    fig_vec.suptitle(f"PCA Eigenvector (Loading) Comparison: {scan_name}\n[Normalized: {i0_info}]", fontsize=15)
+    # Reduced by 30% for compact notebook display
+    fig_vec, axes_vec = plt.subplots(n_comp, n_det, figsize=(1.96*n_det, 1.54*n_comp), squeeze=False)
+    fig_vec.suptitle(f"PCA Eigenvector (Loading) Comparison: {scan_name}\n[Normalized: {i0_info}]", fontsize=12, fontweight='bold')
     
     for c in range(n_comp):
         for d in range(n_det):
@@ -375,12 +380,13 @@ def plot_results(energy, x_axis, y_axis, eigenimages, loadings, variance, datase
         i0_info, _ = get_i0_info(h5_path)
 
     n_comp = loadings.shape[0]
-    fig, axes = plt.subplots(n_comp, 2, figsize=(10, 2.5 * n_comp))
+    # Reduced by 30% for compact notebook display
+    fig, axes = plt.subplots(n_comp, 2, figsize=(7.0, 1.75 * n_comp))
     if n_comp == 1:
         axes = np.expand_dims(axes, axis=0)
 
     det_lbl = get_sdd_label(dataset_name, h5_path)
-    fig.suptitle(f"PCA Results for Stack: {det_lbl}\n[Normalized: {i0_info}]", fontsize=15)
+    fig.suptitle(f"PCA Results for Stack: {det_lbl}\n[Normalized: {i0_info}]", fontsize=12, fontweight='bold')
 
     for i in range(n_comp):
         # Eigenimage (Left)

@@ -10,6 +10,9 @@ warnings.filterwarnings("ignore", category=RuntimeWarning, message=".*OpenMP.*")
 warnings.filterwarnings("ignore", module="threadpoolctl")
 warnings.filterwarnings("ignore", category=UserWarning, message=".*KMeans is known to have a memory leak.*")
 
+import logging
+logging.getLogger('matplotlib.font_manager').setLevel(logging.ERROR)
+
 import h5py
 import numpy as np
 import pandas as pd
@@ -357,7 +360,7 @@ def cluster_xanes_analysis(h5_path, dataset_name='average', n_clusters=4, show_p
 
 def run_clustering_all_detectors(h5_path, n_clusters=4, use_full_metadata=False, metadata=None,
                                  show_individual_plots=True, apply_waterfall=False, waterfall_offset=None,
-                                 energy_range=None, figsize=(11, 5)):
+                                 energy_range=None, figsize=(7.7, 3.5)):
     """
     Performs K-Means clustering on sdd1-4 and average, then plots individual and comparison results.
     """
@@ -456,9 +459,9 @@ def plot_multi_cluster_results(all_results, h5_path, i0_info=None, apply_waterfa
     output_dir = os.path.dirname(h5_path)
     
     # --- Figure 1: Cluster Maps ---
-    map_figsize = (3.2*n_det, 4.0) if figsize is None else (figsize[0], figsize[1]*0.8)
+    map_figsize = (2.24*n_det, 2.8) if figsize is None else (figsize[0]*0.7, figsize[1]*0.56)
     fig_map, axes_map = plt.subplots(1, n_det, figsize=map_figsize, squeeze=False)
-    fig_map.suptitle(f"Multi-Detector Cluster Maps: {scan_name}\n[Normalized: {i0_info}]", fontsize=14, fontweight='semibold')
+    fig_map.suptitle(f"Multi-Detector Cluster Maps: {scan_name}\n[Normalized: {i0_info}]", fontsize=12, fontweight='bold')
     try:
         cmap = plt.colormaps['tab10'].resampled(n_clusters)
     except (AttributeError, KeyError):
@@ -468,7 +471,7 @@ def plot_multi_cluster_results(all_results, h5_path, i0_info=None, apply_waterfa
         ax = axes_map[0, i]
         masked_map = np.ma.masked_where(res['cluster_map'] == -1, res['cluster_map'])
         ax.imshow(masked_map, extent=[x_axis[0], x_axis[-1], y_axis[-1], y_axis[0]], cmap=cmap, interpolation='nearest')
-        ax.set_title(f"{get_sdd_label(res['dataset'], h5_path)}", fontsize=10, fontweight='semibold')
+        ax.set_title(f"{get_sdd_label(res['dataset'], h5_path)}", fontsize=9.5, fontweight='bold')
         ax.set_xlabel("X (mm)")
         if i == 0: ax.set_ylabel("Y (mm)")
 
@@ -477,9 +480,9 @@ def plot_multi_cluster_results(all_results, h5_path, i0_info=None, apply_waterfa
     plt.savefig(map_plot_path, dpi=150, bbox_inches='tight')
 
     # --- Figure 2: Cluster Spectra ---
-    spec_figsize = (3.8*n_det, 5.5) if figsize is None else figsize
+    spec_figsize = (2.66*n_det, 3.85) if figsize is None else (figsize[0]*0.7, figsize[1]*0.7)
     fig_spec, axes_spec = plt.subplots(1, n_det, figsize=spec_figsize, squeeze=False)
-    fig_spec.suptitle(f"Multi-Detector Cluster Spectra: {scan_name}\n[Normalized: {i0_info}]", fontsize=14, fontweight='semibold')
+    fig_spec.suptitle(f"Multi-Detector Cluster Spectra: {scan_name}\n[Normalized: {i0_info}]", fontsize=12, fontweight='bold')
     
     for i, res in enumerate(all_results):
         ax = axes_spec[0, i]
@@ -499,7 +502,7 @@ def plot_multi_cluster_results(all_results, h5_path, i0_info=None, apply_waterfa
             lbl = f"C{k+1}" + (f" (+{k*offset_step:.1f})" if apply_waterfall and k > 0 else "")
             ax.plot(energy, y_val, color=cmap(k), linewidth=1.5, label=lbl)
 
-        ax.set_title(f"{get_sdd_label(res['dataset'], h5_path)}", fontsize=10, fontweight='semibold')
+        ax.set_title(f"{get_sdd_label(res['dataset'], h5_path)}", fontsize=9.5, fontweight='bold')
         ax.set_xlabel("Energy (eV)")
         if i == 0: ax.set_ylabel("Intensity" + (" (Waterfall Offset)" if apply_waterfall else ""))
         ax.grid(True, alpha=0.4, linestyle='--')
@@ -554,7 +557,7 @@ def save_combined_cluster_sums(all_results, h5_path, use_full_metadata=False, me
     print(f"    -> Combined cluster sums saved to: {csv_path}")
 
 def plot_results(x_coords, y_coords, energy, cluster_map, spectra, dataset_name, output_dir, scan_name, i0_info=None,
-                 apply_waterfall=False, waterfall_offset=None, energy_range=None, figsize=(11, 5)):
+                 apply_waterfall=False, waterfall_offset=None, energy_range=None, figsize=(7.7, 3.5)):
     """
     Plots the cluster map and the averaged XANES spectra for a single dataset.
     """
@@ -565,7 +568,7 @@ def plot_results(x_coords, y_coords, energy, cluster_map, spectra, dataset_name,
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
 
     det_lbl = get_sdd_label(dataset_name, os.path.join(output_dir, f"{scan_name}.h5"))
-    fig.suptitle(f"K-Means Cluster Analysis: {det_lbl}\n[Normalized: {i0_info}]", fontsize=14, fontweight='semibold')
+    fig.suptitle(f"K-Means Cluster Analysis: {det_lbl}\n[Normalized: {i0_info}]", fontsize=12, fontweight='bold')
 
     try:
         cmap = plt.colormaps['tab10'].resampled(n_clusters)
@@ -580,7 +583,7 @@ def plot_results(x_coords, y_coords, energy, cluster_map, spectra, dataset_name,
     cbar.ax.set_yticklabels([f"{i+1}" for i in range(n_clusters)])
     cbar.set_label('Cluster ID')
     
-    ax1.set_title(f"Cluster Map ({det_lbl}, k={n_clusters})", fontsize=10.5, fontweight='semibold')
+    ax1.set_title(f"Cluster Map ({det_lbl}, k={n_clusters})", fontsize=9.5, fontweight='bold')
     ax1.set_xlabel("X (mm)")
     ax1.set_ylabel("Y (mm)")
 
@@ -599,7 +602,7 @@ def plot_results(x_coords, y_coords, energy, cluster_map, spectra, dataset_name,
         lbl = f"Cluster {i+1}" + (f" (+{i*offset_step:.2f})" if apply_waterfall and i > 0 else "")
         ax2.plot(energy, y_val, color=cmap(i), linewidth=1.8, label=lbl)
 
-    ax2.set_title(f"Cluster-Averaged XANES Spectra ({det_lbl})", fontsize=10.5, fontweight='semibold')
+    ax2.set_title(f"Cluster-Averaged XANES Spectra ({det_lbl})", fontsize=9.5, fontweight='bold')
     ax2.set_xlabel("Energy (eV)")
     ax2.set_ylabel("Intensity" + (" (Waterfall Offset)" if apply_waterfall else ""))
     ax2.grid(True, linestyle='--', alpha=0.6)

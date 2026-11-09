@@ -1,6 +1,8 @@
 import numpy as np
 print("\n[VERSION] Dashboard Engine v2.7 (GLOBAL SYNCED SLIDERS)\n")
 import matplotlib.pyplot as plt
+import logging
+logging.getLogger('matplotlib.font_manager').setLevel(logging.ERROR)
 from matplotlib.figure import Figure
 import sys
 import os
@@ -4054,7 +4056,7 @@ def render_i0_preview(x_sorted, y_sorted, y_proc, label_name="Au Mesh I0 (mcc1)"
         top_label = f"Modified ({top_desc})" if mod_desc_list else f"Raw {label_name}"
 
         if od_vals is not None and len(od_vals) == len(x_sorted):
-            fig = plt.figure(figsize=(8, 5.2))
+            fig = plt.figure(figsize=(5.6, 3.6))
             gs = fig.add_gridspec(2, 1, height_ratios=[1.6, 1], hspace=0.18)
             ax_top = fig.add_subplot(gs[0, 0])
             ax_bot = fig.add_subplot(gs[1, 0], sharex=ax_top)
@@ -4063,23 +4065,23 @@ def render_i0_preview(x_sorted, y_sorted, y_proc, label_name="Au Mesh I0 (mcc1)"
             ax_top.plot(x_sorted, y_sorted, color='gray', linestyle='--', alpha=0.6, label=f'Raw {label_name}')
             x_plot = x_sorted + shift if shift != 0.0 else x_sorted
             ax_top.plot(x_plot, y_proc, 'b.-', label=top_label, linewidth=1.5)
-            ax_top.set_ylabel(label_name, fontsize=9)
+            ax_top.set_ylabel(label_name, fontsize=8.5)
             title_text = f"I0 Preview: {label_name}"
             if mod_desc_list:
                 title_text += f" [{top_desc}]"
-            ax_top.set_title(title_text, fontsize=10, fontweight='bold')
-            ax_top.legend(loc='best', fontsize=8)
+            ax_top.set_title(title_text, fontsize=9.5, fontweight='bold')
+            ax_top.legend(loc='best', fontsize=7.5)
             ax_top.grid(True, linestyle='--', alpha=0.6)
             plt.setp(ax_top.get_xticklabels(), visible=False)
 
             # Bottom subplot: Optical Density curve
             ax_bot.plot(x_sorted, od_vals, color='#2ca02c', linewidth=1.8, label=f"OD ({od_comp})")
-            ax_bot.set_xlabel("Energy (eV)", fontsize=9)
-            ax_bot.set_ylabel("Optical Density", fontsize=9)
-            ax_bot.legend(loc='best', fontsize=8)
+            ax_bot.set_xlabel("Energy (eV)", fontsize=8.5)
+            ax_bot.set_ylabel("Optical Density", fontsize=8.5)
+            ax_bot.legend(loc='best', fontsize=7.5)
             ax_bot.grid(True, linestyle='--', alpha=0.6)
         else:
-            fig, ax = plt.subplots(figsize=(8, 3.8))
+            fig, ax = plt.subplots(figsize=(5.6, 2.7))
             ax.plot(x_sorted, y_sorted, color='gray', linestyle='--', alpha=0.6, label=f'Raw {label_name}')
             x_plot = x_sorted + shift if shift != 0.0 else x_sorted
             ax.plot(x_plot, y_proc, 'b.-', label=top_label, linewidth=1.5)

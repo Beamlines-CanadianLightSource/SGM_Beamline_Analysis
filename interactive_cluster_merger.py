@@ -9,6 +9,9 @@ import warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning, message=".*OpenMP.*")
 warnings.filterwarnings("ignore", module="threadpoolctl")
 
+import logging
+logging.getLogger('matplotlib.font_manager').setLevel(logging.ERROR)
+
 import h5py
 import numpy as np
 import pandas as pd
@@ -162,7 +165,8 @@ def interactive_cluster_merger(h5_path, dataset_name='average'):
         
         with plot_out:
             plot_out.clear_output(wait=True)
-            fig, (ax_map, ax_spec) = plt.subplots(1, 2, figsize=(11, 4.4))
+            # Reduced figure size by 30% for compact notebook presentation
+            fig, (ax_map, ax_spec) = plt.subplots(1, 2, figsize=(7.7, 3.1))
             
             ds_label = get_sdd_label(state['current_dataset'], h5_path)
             ipfy = state.get('ipfy_mode', False)
@@ -186,7 +190,7 @@ def interactive_cluster_merger(h5_path, dataset_name='average'):
                               extent=[state['x_axis'][0], state['x_axis'][-1], state['y_axis'][-1], state['y_axis'][0]])
 
             sel_names = ", ".join([f"C{c+1}" for c in selected_c]) if selected_c else "None"
-            ax_map.set_title(f"Cluster Map: {ds_label}\nSelected: [{sel_names}]", fontsize=10, fontweight='semibold')
+            ax_map.set_title(f"Cluster Map: {ds_label}\nSelected: [{sel_names}]", fontsize=9.5, fontweight='bold')
             ax_map.set_xlabel("X (mm)")
             ax_map.set_ylabel("Y (mm)")
 
@@ -214,7 +218,7 @@ def interactive_cluster_merger(h5_path, dataset_name='average'):
                     merged_spec = np.mean(selected_pixels, axis=0)
                     if ipfy:
                         merged_spec = (-merged_spec) + offset
-                    ax_spec.plot(state['energy'], merged_spec, color='black', linewidth=2.4,
+                    ax_spec.plot(state['energy'], merged_spec, color='black', linewidth=2.2,
                                  label=f"Merged Average ({len(selected_c)} clusters)")
                     
                     y_min, y_max = np.min(merged_spec), np.max(merged_spec)
@@ -223,14 +227,15 @@ def interactive_cluster_merger(h5_path, dataset_name='average'):
                     ax_spec.legend(loc='best', fontsize='x-small', frameon=True)
             else:
                 ax_spec.text(0.5, 0.5, "No clusters selected\nCheck one or more cluster boxes above",
-                             transform=ax_spec.transAxes, ha='center', va='center', color='#777', fontsize=11)
+                             transform=ax_spec.transAxes, ha='center', va='center', color='#777', fontsize=10)
                 ax_spec.set_ylim(-0.1, 1.0)
 
             ax_spec.set_xlim(state['energy'][0], state['energy'][-1])
             y_label = "Intensity (PFY - Peaks Up)" if ipfy else "Intensity"
             ax_spec.set_ylabel(y_label)
             ax_spec.set_xlabel("Energy (eV)")
-            ax_spec.set_title(f"Merged Spectrum: {ds_label}\n[Normalized: {state.get('i0_info', 'Yes')}]", fontsize=10, fontweight='semibold')
+            ax_spec.set_title(f"Merged Spectrum: {ds_label}\n[Normalized: {state.get('i0_info', 'Yes')}]", fontsize=9.5, fontweight='bold')
+            ax_spec.grid(True, linestyle='--', alpha=0.5)
             ax_spec.grid(True, linestyle='--', alpha=0.5)
 
             plt.tight_layout()
@@ -373,10 +378,10 @@ def interactive_cluster_merger(h5_path, dataset_name='average'):
         status_out
     ], layout=widgets.Layout(border='1px solid #ddd', padding='10px', border_radius='6px', margin='10px 0'))
 
-    # Build initial detector UI and render
+    # Build initial detector UI and render exactly once
     build_detector_ui(dataset_name)
     display(main_ui)
-    return main_ui
+    return None
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:

@@ -513,9 +513,9 @@ def plot_selected_emission_spectra(
                              markersize=6, zorder=5)
 
         det_display = get_sdd_label(detector, data_pack)
-        ax_spec.set_xlabel(xlabel, fontsize=8.5, fontweight='semibold')
+        ax_spec.set_xlabel(xlabel, fontsize=8.5, fontweight='bold')
         ax_spec.set_ylabel('Counts / Intensity' + (' (Waterfall Offset)' if apply_waterfall else ''),
-                           fontsize=8.5, fontweight='semibold')
+                           fontsize=8.5, fontweight='bold')
         ax_spec.tick_params(labelsize=8)
         title_suffix = f" ({len(spectra_data)} Energies)\n{scan_title} ({det_display})"
         ax_spec.set_title(f'Emission / XRD Spectra' + title_suffix, fontsize=9.5, fontweight='bold')
@@ -577,8 +577,8 @@ def plot_selected_emission_spectra(
                              label=lbl_fl, zorder=3)
 
         det_display = get_sdd_label(detector, data_pack)
-        ax_disp.set_xlabel('Incident Energy (eV)', fontsize=8.5, fontweight='semibold')
-        ax_disp.set_ylabel('Peak Position (Emission eV)', fontsize=8.5, fontweight='semibold')
+        ax_disp.set_xlabel('Incident Energy (eV)', fontsize=8.5, fontweight='bold')
+        ax_disp.set_ylabel('Peak Position (Emission eV)', fontsize=8.5, fontweight='bold')
         ax_disp.tick_params(labelsize=8)
         ax_disp.set_title(f'Peak Shift vs. Incident Energy\n{scan_title} ({det_display})',
                           fontsize=9.5, fontweight='bold')

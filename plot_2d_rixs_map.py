@@ -139,7 +139,7 @@ def plot_incident_vs_emission_2d(
 
         ax.set_xlabel('Incident Energy (eV)', fontsize=9)
         ax.set_ylabel(ylabel, fontsize=9)
-        ax.set_title(f"Detector {get_sdd_label(det_name, data_pack, uppercase=True)}", fontsize=10, fontweight='semibold')
+        ax.set_title(f"Detector {get_sdd_label(det_name, data_pack, uppercase=True)}", fontsize=10, fontweight='bold')
 
     # Hide unused subplots if num_dets is odd and > 2
     for unused_idx in range(num_dets, len(axes)):

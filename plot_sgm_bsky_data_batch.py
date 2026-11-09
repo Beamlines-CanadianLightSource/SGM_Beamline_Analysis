@@ -552,13 +552,13 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
         ax = ax_list_raw[idx]
         if 'sdd' in key:
             det_lbl_raw = get_sdd_label(key.split('_')[0], ref_pack, uppercase=True)
-            ax.set_title(f"Detector {det_lbl_raw} (Raw)", fontsize=10.5, fontweight='semibold')
+            ax.set_title(f"Detector {det_lbl_raw} (Raw)", fontsize=10.5, fontweight='bold')
             ax.set_ylabel("Raw Counts", fontsize=9)
         elif key == 'mcc1_raw':
-            ax.set_title("Raw Au Mesh I0 (mcc1) Intensity", fontsize=11, fontweight='semibold')
+            ax.set_title("Raw Au Mesh I0 (mcc1) Intensity", fontsize=11, fontweight='bold')
             ax.set_ylabel("Raw Counts / Intensity", fontsize=9)
         elif key == 'mcc4_raw':
-            ax.set_title("Raw TEY of Sample (mcc4) Intensity", fontsize=11, fontweight='semibold')
+            ax.set_title("Raw TEY of Sample (mcc4) Intensity", fontsize=11, fontweight='bold')
             ax.set_ylabel("Raw Counts / Intensity", fontsize=9)
             
         ax.set_xlabel("Energy (eV)", fontsize=9)
@@ -610,13 +610,13 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
         ax = ax_list_norm[idx]
         if 'sdd' in key:
             det_lbl_norm = get_sdd_label(key.split('_')[0], ref_pack, uppercase=True)
-            ax.set_title(f"Detector {det_lbl_norm} (Normalized)", fontsize=10.5, fontweight='semibold')
+            ax.set_title(f"Detector {det_lbl_norm} (Normalized)", fontsize=10.5, fontweight='bold')
             ax.set_ylabel("Intensity (Normalized)", fontsize=9)
         elif key == 'mcc1_raw':
-            ax.set_title("Raw Au Mesh I0 (mcc1) Intensity (Reference)", fontsize=11, fontweight='semibold')
+            ax.set_title("Raw Au Mesh I0 (mcc1) Intensity (Reference)", fontsize=11, fontweight='bold')
             ax.set_ylabel("Raw Counts / Intensity", fontsize=9)
         elif key == 'mcc4_norm':
-            ax.set_title("Normalized TEY of Sample (mcc4) XANES", fontsize=11, fontweight='semibold')
+            ax.set_title("Normalized TEY of Sample (mcc4) XANES", fontsize=11, fontweight='bold')
             ax.set_ylabel("Normalized Intensity", fontsize=9)
             
         ax.set_xlabel("Energy (eV)", fontsize=9)
