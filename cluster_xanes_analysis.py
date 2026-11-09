@@ -7,6 +7,7 @@ os.environ["OMP_NUM_THREADS"] = "1"
 
 import warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning, message=".*OpenMP.*")
+warnings.filterwarnings("ignore", module="threadpoolctl")
 warnings.filterwarnings("ignore", category=UserWarning, message=".*KMeans is known to have a memory leak.*")
 
 import h5py

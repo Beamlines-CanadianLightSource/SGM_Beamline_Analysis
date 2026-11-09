@@ -3,9 +3,11 @@ import sys
 
 # Prevent OpenMP duplicate runtime warnings from threadpoolctl / scikit-learn
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+os.environ["OMP_NUM_THREADS"] = "1"
 
 import warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning, message=".*OpenMP.*")
+warnings.filterwarnings("ignore", module="threadpoolctl")
 
 import h5py
 import numpy as np
