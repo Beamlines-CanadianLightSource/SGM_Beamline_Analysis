@@ -4096,20 +4096,90 @@ def render_i0_preview(x_sorted, y_sorted, y_proc, label_name="Au Mesh I0 (mcc1)"
     except Exception as e_prev:
         console_log(f"  ! Preview plot rendering error: {e_prev}")
 
+def compute_modified_i0(x_sorted, y_sorted, do_smooth, smooth_window, do_const, const_op, const_val, do_shift, shift_val, do_od, od_comp, od_dens, od_thick, od_autoscale):
+    """Computes processed I0 curve, optical density values, and description list based on active settings."""
+    y_proc = np.array(y_sorted.copy(), dtype=float)
+    mod_desc = []
+    extra_str = ""
+    od_vals = None
+
+    # 1. Smoothing
+    if do_smooth:
+        w = int(smooth_window)
+        if w % 2 == 0: w += 1
+        if w < 3: w = 3
+        if len(y_proc) >= w:
+            try:
+                y_proc = savgol_filter(y_proc, window_length=w, polyorder=2)
+                mod_desc.append(f"Smoothed w={w}")
+                extra_str += f" (Smoothed w={w})"
+            except Exception as e_sm:
+                console_log(f"    ! Smoothing calculation error: {e_sm}")
+        else:
+            console_log(f"    ! Data length ({len(y_proc)}) smaller than window ({w}); smoothing skipped.")
+
+    # 2. Constant Modification
+    if do_const and const_val != 0.0:
+        if const_op == "Multiply":
+            y_proc = y_proc * const_val
+            mod_desc.append(f"Scale *{const_val:.4g}")
+            extra_str += f" (* Constant: {const_val:.4g})"
+        elif const_op == "Divide":
+            if const_val != 0:
+                y_proc = y_proc / const_val
+                mod_desc.append(f"Scale /{const_val:.4g}")
+                extra_str += f" (/ Constant: {const_val:.4g})"
+            else:
+                console_log("    ! Constant division by zero avoided.")
+        else: # Add
+            y_proc = y_proc + const_val
+            mod_desc.append(f"Offset {const_val:+.4g}")
+            extra_str += f" (+ Constant: {const_val:+.4g})"
+
+    # 3. Energy Calibration Shift (external I0 only)
+    if do_shift and shift_val != 0.0:
+        mod_desc.append(f"Shift {shift_val:+.2f} eV")
+        extra_str += f" (Shift {shift_val:+.2f} eV)"
+
+    # 4. Optical Density (sf.py Henke DB)
+    if do_od and HAS_SF:
+        try:
+            od_raw = sf(od_comp, x_sorted, result_type='od', density=od_dens, thickness=od_thick)
+            if od_raw is not None:
+                od_vals = np.array(od_raw, dtype=float)
+                od_safe = np.maximum(od_vals, 1e-12)
+                y_od_div = y_proc / od_safe
+                if od_autoscale:
+                    mean_orig = np.nanmean(y_proc)
+                    mean_div = np.nanmean(y_od_div)
+                    if mean_div != 0 and not np.isnan(mean_div):
+                        y_od_div = y_od_div * (mean_orig / mean_div)
+                y_proc = y_od_div
+                mod_desc.append(f"OD-Div ({od_comp})")
+                extra_str += f" (Divided by OD: {od_comp} ρ={od_dens} t={od_thick}µm{' auto-scaled' if od_autoscale else ''})"
+            else:
+                console_log(f"    ! OD calculation returned None for '{od_comp}'.")
+        except Exception as e_od:
+            console_log(f"    ! OD calculation error: {e_od}")
+
+    return y_proc, od_vals, mod_desc, extra_str
+
 def configure_and_preview_i0_headless(x_sorted, y_sorted, label_name="Au Mesh I0 (mcc1)", allow_energy_shift=False):
     """
     Headless interactive configuration and inline preview for I0 (Internal or External).
-    Prompts user for options, computes modifications, renders an inline preview plot,
-    and asks for confirmation before applying.
+    Menu-driven loop: each adjustment (smoothing, constant, OD, shift) immediately
+    renders an inline preview plot, allowing the user to inspect results and change
+    parameters before accepting.
     """
     x_sorted = np.asarray(x_sorted, dtype=float)
     y_sorted = np.asarray(y_sorted, dtype=float)
 
+    initial_action = None
     while True:
         try:
             mod_prompt = (
                 f"\nConfigure {label_name} (Smoothing, Constant, OD{', Shift' if allow_energy_shift else ''})? "
-                f"[y/N/p (p=preview raw)]: "
+                f"[y/N/p (p=preview raw, s=smoothing)]: "
             )
             mod_ans = input(mod_prompt).strip().lower()
         except (EOFError, KeyboardInterrupt):
@@ -4119,156 +4189,251 @@ def configure_and_preview_i0_headless(x_sorted, y_sorted, label_name="Au Mesh I0
             console_log(f"\n--- [I0 PREVIEW] Raw {label_name} ---")
             render_i0_preview(x_sorted, y_sorted, y_sorted, label_name=label_name, mod_desc_list=[])
             continue
+        elif mod_ans in ('s', 'smooth', 'smoothing'):
+            initial_action = 's'
+            break
+        elif mod_ans in ('c', 'const', 'constant'):
+            initial_action = 'c'
+            break
+        elif mod_ans in ('d', 'od'):
+            initial_action = 'd'
+            break
         elif mod_ans in ('y', 'yes'):
             break
         else:
             # Default to no modifications
             return y_sorted.copy(), "", 0.0, 'Add', False, 0.0
 
-    # User chose 'yes': enter parameter input and preview loop
+    do_smooth = False
+    smooth_window = 11
+    do_const = False
+    const_op = 'Add'
+    const_val = 0.0
+    do_shift = False
+    shift_val = 0.0
+    do_od = False
+    od_comp = "BN"
+    od_dens = 2.1
+    od_thick = 0.1
+    od_autoscale = True
+
+    pending_cmd = initial_action
+
     while True:
-        y_proc = np.array(y_sorted.copy(), dtype=float)
-        extra_str = ""
-        mod_desc = []
-        const_offset_val = 0.0
-        const_op = 'Add'
-        cal_en = False
-        cal_val = 0.0
-        od_vals = None
-        od_comp_str = ""
-
-        # 1. Smoothing
-        try:
-            sm_ans = input("  Enable Smoothing (Savitzky-Golay)? [y/N]: ").strip().lower()
-            if sm_ans in ('y', 'yes'):
-                w_val = input("    Window length (odd integer >= 3, default 11): ").strip()
-                w = int(w_val) if w_val else 11
-                if w % 2 == 0: w += 1
-                if w < 3: w = 3
-                if len(y_proc) >= w:
-                    y_proc = savgol_filter(y_proc, window_length=w, polyorder=2)
-                    extra_str += f" (Smoothed w={w})"
-                    mod_desc.append(f"Smoothed w={w}")
-                    console_log(f"    ✓ Smoothing applied (w={w})")
-                else:
-                    console_log(f"    ! Data length ({len(y_proc)}) smaller than window ({w}); skipped smoothing.")
-        except Exception as e_sm:
-            console_log(f"    ! Smoothing error: {e_sm}")
-
-        # 2. Constant modification
-        try:
-            const_ans = input("  Modify by a Constant (+, *, /)? [y/N]: ").strip().lower()
-            if const_ans in ('y', 'yes'):
-                op_in = input("    Operation: '+' (Add), '*' (Multiply), or '/' (Divide) [default '+']: ").strip()
-                val_in = input("    Constant value (e.g. 100, 1.25): ").strip()
-                if val_in:
-                    c_val = float(val_in)
-                    if op_in == '*':
-                        const_op = "Multiply"
-                        y_proc = y_proc * c_val
-                        extra_str += f" (* Constant: {c_val:.4g})"
-                        mod_desc.append(f"Scale *{c_val:.4g}")
-                    elif op_in == '/':
-                        const_op = "Divide"
-                        if c_val != 0:
-                            y_proc = y_proc / c_val
-                            extra_str += f" (/ Constant: {c_val:.4g})"
-                            mod_desc.append(f"Scale /{c_val:.4g}")
-                        else:
-                            console_log("    ! Division by zero avoided.")
-                    else:
-                        const_op = "Add"
-                        y_proc = y_proc + c_val
-                        extra_str += f" (+ Constant: {c_val:+.4g})"
-                        mod_desc.append(f"Offset {c_val:+.4g}")
-                    const_offset_val = c_val
-                    console_log(f"    ✓ Constant operation applied ({const_op} {c_val})")
-        except Exception as e_c:
-            console_log(f"    ! Constant modification error: {e_c}")
-
-        # 3. Energy calibration shift (external I0 only)
-        if allow_energy_shift:
-            try:
-                sh_ans = input("  Apply Energy Calibration Shift (eV)? [y/N]: ").strip().lower()
-                if sh_ans in ('y', 'yes'):
-                    sh_val = input("    Energy shift in eV (e.g. +0.5, -1.2) [default 0.0]: ").strip()
-                    if sh_val:
-                        cal_val = float(sh_val)
-                        if cal_val != 0.0:
-                            cal_en = True
-                            extra_str += f" (Shift {cal_val:+.2f} eV)"
-                            mod_desc.append(f"Shift {cal_val:+.2f} eV")
-                            console_log(f"    ✓ Energy shift set ({cal_val:+.2f} eV)")
-            except Exception as e_sh:
-                console_log(f"    ! Energy shift error: {e_sh}")
-
-        # 4. Optical Density (sf.py)
-        try:
-            od_ans = input("  Divide by Optical Density (OD using Henke data)? [y/N]: ").strip().lower()
-            if od_ans in ('y', 'yes'):
-                if not HAS_SF:
-                    console_log("    ! sf.py module or Henke database not found; skipping OD.")
-                else:
-                    comp = input("    Compound formula (e.g. BN, Si3N4, SiO2) [default 'BN']: ").strip() or "BN"
-                    dens_str = input("    Density (g/cm3) [default 2.1]: ").strip()
-                    dens = float(dens_str) if dens_str else 2.1
-                    thick_str = input("    Thickness (microns) [default 0.1]: ").strip()
-                    thick = float(thick_str) if thick_str else 0.1
-                    auto_sc = input("    Auto-scale magnitude to original I0? [Y/n]: ").strip().lower() != 'n'
-
-                    od_raw = sf(comp, x_sorted, result_type='od', density=dens, thickness=thick)
-                    if od_raw is not None:
-                        od_vals = np.array(od_raw, dtype=float)
-                        od_safe = np.maximum(od_vals, 1e-12)
-                        y_od_div = y_proc / od_safe
-                        if auto_sc:
-                            mean_orig = np.nanmean(y_proc)
-                            mean_div = np.nanmean(y_od_div)
-                            if mean_div != 0 and not np.isnan(mean_div):
-                                y_od_div = y_od_div * (mean_orig / mean_div)
-                        y_proc = y_od_div
-                        od_comp_str = comp
-                        extra_str += f" (Divided by OD: {comp} ρ={dens} t={thick}µm{' auto-scaled' if auto_sc else ''})"
-                        mod_desc.append(f"OD-Div ({comp})")
-                        console_log(f"    ✓ Optical Density division applied for {comp}")
-                    else:
-                        console_log(f"    ! Failed to compute OD for compound '{comp}'.")
-        except Exception as e_od:
-            console_log(f"    ! OD division error: {e_od}")
-
-        # Summary statistics
-        console_log(f"\n--- [I0 PREVIEW] Modified {label_name} vs Raw {label_name} ---")
-        console_log(f"  Raw: min={np.nanmin(y_sorted):.4g}, max={np.nanmax(y_sorted):.4g}, mean={np.nanmean(y_sorted):.4g}")
-        console_log(f"  Mod: min={np.nanmin(y_proc):.4g}, max={np.nanmax(y_proc):.4g}, mean={np.nanmean(y_proc):.4g}")
-
-        # Render preview plot comparing Raw vs Modified
-        render_i0_preview(
-            x_sorted, y_sorted, y_proc,
-            label_name=label_name,
-            mod_desc_list=mod_desc,
-            od_vals=od_vals,
-            od_comp=od_comp_str,
-            shift=cal_val if cal_en else 0.0
+        y_proc, od_vals, mod_desc, extra_str = compute_modified_i0(
+            x_sorted, y_sorted,
+            do_smooth, smooth_window,
+            do_const, const_op, const_val,
+            do_shift, shift_val,
+            do_od, od_comp, od_dens, od_thick, od_autoscale
         )
 
-        # Ask user confirmation
-        try:
-            acc = input(
-                f"\nAccept this modified {label_name} for normalization? "
-                f"[Y/n/r] (Y = accept, n = discard/use raw, r = retry settings) [default 'Y']: "
-            ).strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            acc = 'y'
-
-        if acc in ('', 'y', 'yes'):
-            console_log(f"  ✓ Modified {label_name} accepted for normalization.")
-            return y_proc, extra_str, const_offset_val, const_op, cal_en, cal_val
-        elif acc in ('r', 'retry'):
-            console_log(f"  -> Retrying {label_name} configuration...\n")
-            continue
+        if pending_cmd is not None:
+            cmd = pending_cmd
+            pending_cmd = None
         else:
-            console_log(f"  ✓ Modifications discarded; using raw {label_name}.")
+            sm_status = f"ON (w={smooth_window})" if do_smooth else "OFF"
+            cn_status = f"ON ({const_op} {const_val:.4g})" if (do_const and const_val != 0.0) else "OFF"
+            od_status = f"ON ({od_comp})" if do_od else "OFF"
+            sh_status = f"ON ({shift_val:+.2f} eV)" if (do_shift and shift_val != 0.0) else "OFF"
+            shift_opt = " | [e] Shift" if allow_energy_shift else ""
+            shift_stat = f" | Shift: {sh_status}" if allow_energy_shift else ""
+
+            print(f"\n--- Current {label_name} Settings ---")
+            print(f"  Smoothing: {sm_status} | Constant: {cn_status} | OD: {od_status}{shift_stat}")
+            print(f"  Commands: [s] Smoothing | [c] Constant | [d] Optical Density{shift_opt} | [p] Re-plot | [r] Reset | [Enter/y] Accept | [q] Cancel")
+
+            try:
+                cmd = input("Select an option [default: Accept]: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                cmd = 'y'
+
+        if cmd in ('', 'y', 'accept', 'ok'):
+            if mod_desc:
+                print(f"✓ Modified {label_name} accepted: {', '.join(mod_desc)}")
+            else:
+                print(f"✓ Using raw {label_name} (no modifications applied).")
+            return y_proc, extra_str, (const_val if do_const else 0.0), const_op, (do_shift and shift_val != 0.0), shift_val
+
+        elif cmd in ('q', 'cancel', 'quit'):
+            print(f"✓ Modifications cancelled; using raw {label_name}.")
             return y_sorted.copy(), "", 0.0, 'Add', False, 0.0
+
+        elif cmd in ('r', 'reset'):
+            do_smooth = False
+            do_const = False
+            const_val = 0.0
+            do_shift = False
+            shift_val = 0.0
+            do_od = False
+            print("  ✓ All modifications reset to raw.")
+            render_i0_preview(x_sorted, y_sorted, y_sorted, label_name=label_name, mod_desc_list=[])
+
+        elif cmd in ('p', 'preview', 'plot'):
+            render_i0_preview(
+                x_sorted, y_sorted, y_proc,
+                label_name=label_name,
+                mod_desc_list=mod_desc,
+                od_vals=od_vals,
+                od_comp=od_comp,
+                shift=shift_val if do_shift else 0.0
+            )
+
+        elif cmd in ('s', 'smooth', 'smoothing'):
+            cur = f"ON (w={smooth_window})" if do_smooth else "OFF"
+            ans = input(f"  Configure Smoothing (currently {cur})? [y=turn ON/change, n=turn OFF]: ").strip().lower()
+            if ans in ('n', 'no', 'off'):
+                do_smooth = False
+                print("    ✓ Smoothing turned OFF")
+            else:
+                do_smooth = True
+                w_in = input(f"    Window length (odd integer >= 3, default {smooth_window}): ").strip()
+                if w_in:
+                    try:
+                        w = int(w_in)
+                        if w % 2 == 0: w += 1
+                        if w < 3: w = 3
+                        smooth_window = w
+                    except ValueError:
+                        print("    ! Invalid window integer; keeping default.")
+                print(f"    ✓ Smoothing set to window={smooth_window}")
+
+            # Recompute and IMMEDIATELY render preview plot!
+            y_proc, od_vals, mod_desc, extra_str = compute_modified_i0(
+                x_sorted, y_sorted,
+                do_smooth, smooth_window,
+                do_const, const_op, const_val,
+                do_shift, shift_val,
+                do_od, od_comp, od_dens, od_thick, od_autoscale
+            )
+            console_log(f"\n--- [I0 PREVIEW] Modified {label_name} (Smoothing: {'w=' + str(smooth_window) if do_smooth else 'OFF'}) ---")
+            render_i0_preview(
+                x_sorted, y_sorted, y_proc,
+                label_name=label_name,
+                mod_desc_list=mod_desc,
+                od_vals=od_vals,
+                od_comp=od_comp,
+                shift=shift_val if do_shift else 0.0
+            )
+
+        elif cmd in ('c', 'const', 'constant'):
+            cur = f"{const_op} {const_val:.4g}" if (do_const and const_val != 0.0) else "OFF"
+            ans = input(f"  Modify by Constant (currently {cur})? [y=turn ON/change, n=turn OFF]: ").strip().lower()
+            if ans in ('n', 'no', 'off'):
+                do_const = False
+                const_val = 0.0
+                print("    ✓ Constant modification turned OFF")
+            else:
+                op_in = input(f"    Operation: '+' (Add), '*' (Multiply), or '/' (Divide) [default '{const_op}']: ").strip()
+                if op_in in ('+', '*', '/'):
+                    const_op = "Multiply" if op_in == '*' else ("Divide" if op_in == '/' else "Add")
+                val_in = input("    Constant value (e.g. 100, 1.25): ").strip()
+                if val_in:
+                    try:
+                        const_val = float(val_in)
+                        do_const = True
+                        print(f"    ✓ Constant set: {const_op} {const_val:.4g}")
+                    except ValueError:
+                        print("    ! Invalid float value.")
+
+            # Recompute and IMMEDIATELY render preview plot!
+            y_proc, od_vals, mod_desc, extra_str = compute_modified_i0(
+                x_sorted, y_sorted,
+                do_smooth, smooth_window,
+                do_const, const_op, const_val,
+                do_shift, shift_val,
+                do_od, od_comp, od_dens, od_thick, od_autoscale
+            )
+            console_log(f"\n--- [I0 PREVIEW] Modified {label_name} (Constant: {const_op + ' ' + str(const_val) if do_const else 'OFF'}) ---")
+            render_i0_preview(
+                x_sorted, y_sorted, y_proc,
+                label_name=label_name,
+                mod_desc_list=mod_desc,
+                od_vals=od_vals,
+                od_comp=od_comp,
+                shift=shift_val if do_shift else 0.0
+            )
+
+        elif cmd in ('d', 'od', 'density'):
+            if not HAS_SF:
+                print("  ! sf.py module or Henke database not found; Optical Density unavailable.")
+            else:
+                cur = f"{od_comp}" if do_od else "OFF"
+                ans = input(f"  Divide by Optical Density (currently {cur})? [y=turn ON/change, n=turn OFF]: ").strip().lower()
+                if ans in ('n', 'no', 'off'):
+                    do_od = False
+                    print("    ✓ OD division turned OFF")
+                else:
+                    do_od = True
+                    comp_in = input(f"    Compound formula [default '{od_comp}']: ").strip()
+                    if comp_in: od_comp = comp_in
+                    d_in = input(f"    Density (g/cm3) [default {od_dens}]: ").strip()
+                    if d_in:
+                        try: od_dens = float(d_in)
+                        except: pass
+                    t_in = input(f"    Thickness (microns) [default {od_thick}]: ").strip()
+                    if t_in:
+                        try: od_thick = float(t_in)
+                        except: pass
+                    sc_in = input(f"    Auto-scale magnitude to original I0? [Y/n]: ").strip().lower()
+                    od_autoscale = (sc_in != 'n')
+                    print(f"    ✓ OD division configured for {od_comp}")
+
+            # Recompute and IMMEDIATELY render preview plot!
+            y_proc, od_vals, mod_desc, extra_str = compute_modified_i0(
+                x_sorted, y_sorted,
+                do_smooth, smooth_window,
+                do_const, const_op, const_val,
+                do_shift, shift_val,
+                do_od, od_comp, od_dens, od_thick, od_autoscale
+            )
+            console_log(f"\n--- [I0 PREVIEW] Modified {label_name} (OD: {od_comp if do_od else 'OFF'}) ---")
+            render_i0_preview(
+                x_sorted, y_sorted, y_proc,
+                label_name=label_name,
+                mod_desc_list=mod_desc,
+                od_vals=od_vals,
+                od_comp=od_comp,
+                shift=shift_val if do_shift else 0.0
+            )
+
+        elif cmd in ('e', 'shift') and allow_energy_shift:
+            cur = f"{shift_val:+.2f} eV" if (do_shift and shift_val != 0.0) else "OFF"
+            ans = input(f"  Apply Energy Shift (currently {cur})? [y=turn ON/change, n=turn OFF]: ").strip().lower()
+            if ans in ('n', 'no', 'off'):
+                do_shift = False
+                shift_val = 0.0
+                print("    ✓ Energy shift turned OFF")
+            else:
+                s_in = input("    Energy shift in eV (e.g. +0.5, -1.2) [default 0.0]: ").strip()
+                if s_in:
+                    try:
+                        shift_val = float(s_in)
+                        do_shift = (shift_val != 0.0)
+                        print(f"    ✓ Energy shift set to {shift_val:+.2f} eV")
+                    except ValueError:
+                        print("    ! Invalid float value.")
+
+            # Recompute and IMMEDIATELY render preview plot!
+            y_proc, od_vals, mod_desc, extra_str = compute_modified_i0(
+                x_sorted, y_sorted,
+                do_smooth, smooth_window,
+                do_const, const_op, const_val,
+                do_shift, shift_val,
+                do_od, od_comp, od_dens, od_thick, od_autoscale
+            )
+            sh_str = f"{shift_val:+.2f} eV" if do_shift else "OFF"
+            console_log(f"\n--- [I0 PREVIEW] Modified {label_name} (Shift: {sh_str}) ---")
+            render_i0_preview(
+                x_sorted, y_sorted, y_proc,
+                label_name=label_name,
+                mod_desc_list=mod_desc,
+                od_vals=od_vals,
+                od_comp=od_comp,
+                shift=shift_val if do_shift else 0.0
+            )
+        else:
+            print("  ! Unknown command. Use [s] Smoothing, [c] Constant, [d] OD, [p] Plot, [r] Reset, [Enter] Accept, [q] Cancel.")
 
 # --- Main Entry Point ---
 
