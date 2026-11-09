@@ -163,215 +163,31 @@ def apply_overlap_only_trim(i, data_packs, trims):
 
 def browse_for_quadrant_files(num_files=None, start_dir=None):
     """
-    Selects multiple HDF5 files for quadrant stitching.
-    Supports interactive Loki Beamline Data Explorer navigation in Jupyter / HPC,
-    and fallback to GUI dialogs or console input.
+    Opens file dialogs (or prompts in terminal) to select HDF5 files one by one.
+    This allows files to be in different folders.
     """
-    try:
-        from IPython import get_ipython
-        in_jupyter = get_ipython() is not None
-    except ImportError:
-        in_jupyter = False
-
-    # In Jupyter or Headless mode (HPC / JupyterHub), launch the interactive CLS Beamline Data Explorer
-    if in_jupyter or not HAS_GUI:
-        candidates = [
-            start_dir,
-            "/gpfs/Primary/beamlinedata/sgm",
-            "/gpfs/Primary/beamlinedata/SGM",
-            "/gpfs/Primary/beamlinedata",
-            "/gpfs/Primary",
-            "/projects",
-            os.path.expanduser("~/scratch"),
-            get_last_dir() if 'get_last_dir' in globals() else None,
-            os.getcwd()
-        ]
-        base_dir = next((p for p in candidates if p and os.path.isdir(p)), os.getcwd())
-
-        selected_files = []
-        path_box = widgets.Text(value=base_dir, description="Folder:", layout=widgets.Layout(width="600px"))
-        btn_up = widgets.Button(description="Up ⬆", layout=widgets.Layout(width="80px"))
-        sort_dropdown = widgets.Dropdown(
-            options=[("Most Recent Projects First", "project_desc"), ("Alphabetical (A-Z)", "name_asc"), ("Reverse (Z-A)", "name_desc")],
-            value="project_desc",
-            description="Sort by:",
-            layout=widgets.Layout(width="380px")
-        )
-        folder_select = widgets.Select(description="Subfolders:", rows=7, layout=widgets.Layout(width="600px"))
-        file_select = widgets.Select(description="Files (.h5):", rows=6, layout=widgets.Layout(width="600px"))
-        btn_open = widgets.Button(description="Open Selected Folder", button_style="info", layout=widgets.Layout(width="180px"))
-        btn_add = widgets.Button(description="➕ Add File to Quadrants", button_style="success", icon="plus", layout=widgets.Layout(width="230px"))
-        btn_remove = widgets.Button(description="➖ Remove Last", button_style="warning", icon="minus", layout=widgets.Layout(width="130px"))
-        btn_clear = widgets.Button(description="🔄 Clear All", button_style="", layout=widgets.Layout(width="100px"))
-        
-        queue_box = widgets.HTML(value="<i>No quadrant files added yet.</i>")
-        status_msg = widgets.HTML(value=f"Current path: <code>{base_dir}</code>")
-
-        def refresh_view():
-            current = path_box.value.strip()
-            if not os.path.isdir(current):
-                folder_select.options = [("Directory not found", "")]
-                file_select.options = []
-                return
+    if not HAS_GUI:
+        files = []
+        if num_files is None:
             try:
-                with os.scandir(current) as it:
-                    raw_entries = list(it)
-
-                dir_entries = [e for e in raw_entries if e.is_dir() and not e.name.startswith('.')]
-                file_entries = [e for e in raw_entries if e.is_file() and e.name.lower().endswith('.h5')]
-
-                sort_mode = sort_dropdown.value
-                def natural_project_key(entry):
-                    s = entry.name.strip()
-                    m = re.match(r'^(prj)?(\d+)([a-zA-Z]?)(\d+)?(.*)$', s, re.IGNORECASE)
-                    if m:
-                        has_prj = 1 if m.group(1) else 0
-                        cycle = int(m.group(2))
-                        sub_num = int(m.group(4)) if m.group(4) else 0
-                        letter = (m.group(3) or '').lower()
-                        rest = (m.group(5) or '').lower()
-                        return (1, has_prj, cycle, sub_num, letter, rest)
-                    parts = re.split(r'(\d+)', s.lower())
-                    parsed = [int(p) if p.isdigit() else p for p in parts]
-                    return (0, 0, 0, 0, '', parsed)
-
-                if sort_mode == "project_desc":
-                    dirs = [e.name for e in sorted(dir_entries, key=natural_project_key, reverse=True)]
-                    matched_files = [e.name for e in sorted(file_entries, key=natural_project_key, reverse=True)]
-                elif sort_mode == "name_desc":
-                    dirs = [e.name for e in sorted(dir_entries, key=lambda e: e.name.lower(), reverse=True)]
-                    matched_files = [e.name for e in sorted(file_entries, key=lambda e: e.name.lower(), reverse=True)]
-                else:
-                    dirs = [e.name for e in sorted(dir_entries, key=lambda e: e.name.lower())]
-                    matched_files = [e.name for e in sorted(file_entries, key=lambda e: e.name.lower())]
-
-                folder_select.options = dirs if dirs else ["(No subfolders)"]
-                file_select.options = matched_files if matched_files else ["(No .h5 files in this folder)"]
-                status_msg.value = f"Current path: <code>{current}</code>"
-                try:
-                    save_last_dir(current)
-                except Exception:
-                    pass
-            except Exception as e:
-                status_msg.value = f"<b style='color:red;'>Error reading folder: {e}</b>"
-
-        def update_queue():
-            if not selected_files:
-                queue_box.value = (
-                    "<div style='background-color:#f8f9fa; border:1px solid #ddd; border-radius:4px; padding:6px 10px; margin-top:6px;'>"
-                    "<b>Quadrant Stitching Queue (0 files):</b> <i>(No files added yet. Select a file above and click '➕ Add File to Quadrants')</i>"
-                    "</div>"
-                )
-            else:
-                items = "".join([f"<li><b>Image {i+1}:</b> <code>{os.path.basename(f)}</code> <span style='color:#777; font-size:0.85em;'>({os.path.dirname(f)})</span></li>" for i, f in enumerate(selected_files)])
-                queue_box.value = (
-                    f"<div style='background-color:#e8f4f8; border:1px solid #b8daff; border-radius:4px; padding:8px 12px; margin-top:6px;'>"
-                    f"<b style='color:#004085;'>Quadrant Stitching Queue ({len(selected_files)} files selected):</b>"
-                    f"<ol style='margin:4px 0 2px 20px; padding:0;'>{items}</ol>"
-                    f"</div>"
-                )
-
-        def on_open_clicked(b):
-            chosen = folder_select.value
-            if chosen and chosen != "(No subfolders)":
-                new_path = os.path.join(path_box.value.strip(), chosen)
-                if os.path.isdir(new_path):
-                    path_box.value = new_path
-                    refresh_view()
-
-        def on_up_clicked(b):
-            parent = os.path.dirname(path_box.value.strip().rstrip('/\\'))
-            if parent and os.path.isdir(parent):
-                path_box.value = parent
-                refresh_view()
-
-        def on_add_clicked(b):
-            chosen = file_select.value
-            if chosen and chosen.lower().endswith('.h5'):
-                full_path = os.path.join(path_box.value.strip(), chosen)
-                selected_files.append(full_path)
-                update_queue()
-                status_msg.value = f"<b style='color:green;'>✓ Added Image {len(selected_files)}:</b> {chosen}"
-            else:
-                status_msg.value = "<b style='color:red;'>Please select a valid .h5 file from the list above</b>"
-
-        def on_remove_clicked(b):
-            if selected_files:
-                removed = selected_files.pop()
-                update_queue()
-                status_msg.value = f"Removed: {os.path.basename(removed)}"
-
-        def on_clear_clicked(b):
-            selected_files.clear()
-            update_queue()
-            status_msg.value = "Quadrant list cleared."
-
-        btn_open.on_click(on_open_clicked)
-        btn_up.on_click(on_up_clicked)
-        btn_add.on_click(on_add_clicked)
-        btn_remove.on_click(on_remove_clicked)
-        btn_clear.on_click(on_clear_clicked)
-        path_box.observe(lambda c: refresh_view(), names="value")
-        sort_dropdown.observe(lambda c: refresh_view(), names="value")
-
-        header_html = widgets.HTML(
-            "<div style='background-color:#e8f4f8; padding:8px 12px; border-left:4px solid #007acc; border-radius:4px; margin-bottom:6px;'>"
-            "<b style='color:#004085; font-size:1.1em;'>CLS Quadrant File Selection (Beamline Data Explorer)</b><br/>"
-            "Navigate to your Loki data folder, select each quadrant <code>.h5</code> file in order, and click <b>[➕ Add File to Quadrants]</b>.<br/>"
-            "When all quadrant files are in the queue (e.g. 2, 3, or 4 images), press <b>ENTER</b> below to proceed to trimming."
-            "</div>"
-        )
-
-        ui = widgets.VBox([
-            header_html,
-            widgets.HBox([path_box, btn_up]),
-            sort_dropdown,
-            folder_select,
-            btn_open,
-            file_select,
-            widgets.HBox([btn_add, btn_remove, btn_clear]),
-            queue_box,
-            status_msg
-        ], layout=widgets.Layout(border='1px solid #ccc', padding='10px', border_radius='6px', margin='8px 0'))
-
-        refresh_view()
-        update_queue()
-        display(ui)
-
-        print("\n👉 Select your quadrant files above, click '➕ Add File to Quadrants' for each file,")
-        print("   then press ENTER below when ready to proceed to interactive trimming:")
-        try:
-            input("Press ENTER when done selecting files: ")
-        except (EOFError, KeyboardInterrupt):
-            pass
-
-        if selected_files:
-            print(f"\n✓ Loaded {len(selected_files)} quadrant files for stitching:")
-            for idx, f in enumerate(selected_files):
-                print(f"  -> Image {idx+1}: {os.path.basename(f)}")
-            return selected_files
-        else:
-            print("[Notice] No files selected from explorer. Fallback to path entry:")
-            files = []
-            if num_files is None:
-                try:
-                    val = input("Enter number of images to stitch [4]: ").strip()
-                    num_files = int(val) if val else 4
-                except (EOFError, ValueError):
-                    num_files = 4
-            for i in range(num_files):
-                try:
-                    p = input(f"Enter path for Image {i+1} HDF5 file (or Enter to finish): ").strip()
-                    if not p: break
-                    p = p.strip('\"\'')
-                    if os.path.exists(p):
-                        files.append(p)
-                        print(f"  -> Added: {os.path.basename(p)}")
-                    else:
-                        print(f"  -> File not found: {p}")
-                except (EOFError, KeyboardInterrupt):
+                val = input("Enter number of images to stitch [4]: ").strip()
+                num_files = int(val) if val else 4
+            except (EOFError, ValueError):
+                num_files = 4
+        for i in range(num_files):
+            try:
+                p = input(f"Enter path for Image {i+1} HDF5 file (or Enter to finish): ").strip()
+                if not p:
                     break
-            return files
+                p = p.strip('\"\'')
+                if os.path.exists(p):
+                    files.append(p)
+                    print(f"  -> Added: {os.path.basename(p)}")
+                else:
+                    print(f"  -> File not found: {p}")
+            except (EOFError, KeyboardInterrupt):
+                break
+        return files
 
     import tkinter as tk
     from tkinter import filedialog
@@ -612,7 +428,7 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50), auto_trim=Fa
     Parameters:
     -----------
     h5_files : list, optional
-        List of HDF5 file paths to stitch. If None, opens a file picker dialog or Loki explorer.
+        List of HDF5 file paths to stitch. If None, opens interactive Loki explorer in Jupyter.
     channel_roi : tuple, default (30, 50)
         Channel ROI to sum for live contrast preview.
     auto_trim : bool, default False
@@ -625,310 +441,518 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50), auto_trim=Fa
     start_dir : str, optional
         Initial directory for file selection.
     """
-    if h5_files is None:
-        h5_files = browse_for_quadrant_files(start_dir=start_dir)
-    
-    if not h5_files:
-        print("No files selected.")
+    try:
+        from IPython import get_ipython
+        in_jupyter = get_ipython() is not None
+    except ImportError:
+        in_jupyter = False
+
+    container = widgets.VBox([])
+
+    def launch_trim_view(files_to_trim):
+        if not files_to_trim:
+            print("No files selected.")
+            return
+
+        # Check for duplicates
+        if len(files_to_trim) != len(set(files_to_trim)):
+            if HAS_GUI:
+                try:
+                    import tkinter as tk
+                    from tkinter import messagebox
+                    root = tk.Tk(); root.withdraw(); root.attributes("-topmost", True)
+                    messagebox.showwarning("Duplicate Files", 
+                                           "Warning: You have selected the same file for multiple quadrants.\n\n"
+                                           "This may cause data overlap and visualization artifacts (like 'filling in' gaps).\n"
+                                           "If you intended to skip a quadrant, please click 'Cancel' in one of the file dialogs next time.")
+                    root.destroy()
+                except Exception:
+                    pass
+            else:
+                print("[Warning] You have selected the same file for multiple quadrants.")
+                print("          This may cause data overlap and visualization artifacts (like 'filling in' gaps).")
+
+        data_packs = [analyze_sgm_bsky_data(f, verbose=False) for f in files_to_trim]
+        num_maps = len(data_packs)
+        
+        # Calculate zero-overlap trims for reference / on-demand button
+        calculated_auto_trims = calculate_initial_zero_overlap_trims(data_packs)
+        
+        # Pre-load intensity for first detector and representative energy
+        intensities = []
+        all_vals = []
+        for dp in data_packs:
+            det = list(dp['sdd_files'].keys())[0]
+            en = dp['representative_energy']
+            f_path = dp['sdd_files'][det].get(en)
+            if f_path:
+                raw = np.fromfile(f_path, dtype=np.uint32).reshape(-1, 256)
+                inten = np.sum(raw[:, channel_roi[0]:channel_roi[1]], axis=1)
+                intensities.append(inten)
+                all_vals.extend(inten)
+            else:
+                intensities.append(np.zeros_like(dp['x']))
+
+        # Determine global data range for contrast
+        if all_vals:
+            global_min = np.min(all_vals)
+            global_max = np.max(all_vals)
+        else:
+            global_min, global_max = 0, 1
+
+        # --- UI Components ---
+        sliders = []
+        labels = []
+        
+        for i in range(num_maps):
+            label = labels[i] if i < len(labels) else f"Image {i+1}"
+            x_range = np.max(data_packs[i]['x']) - np.min(data_packs[i]['x'])
+            y_range = np.max(data_packs[i]['y']) - np.min(data_packs[i]['y'])
+            
+            if auto_trim:
+                init_l = min(calculated_auto_trims[i]['left'], x_range * 0.90)
+                init_r = min(calculated_auto_trims[i]['right'], x_range * 0.90)
+                init_t = min(calculated_auto_trims[i]['top'], y_range * 0.90)
+                init_b = min(calculated_auto_trims[i]['bottom'], y_range * 0.90)
+            else:
+                init_l, init_r, init_t, init_b = 0.0, 0.0, 0.0, 0.0
+            
+            l_s = widgets.FloatSlider(value=init_l, min=0.0, max=round(x_range*0.95, 3), step=0.001, readout_format='.3f', description=f'{label} Left:')
+            r_s = widgets.FloatSlider(value=init_r, min=0.0, max=round(x_range*0.95, 3), step=0.001, readout_format='.3f', description=f'{label} Right:')
+            t_s = widgets.FloatSlider(value=init_t, min=0.0, max=round(y_range*0.95, 3), step=0.001, readout_format='.3f', description=f'{label} Top:')
+            b_s = widgets.FloatSlider(value=init_b, min=0.0, max=round(y_range*0.95, 3), step=0.001, readout_format='.3f', description=f'{label} Bottom:')
+            sliders.append({'L': l_s, 'R': r_s, 'T': t_s, 'B': b_s})
+
+        # Trim Mode Toggle
+        init_mode = 'overlap_only' if str(trim_mode).lower().startswith('overlap') else 'full_edge'
+        trim_mode_toggle = widgets.RadioButtons(
+            options=[
+                ('Full Edge Trim (Uniform rectangular cut across entire edge)', 'full_edge'),
+                ('Overlap-Only Trim (Only trim 2D overlapping region, keep staggered non-overlapping edges)', 'overlap_only')
+            ],
+            value=init_mode,
+            description='Trim Mode:',
+            layout=widgets.Layout(width='95%')
+        )
+
+        # Contrast Sliders
+        contrast_slider = widgets.FloatRangeSlider(
+            value=[0, 100], min=0, max=100, step=0.1,
+            description='Contrast %:', layout=widgets.Layout(width='80%')
+        )
+
+        btn_zero_trims = widgets.Button(description="Zero All Trims (No Trim)", button_style='info', icon='undo', layout=widgets.Layout(width='190px'))
+        btn_auto_trims = widgets.Button(description="Auto-Calculate Overlaps", button_style='primary', icon='magic', layout=widgets.Layout(width='190px'))
+        btn_flush_trims = widgets.Button(description="Align Flush Bounds (Crop)", button_style='warning', icon='crop', layout=widgets.Layout(width='200px'))
+        stitch_btn = widgets.Button(description="Bake Stitched Image", button_style='success', layout=widgets.Layout(width='200px'))
+        output = widgets.Output()
+        
+        fig_id = f"stitch_trim_{id(files_to_trim)}"
+        batch_updating = [False]
+
+        def update_plot(change=None):
+            if batch_updating[0]:
+                return
+            with output:
+                output.clear_output(wait=True)
+                if not plt.fignum_exists(fig_id):
+                    fig, ax = plt.subplots(1, 1, figsize=(7.0, 5.6), num=fig_id)
+                else:
+                    fig = plt.figure(fig_id)
+                    ax = fig.gca()
+                    ax.clear()
+
+                # Calculate contrast limits based on percentiles
+                p_low, p_high = contrast_slider.value
+                flat_intensities = np.concatenate(intensities)
+                vmin = np.percentile(flat_intensities, p_low)
+                vmax = np.percentile(flat_intensities, p_high)
+                if vmin == vmax: vmax = vmin + 1
+
+                colors = ['#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4', '#46f0f0', '#f032e6', '#bcf60c', '#fabebe']
+                active_mode = trim_mode_toggle.value
+                current_trims = [
+                    {'left': s['L'].value, 'right': s['R'].value, 'top': s['T'].value, 'bottom': s['B'].value}
+                    for s in sliders
+                ]
+                
+                mode_label = "OVERLAP-ONLY (2D Intersection)" if active_mode == 'overlap_only' else "FULL EDGE (Rectangular)"
+                print(f"--- LIVE TRIMMING & STITCHING STATUS [Mode: {mode_label}] ---")
+                for i in range(num_maps):
+                    lbl = labels[i] if i < len(labels) else f"Image {i+1}"
+                    dp = data_packs[i]
+                    s = sliders[i]
+                    L, R, T, B = s['L'].value, s['R'].value, s['T'].value, s['B'].value
+                    
+                    orig_x, orig_y = dp['x'], dp['y']
+                    all_idx = np.arange(len(orig_x))
+                    
+                    if active_mode == 'overlap_only':
+                        tx, ty, ti_idx = apply_overlap_only_trim(i, data_packs, current_trims)
+                    else:
+                        tx, ty, ti_idx = apply_asymmetric_trim(
+                            orig_x, orig_y, all_idx,
+                            left=L, right=R, top=T, bottom=B
+                        )
+                    
+                    num_kept = len(tx)
+                    num_total = len(orig_x)
+                    num_trimmed = num_total - num_kept
+                    
+                    print(f"  [{lbl}] Trims: Left={L:.3f}mm, Right={R:.3f}mm, Top={T:.3f}mm, Bottom={B:.3f}mm | Kept {num_kept}/{num_total} pts ({num_trimmed} trimmed)")
+
+                    col = colors[i % len(colors)]
+                    
+                    # 1. Draw Original Boundary (faint grey dotted box)
+                    ox_min, ox_max = np.min(orig_x), np.max(orig_x)
+                    oy_min, oy_max = np.min(orig_y), np.max(orig_y)
+                    ax.plot([ox_min, ox_max, ox_max, ox_min, ox_min],
+                            [oy_min, oy_min, oy_max, oy_max, oy_min],
+                            color='gray', lw=1.2, ls=':', alpha=0.6)
+
+                    # 2. Draw Trimmed Out Points (Subtle red x markers)
+                    if num_trimmed > 0:
+                        kept_set = set(ti_idx)
+                        trimmed_mask = np.array([idx not in kept_set for idx in all_idx])
+                        ax.scatter(orig_x[trimmed_mask], orig_y[trimmed_mask], 
+                                   color='red', marker='x', s=14, alpha=0.6, label='Trimmed Points' if i==0 else "")
+
+                    # 3. Draw Kept Data Area and Active Trimmed Boundary Box
+                    if num_kept > 0:
+                        ax.tripcolor(tx, ty, intensities[i][ti_idx], shading='gouraud', 
+                                     edgecolors='none', vmin=vmin, vmax=vmax, cmap='viridis', alpha=0.85)
+                        
+                        # Draw prominent active boundary box
+                        kx_min, kx_max = np.min(tx), np.max(tx)
+                        ky_min, ky_max = np.min(ty), np.max(ty)
+                        ax.plot([kx_min, kx_max, kx_max, kx_min, kx_min], 
+                                [ky_min, ky_min, ky_max, ky_max, ky_min], 
+                                color=col, lw=2.0, ls='-' if active_mode == 'full_edge' else '--', label=f"{lbl} Kept Bounds")
+                        
+                        # Text label for image
+                        ax.text((kx_min + kx_max) / 2.0, (ky_min + ky_max) / 2.0, lbl, 
+                                color=col, fontsize=9, fontweight='bold', ha='center', va='center',
+                                bbox=dict(boxstyle="round,pad=0.2", facecolor='white', alpha=0.7, edgecolor=col))
+
+                ax.set_aspect('equal')
+                ax.set_title(f"Stitching Preview [{mode_label}] (Contrast: {p_low}% - {p_high}%)")
+                ax.set_xlabel("X (mm)")
+                ax.set_ylabel("Y (mm)")
+                ax.legend(loc='upper right', fontsize=8)
+                plt.tight_layout()
+                fig.canvas.draw_idle()
+
+        # Link all sliders and mode toggle to update_plot
+        for s_set in sliders:
+            for s in s_set.values():
+                s.observe(update_plot, names='value')
+        contrast_slider.observe(update_plot, names='value')
+        trim_mode_toggle.observe(update_plot, names='value')
+
+        def on_zero_trims_clicked(b):
+            batch_updating[0] = True
+            try:
+                for s in sliders:
+                    s['L'].value = 0.0
+                    s['R'].value = 0.0
+                    s['T'].value = 0.0
+                    s['B'].value = 0.0
+            finally:
+                batch_updating[0] = False
+            update_plot()
+
+        def on_auto_trims_clicked(b):
+            batch_updating[0] = True
+            try:
+                for i, s in enumerate(sliders):
+                    x_range = np.max(data_packs[i]['x']) - np.min(data_packs[i]['x'])
+                    y_range = np.max(data_packs[i]['y']) - np.min(data_packs[i]['y'])
+                    s['L'].value = min(calculated_auto_trims[i]['left'], x_range * 0.90)
+                    s['R'].value = min(calculated_auto_trims[i]['right'], x_range * 0.90)
+                    s['T'].value = min(calculated_auto_trims[i]['top'], y_range * 0.90)
+                    s['B'].value = min(calculated_auto_trims[i]['bottom'], y_range * 0.90)
+            finally:
+                batch_updating[0] = False
+            update_plot()
+
+        def on_flush_trims_clicked(b):
+            batch_updating[0] = True
+            try:
+                cur_trims = [
+                    {'left': s['L'].value, 'right': s['R'].value, 'top': s['T'].value, 'bottom': s['B'].value}
+                    for s in sliders
+                ]
+                if all(v == 0.0 for t in cur_trims for v in t.values()):
+                    cur_trims = [dict(t) for t in calculated_auto_trims]
+                flush_trims = calculate_aligned_flush_trims(data_packs, base_trims=cur_trims)
+                trim_mode_toggle.value = 'full_edge'
+                for i, s in enumerate(sliders):
+                    x_range = np.max(data_packs[i]['x']) - np.min(data_packs[i]['x'])
+                    y_range = np.max(data_packs[i]['y']) - np.min(data_packs[i]['y'])
+                    s['L'].value = min(flush_trims[i]['left'], x_range * 0.90)
+                    s['R'].value = min(flush_trims[i]['right'], x_range * 0.90)
+                    s['T'].value = min(flush_trims[i]['top'], y_range * 0.90)
+                    s['B'].value = min(flush_trims[i]['bottom'], y_range * 0.90)
+            finally:
+                batch_updating[0] = False
+            update_plot()
+
+        btn_zero_trims.on_click(on_zero_trims_clicked)
+        btn_auto_trims.on_click(on_auto_trims_clicked)
+        btn_flush_trims.on_click(on_flush_trims_clicked)
+
+        def on_stitch_clicked(b):
+            stitch_btn.description = "Baking Stitched Image..."
+            stitch_btn.button_style = 'warning'
+            
+            final_trims = []
+            for s in sliders:
+                final_trims.append({
+                    'left': s['L'].value, 'right': s['R'].value,
+                    'top': s['T'].value, 'bottom': s['B'].value
+                })
+            
+            with output:
+                print(f"\n[PROCESS STARTED] Baking Stitched Image (Mode: {trim_mode_toggle.value})... Please wait.")
+                try:
+                    stitch_quadrant_maps(files_to_trim, trims=final_trims, trim_mode=trim_mode_toggle.value)
+                finally:
+                    stitch_btn.description = "Bake Stitched Image"
+                    stitch_btn.button_style = 'success'
+
+        stitch_btn.on_click(on_stitch_clicked)
+
+        # Layout using Tab for clear image selection
+        tab_widget = widgets.Tab()
+        tab_children = []
+        
+        for i in range(num_maps):
+            label = labels[i] if i < len(labels) else f"Image {i+1}"
+            col = widgets.VBox([sliders[i]['L'], sliders[i]['R'], sliders[i]['T'], sliders[i]['B']])
+            tab_children.append(col)
+            
+        tab_widget.children = tab_children
+        for i in range(num_maps):
+            label = labels[i] if i < len(labels) else f"Image {i+1}"
+            tab_widget.set_title(i, f"{label} Trims")
+            
+        notice_label = widgets.HTML(
+            "<div style='background-color: #e8f4f8; padding: 8px 12px; border-left: 4px solid #0056b3; margin-bottom: 8px;'>"
+            "<b style='color:#004085;'>Interactive Trimming & Stitching:</b> Adjust trim values manually in each tab below.<br>"
+            "• <b>Trim Mode:</b> Choose <b>Full Edge Trim</b> (cuts entire edge straight across) or <b>Overlap-Only Trim</b> (only trims inside 2D overlap regions, preserving staggered non-overlapping edges).<br>"
+            "• Click <b>'Zero All Trims (No Trim)'</b> to reset all trims to 0.00 mm.<br>"
+            "• Click <b>'Auto-Calculate Overlaps'</b> to compute zero-overlap cutoffs between adjacent tiles (supports staggered tiles).<br>"
+            "• Click <b>'Align Flush Bounds (Crop)'</b> to also crop protruding top/bottom or left/right edges so staggered rows/columns align flush.<br>"
+            "• Click <b>'Bake Stitched Image'</b> when ready to generate the stitched dataset."
+            "</div>"
+        )
+        action_box = widgets.HBox([btn_zero_trims, btn_auto_trims, btn_flush_trims, stitch_btn])
+        trim_view = widgets.VBox([notice_label, trim_mode_toggle, tab_widget, widgets.Label("Global Contrast Control:"), contrast_slider, action_box, output])
+        container.children = [trim_view]
+        update_plot()
+
+    # --- Mode Decision ---
+    if h5_files is not None:
+        launch_trim_view(h5_files)
+        display(container)
         return
 
-    # Check for duplicates
-    if len(h5_files) != len(set(h5_files)):
-        if HAS_GUI:
+    # In Tkinter desktop without Jupyter
+    if HAS_GUI and not in_jupyter:
+        selected = browse_for_quadrant_files(start_dir=start_dir)
+        if selected:
+            launch_trim_view(selected)
+            display(container)
+        return
+
+    # --- Interactive Jupyter / HPC Quadrant Explorer (No blocking input!) ---
+    candidates = [
+        start_dir,
+        "/gpfs/Primary/beamlinedata/sgm",
+        "/gpfs/Primary/beamlinedata/SGM",
+        "/gpfs/Primary/beamlinedata",
+        "/gpfs/Primary",
+        "/projects",
+        os.path.expanduser("~/scratch"),
+        get_last_dir() if 'get_last_dir' in globals() else None,
+        os.getcwd()
+    ]
+    base_dir = next((p for p in candidates if p and os.path.isdir(p)), os.getcwd())
+
+    selected_files = []
+    path_box = widgets.Text(value=base_dir, description="Folder:", layout=widgets.Layout(width="650px"), continuous_update=False)
+    btn_up = widgets.Button(description="Up ⬆", layout=widgets.Layout(width="80px"))
+    sort_dropdown = widgets.Dropdown(
+        options=[("Most Recent Projects First", "project_desc"), ("Alphabetical (A-Z)", "name_asc"), ("Reverse (Z-A)", "name_desc")],
+        value="project_desc",
+        description="Sort by:",
+        layout=widgets.Layout(width="380px")
+    )
+    folder_select = widgets.Select(description="Subfolders:", rows=8, layout=widgets.Layout(width="650px"))
+    file_select = widgets.Select(description="Files (.h5):", rows=7, layout=widgets.Layout(width="650px"))
+    btn_open = widgets.Button(description="Open Selected Folder 📂", button_style="info", icon="folder-open", layout=widgets.Layout(width="220px"))
+    btn_add = widgets.Button(description="➕ Add File to Quadrants", button_style="success", icon="plus", layout=widgets.Layout(width="230px"))
+    btn_remove = widgets.Button(description="➖ Remove Last", button_style="warning", icon="minus", layout=widgets.Layout(width="130px"))
+    btn_clear = widgets.Button(description="🔄 Clear All", button_style="", layout=widgets.Layout(width="100px"))
+    btn_proceed = widgets.Button(description="🚀 Proceed to Trimming (0 files)", button_style="primary", disabled=True, icon="play", layout=widgets.Layout(width="340px", height="38px"))
+    
+    queue_box = widgets.HTML(value="<i>No quadrant files added yet.</i>")
+    status_msg = widgets.HTML(value=f"Current path: <code>{base_dir}</code>")
+
+    def refresh_view():
+        current = path_box.value.strip().rstrip('/\\')
+        if not os.path.isdir(current):
+            folder_select.options = [("Directory not found", "")]
+            file_select.options = []
+            status_msg.value = f"<b style='color:red;'>Directory not found: {current}</b>"
+            return
+        try:
+            with os.scandir(current) as it:
+                raw_entries = list(it)
+
+            dir_entries = [e for e in raw_entries if e.is_dir() and not e.name.startswith('.')]
+            file_entries = [e for e in raw_entries if e.is_file() and e.name.lower().endswith('.h5')]
+
+            sort_mode = sort_dropdown.value
+            def natural_project_key(entry):
+                s = entry.name.strip()
+                m = re.match(r'^(prj)?(\d+)([a-zA-Z]?)(\d+)?(.*)$', s, re.IGNORECASE)
+                if m:
+                    has_prj = 1 if m.group(1) else 0
+                    cycle = int(m.group(2))
+                    sub_num = int(m.group(4)) if m.group(4) else 0
+                    letter = (m.group(3) or '').lower()
+                    rest = (m.group(5) or '').lower()
+                    return (1, has_prj, cycle, sub_num, letter, rest)
+                parts = re.split(r'(\d+)', s.lower())
+                parsed = [int(p) if p.isdigit() else p for p in parts]
+                return (0, 0, 0, 0, '', parsed)
+
+            if sort_mode == "project_desc":
+                dirs = [e.name for e in sorted(dir_entries, key=natural_project_key, reverse=True)]
+                matched_files = [e.name for e in sorted(file_entries, key=natural_project_key, reverse=True)]
+            elif sort_mode == "name_desc":
+                dirs = [e.name for e in sorted(dir_entries, key=lambda e: e.name.lower(), reverse=True)]
+                matched_files = [e.name for e in sorted(file_entries, key=lambda e: e.name.lower(), reverse=True)]
+            else:
+                dirs = [e.name for e in sorted(dir_entries, key=lambda e: e.name.lower())]
+                matched_files = [e.name for e in sorted(file_entries, key=lambda e: e.name.lower())]
+
+            folder_select.options = dirs if dirs else ["(No subfolders)"]
+            file_select.options = matched_files if matched_files else ["(No .h5 files in this folder)"]
+            status_msg.value = f"Current path: <code>{current}</code>"
             try:
-                import tkinter as tk
-                from tkinter import messagebox
-                root = tk.Tk(); root.withdraw(); root.attributes("-topmost", True)
-                messagebox.showwarning("Duplicate Files", 
-                                       "Warning: You have selected the same file for multiple quadrants.\n\n"
-                                       "This may cause data overlap and visualization artifacts (like 'filling in' gaps).\n"
-                                       "If you intended to skip a quadrant, please click 'Cancel' in one of the file dialogs next time.")
-                root.destroy()
+                save_last_dir(current)
             except Exception:
                 pass
+        except Exception as e:
+            status_msg.value = f"<b style='color:red;'>Error reading folder: {e}</b>"
+
+    def update_queue():
+        if not selected_files:
+            queue_box.value = (
+                "<div style='background-color:#f8f9fa; border:1px solid #ddd; border-radius:4px; padding:6px 10px; margin-top:6px;'>"
+                "<b>Quadrant Stitching Queue (0 files):</b> <i>(No files added yet. Select a file above and click '➕ Add File to Quadrants')</i>"
+                "</div>"
+            )
+            btn_proceed.disabled = True
+            btn_proceed.button_style = "primary"
+            btn_proceed.description = "🚀 Proceed to Trimming (0 files)"
         else:
-            print("[Warning] You have selected the same file for multiple quadrants.")
-            print("          This may cause data overlap and visualization artifacts (like 'filling in' gaps).")
+            items = "".join([f"<li><b>Image {i+1}:</b> <code>{os.path.basename(f)}</code> <span style='color:#777; font-size:0.85em;'>({os.path.dirname(f)})</span></li>" for i, f in enumerate(selected_files)])
+            queue_box.value = (
+                f"<div style='background-color:#e8f4f8; border:1px solid #b8daff; border-radius:4px; padding:8px 12px; margin-top:6px;'>"
+                f"<b style='color:#004085;'>Quadrant Stitching Queue ({len(selected_files)} files selected):</b>"
+                f"<ol style='margin:4px 0 2px 20px; padding:0;'>{items}</ol>"
+                f"</div>"
+            )
+            btn_proceed.disabled = False
+            btn_proceed.button_style = "success"
+            btn_proceed.description = f"🚀 Proceed to Trimming ({len(selected_files)} files selected)"
 
-
-    data_packs = [analyze_sgm_bsky_data(f, verbose=False) for f in h5_files]
-    num_maps = len(data_packs)
-    
-    # Calculate zero-overlap trims for reference / on-demand button
-    calculated_auto_trims = calculate_initial_zero_overlap_trims(data_packs)
-    
-    # Pre-load intensity for first detector and representative energy
-    intensities = []
-    all_vals = []
-    for dp in data_packs:
-        det = list(dp['sdd_files'].keys())[0]
-        en = dp['representative_energy']
-        f_path = dp['sdd_files'][det].get(en)
-        if f_path:
-            raw = np.fromfile(f_path, dtype=np.uint32).reshape(-1, 256)
-            inten = np.sum(raw[:, channel_roi[0]:channel_roi[1]], axis=1)
-            intensities.append(inten)
-            all_vals.extend(inten)
-        else:
-            intensities.append(np.zeros_like(dp['x']))
-
-    # Determine global data range for contrast
-    if all_vals:
-        global_min = np.min(all_vals)
-        global_max = np.max(all_vals)
-    else:
-        global_min, global_max = 0, 1
-
-    # --- UI Components ---
-    sliders = []
-    labels = []
-    
-    for i in range(num_maps):
-        label = labels[i] if i < len(labels) else f"Image {i+1}"
-        x_range = np.max(data_packs[i]['x']) - np.min(data_packs[i]['x'])
-        y_range = np.max(data_packs[i]['y']) - np.min(data_packs[i]['y'])
-        
-        if auto_trim:
-            init_l = min(calculated_auto_trims[i]['left'], x_range * 0.90)
-            init_r = min(calculated_auto_trims[i]['right'], x_range * 0.90)
-            init_t = min(calculated_auto_trims[i]['top'], y_range * 0.90)
-            init_b = min(calculated_auto_trims[i]['bottom'], y_range * 0.90)
-        else:
-            init_l, init_r, init_t, init_b = 0.0, 0.0, 0.0, 0.0
-        
-        l_s = widgets.FloatSlider(value=init_l, min=0.0, max=round(x_range*0.95, 3), step=0.001, readout_format='.3f', description=f'{label} Left:')
-        r_s = widgets.FloatSlider(value=init_r, min=0.0, max=round(x_range*0.95, 3), step=0.001, readout_format='.3f', description=f'{label} Right:')
-        t_s = widgets.FloatSlider(value=init_t, min=0.0, max=round(y_range*0.95, 3), step=0.001, readout_format='.3f', description=f'{label} Top:')
-        b_s = widgets.FloatSlider(value=init_b, min=0.0, max=round(y_range*0.95, 3), step=0.001, readout_format='.3f', description=f'{label} Bottom:')
-        sliders.append({'L': l_s, 'R': r_s, 'T': t_s, 'B': b_s})
-
-    # Trim Mode Toggle
-    init_mode = 'overlap_only' if str(trim_mode).lower().startswith('overlap') else 'full_edge'
-    trim_mode_toggle = widgets.RadioButtons(
-        options=[
-            ('Full Edge Trim (Uniform rectangular cut across entire edge)', 'full_edge'),
-            ('Overlap-Only Trim (Only trim 2D overlapping region, keep staggered non-overlapping edges)', 'overlap_only')
-        ],
-        value=init_mode,
-        description='Trim Mode:',
-        layout=widgets.Layout(width='95%')
-    )
-
-    # Contrast Sliders
-    contrast_slider = widgets.FloatRangeSlider(
-        value=[0, 100], min=0, max=100, step=0.1,
-        description='Contrast %:', layout=widgets.Layout(width='80%')
-    )
-
-    btn_zero_trims = widgets.Button(description="Zero All Trims (No Trim)", button_style='info', icon='undo', layout=widgets.Layout(width='190px'))
-    btn_auto_trims = widgets.Button(description="Auto-Calculate Overlaps", button_style='primary', icon='magic', layout=widgets.Layout(width='190px'))
-    btn_flush_trims = widgets.Button(description="Align Flush Bounds (Crop)", button_style='warning', icon='crop', layout=widgets.Layout(width='200px'))
-    stitch_btn = widgets.Button(description="Bake Stitched Image", button_style='success', layout=widgets.Layout(width='200px'))
-    output = widgets.Output()
-    
-    fig_id = f"stitch_trim_{id(h5_files)}"
-    batch_updating = [False]
-
-    def update_plot(change=None):
-        if batch_updating[0]:
-            return
-        with output:
-            output.clear_output(wait=True)
-            if not plt.fignum_exists(fig_id):
-                fig, ax = plt.subplots(1, 1, figsize=(7.0, 5.6), num=fig_id)
+    def on_open_clicked(b):
+        chosen = folder_select.value
+        if chosen and chosen != "(No subfolders)":
+            curr = path_box.value.strip().rstrip('/\\')
+            new_path = os.path.join(curr, chosen)
+            if os.path.isdir(new_path):
+                path_box.value = new_path
+                refresh_view()
             else:
-                fig = plt.figure(fig_id)
-                ax = fig.gca()
-                ax.clear()
+                status_msg.value = f"<b style='color:red;'>Subfolder not found: {new_path}</b>"
+        else:
+            status_msg.value = "<b style='color:red;'>Please select a subfolder from the list above.</b>"
 
-            # Calculate contrast limits based on percentiles
-            p_low, p_high = contrast_slider.value
-            flat_intensities = np.concatenate(intensities)
-            vmin = np.percentile(flat_intensities, p_low)
-            vmax = np.percentile(flat_intensities, p_high)
-            if vmin == vmax: vmax = vmin + 1
+    def on_up_clicked(b):
+        curr = path_box.value.strip().rstrip('/\\')
+        parent = os.path.dirname(curr)
+        if parent and os.path.isdir(parent):
+            path_box.value = parent
+            refresh_view()
 
-            colors = ['#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4', '#46f0f0', '#f032e6', '#bcf60c', '#fabebe']
-            active_mode = trim_mode_toggle.value
-            current_trims = [
-                {'left': s['L'].value, 'right': s['R'].value, 'top': s['T'].value, 'bottom': s['B'].value}
-                for s in sliders
-            ]
-            
-            mode_label = "OVERLAP-ONLY (2D Intersection)" if active_mode == 'overlap_only' else "FULL EDGE (Rectangular)"
-            print(f"--- LIVE TRIMMING & STITCHING STATUS [Mode: {mode_label}] ---")
-            for i in range(num_maps):
-                lbl = labels[i] if i < len(labels) else f"Image {i+1}"
-                dp = data_packs[i]
-                s = sliders[i]
-                L, R, T, B = s['L'].value, s['R'].value, s['T'].value, s['B'].value
-                
-                orig_x, orig_y = dp['x'], dp['y']
-                all_idx = np.arange(len(orig_x))
-                
-                if active_mode == 'overlap_only':
-                    tx, ty, ti_idx = apply_overlap_only_trim(i, data_packs, current_trims)
-                else:
-                    tx, ty, ti_idx = apply_asymmetric_trim(
-                        orig_x, orig_y, all_idx,
-                        left=L, right=R, top=T, bottom=B
-                    )
-                
-                num_kept = len(tx)
-                num_total = len(orig_x)
-                num_trimmed = num_total - num_kept
-                
-                print(f"  [{lbl}] Trims: Left={L:.3f}mm, Right={R:.3f}mm, Top={T:.3f}mm, Bottom={B:.3f}mm | Kept {num_kept}/{num_total} pts ({num_trimmed} trimmed)")
+    def on_add_clicked(b):
+        chosen = file_select.value
+        if chosen and chosen.lower().endswith('.h5'):
+            full_path = os.path.join(path_box.value.strip().rstrip('/\\'), chosen)
+            selected_files.append(full_path)
+            update_queue()
+            status_msg.value = f"<b style='color:green;'>✓ Added Image {len(selected_files)}:</b> {chosen}"
+        else:
+            status_msg.value = "<b style='color:red;'>Please select a valid .h5 file from the list above.</b>"
 
-                col = colors[i % len(colors)]
-                
-                # 1. Draw Original Boundary (faint grey dotted box)
-                ox_min, ox_max = np.min(orig_x), np.max(orig_x)
-                oy_min, oy_max = np.min(orig_y), np.max(orig_y)
-                ax.plot([ox_min, ox_max, ox_max, ox_min, ox_min],
-                        [oy_min, oy_min, oy_max, oy_max, oy_min],
-                        color='gray', lw=1.2, ls=':', alpha=0.6)
+    def on_remove_clicked(b):
+        if selected_files:
+            removed = selected_files.pop()
+            update_queue()
+            status_msg.value = f"Removed: {os.path.basename(removed)}"
 
-                # 2. Draw Trimmed Out Points (Subtle red x markers)
-                if num_trimmed > 0:
-                    kept_set = set(ti_idx)
-                    trimmed_mask = np.array([idx not in kept_set for idx in all_idx])
-                    ax.scatter(orig_x[trimmed_mask], orig_y[trimmed_mask], 
-                               color='red', marker='x', s=14, alpha=0.6, label='Trimmed Points' if i==0 else "")
+    def on_clear_clicked(b):
+        selected_files.clear()
+        update_queue()
+        status_msg.value = "Quadrant list cleared."
 
-                # 3. Draw Kept Data Area and Active Trimmed Boundary Box
-                if num_kept > 0:
-                    ax.tripcolor(tx, ty, intensities[i][ti_idx], shading='gouraud', 
-                                 edgecolors='none', vmin=vmin, vmax=vmax, cmap='viridis', alpha=0.85)
-                    
-                    # Draw prominent active boundary box
-                    kx_min, kx_max = np.min(tx), np.max(tx)
-                    ky_min, ky_max = np.min(ty), np.max(ty)
-                    ax.plot([kx_min, kx_max, kx_max, kx_min, kx_min], 
-                            [ky_min, ky_min, ky_max, ky_max, ky_min], 
-                            color=col, lw=2.0, ls='-' if active_mode == 'full_edge' else '--', label=f"{lbl} Kept Bounds")
-                    
-                    # Text label for image
-                    ax.text((kx_min + kx_max) / 2.0, (ky_min + ky_max) / 2.0, lbl, 
-                            color=col, fontsize=9, fontweight='bold', ha='center', va='center',
-                            bbox=dict(boxstyle="round,pad=0.2", facecolor='white', alpha=0.7, edgecolor=col))
+    def on_proceed_clicked(b):
+        if not selected_files:
+            status_msg.value = "<b style='color:red;'>Please add at least 1 quadrant file to the queue first.</b>"
+            return
+        btn_proceed.disabled = True
+        btn_proceed.description = "Loading Quadrant Data..."
+        launch_trim_view(list(selected_files))
 
-            ax.set_aspect('equal')
-            ax.set_title(f"Stitching Preview [{mode_label}] (Contrast: {p_low}% - {p_high}%)")
-            ax.set_xlabel("X (mm)")
-            ax.set_ylabel("Y (mm)")
-            ax.legend(loc='upper right', fontsize=8)
-            plt.tight_layout()
-            fig.canvas.draw_idle()
+    btn_open.on_click(on_open_clicked)
+    btn_up.on_click(on_up_clicked)
+    btn_add.on_click(on_add_clicked)
+    btn_remove.on_click(on_remove_clicked)
+    btn_clear.on_click(on_clear_clicked)
+    btn_proceed.on_click(on_proceed_clicked)
+    path_box.observe(lambda c: refresh_view(), names="value")
+    sort_dropdown.observe(lambda c: refresh_view(), names="value")
 
-    # Link all sliders and mode toggle to update_plot
-    for s_set in sliders:
-        for s in s_set.values():
-            s.observe(update_plot, names='value')
-    contrast_slider.observe(update_plot, names='value')
-    trim_mode_toggle.observe(update_plot, names='value')
-
-    def on_zero_trims_clicked(b):
-        batch_updating[0] = True
-        try:
-            for s in sliders:
-                s['L'].value = 0.0
-                s['R'].value = 0.0
-                s['T'].value = 0.0
-                s['B'].value = 0.0
-        finally:
-            batch_updating[0] = False
-        update_plot()
-
-    def on_auto_trims_clicked(b):
-        batch_updating[0] = True
-        try:
-            for i, s in enumerate(sliders):
-                x_range = np.max(data_packs[i]['x']) - np.min(data_packs[i]['x'])
-                y_range = np.max(data_packs[i]['y']) - np.min(data_packs[i]['y'])
-                s['L'].value = min(calculated_auto_trims[i]['left'], x_range * 0.90)
-                s['R'].value = min(calculated_auto_trims[i]['right'], x_range * 0.90)
-                s['T'].value = min(calculated_auto_trims[i]['top'], y_range * 0.90)
-                s['B'].value = min(calculated_auto_trims[i]['bottom'], y_range * 0.90)
-        finally:
-            batch_updating[0] = False
-        update_plot()
-
-    def on_flush_trims_clicked(b):
-        batch_updating[0] = True
-        try:
-            # Start from current trims (or auto-overlap trims if all are 0) to align outer staggered bounds flush
-            cur_trims = [
-                {'left': s['L'].value, 'right': s['R'].value, 'top': s['T'].value, 'bottom': s['B'].value}
-                for s in sliders
-            ]
-            if all(v == 0.0 for t in cur_trims for v in t.values()):
-                cur_trims = [dict(t) for t in calculated_auto_trims]
-            flush_trims = calculate_aligned_flush_trims(data_packs, base_trims=cur_trims)
-            trim_mode_toggle.value = 'full_edge'
-            for i, s in enumerate(sliders):
-                x_range = np.max(data_packs[i]['x']) - np.min(data_packs[i]['x'])
-                y_range = np.max(data_packs[i]['y']) - np.min(data_packs[i]['y'])
-                s['L'].value = min(flush_trims[i]['left'], x_range * 0.90)
-                s['R'].value = min(flush_trims[i]['right'], x_range * 0.90)
-                s['T'].value = min(flush_trims[i]['top'], y_range * 0.90)
-                s['B'].value = min(flush_trims[i]['bottom'], y_range * 0.90)
-        finally:
-            batch_updating[0] = False
-        update_plot()
-
-    btn_zero_trims.on_click(on_zero_trims_clicked)
-    btn_auto_trims.on_click(on_auto_trims_clicked)
-    btn_flush_trims.on_click(on_flush_trims_clicked)
-
-    def on_stitch_clicked(b):
-        stitch_btn.description = "Baking Stitched Image..."
-        stitch_btn.button_style = 'warning'
-        
-        final_trims = []
-        for s in sliders:
-            final_trims.append({
-                'left': s['L'].value, 'right': s['R'].value,
-                'top': s['T'].value, 'bottom': s['B'].value
-            })
-        
-        with output:
-            print(f"\n[PROCESS STARTED] Baking Stitched Image (Mode: {trim_mode_toggle.value})... Please wait.")
-            try:
-                stitch_quadrant_maps(h5_files, trims=final_trims, trim_mode=trim_mode_toggle.value)
-            finally:
-                stitch_btn.description = "Bake Stitched Image"
-                stitch_btn.button_style = 'success'
-
-    stitch_btn.on_click(on_stitch_clicked)
-
-    # Layout using Tab for clear image selection
-    tab_widget = widgets.Tab()
-    tab_children = []
-    
-    for i in range(num_maps):
-        label = labels[i] if i < len(labels) else f"Image {i+1}"
-        col = widgets.VBox([sliders[i]['L'], sliders[i]['R'], sliders[i]['T'], sliders[i]['B']])
-        tab_children.append(col)
-        
-    tab_widget.children = tab_children
-    for i in range(num_maps):
-        label = labels[i] if i < len(labels) else f"Image {i+1}"
-        tab_widget.set_title(i, f"{label} Trims")
-        
-    notice_label = widgets.HTML(
-        "<div style='background-color: #e8f4f8; padding: 8px 12px; border-left: 4px solid #0056b3; margin-bottom: 8px;'>"
-        "<b style='color:#004085;'>Interactive Trimming & Stitching:</b> Adjust trim values manually in each tab below.<br>"
-        "• <b>Trim Mode:</b> Choose <b>Full Edge Trim</b> (cuts entire edge straight across) or <b>Overlap-Only Trim</b> (only trims inside 2D overlap regions, preserving staggered non-overlapping edges).<br>"
-        "• Click <b>'Zero All Trims (No Trim)'</b> to reset all trims to 0.00 mm.<br>"
-        "• Click <b>'Auto-Calculate Overlaps'</b> to compute zero-overlap cutoffs between adjacent tiles (supports staggered tiles).<br>"
-        "• Click <b>'Align Flush Bounds (Crop)'</b> to also crop protruding top/bottom or left/right edges so staggered rows/columns align flush.<br>"
-        "• Click <b>'Bake Stitched Image'</b> when ready to generate the stitched dataset."
+    header_html = widgets.HTML(
+        "<div style='background-color:#e8f4f8; padding:8px 12px; border-left:4px solid #007acc; border-radius:4px; margin-bottom:6px;'>"
+        "<b style='color:#004085; font-size:1.1em;'>CLS Quadrant File Selection (Beamline Data Explorer)</b><br/>"
+        "Navigate to your Loki data folder, select each quadrant <code>.h5</code> file in order, and click <b>[➕ Add File to Quadrants]</b>.<br/>"
+        "When all quadrant files are in the queue (e.g. 2, 3, or 4 images), click <b>[🚀 Proceed to Trimming]</b> below."
         "</div>"
     )
-    action_box = widgets.HBox([btn_zero_trims, btn_auto_trims, btn_flush_trims, stitch_btn])
-    display(widgets.VBox([notice_label, trim_mode_toggle, tab_widget, widgets.Label("Global Contrast Control:"), contrast_slider, action_box, output]))
-    update_plot()
+
+    explorer_ui = widgets.VBox([
+        header_html,
+        widgets.HBox([path_box, btn_up]),
+        sort_dropdown,
+        folder_select,
+        btn_open,
+        file_select,
+        widgets.HBox([btn_add, btn_remove, btn_clear]),
+        queue_box,
+        widgets.HBox([btn_proceed]),
+        status_msg
+    ], layout=widgets.Layout(border='1px solid #ccc', padding='10px', border_radius='6px', margin='8px 0'))
+
+    container.children = [explorer_ui]
+    refresh_view()
+    update_queue()
+    display(container)
 
 def stitch_quadrant_maps(h5_files=None, output_dir=None, trims=None, trim_mode='full_edge', verbose=True, start_dir=None):
     """
