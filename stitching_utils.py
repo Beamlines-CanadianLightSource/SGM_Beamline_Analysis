@@ -8,7 +8,7 @@ import ipywidgets as widgets
 from IPython.display import display
 from analyze_sgm_bsky_data import analyze_sgm_bsky_data, get_last_dir, save_last_dir
 from save_pymca_stack_h5 import get_user_file_action
-from alignment_utils import HAS_GUI
+from alignment_utils import HAS_GUI, get_masked_triangulation
 
 def apply_asymmetric_trim(x, y, data_indices, left=0, right=0, top=0, bottom=0):
     """
@@ -481,17 +481,66 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50), auto_trim=Fa
         # Pre-load intensity for first detector and representative energy
         intensities = []
         all_vals = []
-        for dp in data_packs:
-            det = list(dp['sdd_files'].keys())[0]
-            en = dp['representative_energy']
-            f_path = dp['sdd_files'][det].get(en)
-            if f_path:
-                raw = np.fromfile(f_path, dtype=np.uint32).reshape(-1, 256)
-                inten = np.sum(raw[:, channel_roi[0]:channel_roi[1]], axis=1)
-                intensities.append(inten)
-                all_vals.extend(inten)
-            else:
-                intensities.append(np.zeros_like(dp['x']))
+        for i, dp in enumerate(data_packs):
+            loaded_inten = None
+            h5_f = files_to_trim[i]
+            
+            # Try 1: Load from SDD raw binary file
+            det = list(dp['sdd_files'].keys())[0] if (dp.get('sdd_files') and len(dp['sdd_files']) > 0) else None
+            en = dp.get('representative_energy')
+            f_path = None
+            if det and det in dp['sdd_files']:
+                sdd_dict = dp['sdd_files'][det]
+                if en in sdd_dict:
+                    f_path = sdd_dict[en]
+                elif len(sdd_dict) > 0:
+                    valid_keys = [k for k in sdd_dict.keys() if isinstance(k, (int, float))]
+                    if valid_keys and en is not None:
+                        closest_k = min(valid_keys, key=lambda k: abs(k - en))
+                        f_path = sdd_dict[closest_k]
+                    else:
+                        f_path = list(sdd_dict.values())[0]
+
+            if f_path and os.path.exists(f_path):
+                try:
+                    raw = np.fromfile(f_path, dtype=np.uint32).reshape(-1, 256)
+                    loaded_inten = np.sum(raw[:, channel_roi[0]:channel_roi[1]], axis=1)
+                except Exception as e:
+                    print(f"  [Notice] Could not load raw SDD for Image {i+1}: {e}")
+
+            # Try 2: Load directly from HDF5 if raw binary was not found or failed
+            if loaded_inten is None and os.path.exists(h5_f):
+                try:
+                    with h5py.File(h5_f, 'r') as hf:
+                        for ds_candidate in ['entry/measurement/sdd1', 'entry/measurement/average', 'measurement/sdd1', 'measurement/average', 'map_data']:
+                            if ds_candidate in hf:
+                                ds = hf[ds_candidate]
+                                if ds.ndim == 3:
+                                    loaded_inten = np.mean(ds[()], axis=-1).flatten()
+                                    break
+                                elif ds.ndim == 2:
+                                    loaded_inten = ds[()].flatten()
+                                    break
+                                elif ds.ndim == 1:
+                                    loaded_inten = ds[()]
+                                    break
+                except Exception:
+                    pass
+
+            # Try 3: Coordinate fallback so spatial layout and trims are always visualizable
+            n_pts = len(dp.get('x', []))
+            if loaded_inten is None or len(loaded_inten) != n_pts:
+                if n_pts > 0:
+                    x_span = max(float(np.max(dp['x']) - np.min(dp['x'])), 1e-4)
+                    y_span = max(float(np.max(dp['y']) - np.min(dp['y'])), 1e-4)
+                    x_norm = (dp['x'] - np.min(dp['x'])) / x_span
+                    y_norm = (dp['y'] - np.min(dp['y'])) / y_span
+                    loaded_inten = 100.0 * (x_norm + y_norm) + 10.0 * (i + 1)
+                else:
+                    loaded_inten = np.zeros(n_pts, dtype=float)
+
+            intensities.append(loaded_inten)
+            all_vals.extend(loaded_inten)
 
         # Determine global data range for contrast
         if all_vals:
@@ -541,10 +590,12 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50), auto_trim=Fa
             description='Contrast %:', layout=widgets.Layout(width='80%')
         )
 
+        btn_back = widgets.Button(description="📂 Back to Selection", button_style='', icon='arrow-left', layout=widgets.Layout(width='170px'))
         btn_zero_trims = widgets.Button(description="Zero All Trims (No Trim)", button_style='info', icon='undo', layout=widgets.Layout(width='190px'))
         btn_auto_trims = widgets.Button(description="Auto-Calculate Overlaps", button_style='primary', icon='magic', layout=widgets.Layout(width='190px'))
         btn_flush_trims = widgets.Button(description="Align Flush Bounds (Crop)", button_style='warning', icon='crop', layout=widgets.Layout(width='200px'))
-        stitch_btn = widgets.Button(description="Bake Stitched Image", button_style='success', layout=widgets.Layout(width='200px'))
+        btn_redraw = widgets.Button(description="🔄 Redraw Preview", button_style='', icon='refresh', layout=widgets.Layout(width='150px'))
+        stitch_btn = widgets.Button(description="Bake Stitched Image", button_style='success', layout=widgets.Layout(width='180px'))
         output = widgets.Output()
         
         fig_id = f"stitch_trim_{id(files_to_trim)}"
@@ -555,19 +606,15 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50), auto_trim=Fa
                 return
             with output:
                 output.clear_output(wait=True)
-                if not plt.fignum_exists(fig_id):
-                    fig, ax = plt.subplots(1, 1, figsize=(7.0, 5.6), num=fig_id)
-                else:
-                    fig = plt.figure(fig_id)
-                    ax = fig.gca()
-                    ax.clear()
+                fig, ax = plt.subplots(1, 1, figsize=(6.5, 5.0))
 
                 # Calculate contrast limits based on percentiles
                 p_low, p_high = contrast_slider.value
-                flat_intensities = np.concatenate(intensities)
+                flat_intensities = np.concatenate(intensities) if intensities else np.array([0, 1])
                 vmin = np.percentile(flat_intensities, p_low)
                 vmax = np.percentile(flat_intensities, p_high)
-                if vmin == vmax: vmax = vmin + 1
+                if vmin == vmax:
+                    vmax = vmin + 1.0
 
                 colors = ['#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4', '#46f0f0', '#f032e6', '#bcf60c', '#fabebe']
                 active_mode = trim_mode_toggle.value
@@ -577,7 +624,6 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50), auto_trim=Fa
                 ]
                 
                 mode_label = "OVERLAP-ONLY (2D Intersection)" if active_mode == 'overlap_only' else "FULL EDGE (Rectangular)"
-                print(f"--- LIVE TRIMMING & STITCHING STATUS [Mode: {mode_label}] ---")
                 for i in range(num_maps):
                     lbl = labels[i] if i < len(labels) else f"Image {i+1}"
                     dp = data_packs[i]
@@ -598,17 +644,16 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50), auto_trim=Fa
                     num_kept = len(tx)
                     num_total = len(orig_x)
                     num_trimmed = num_total - num_kept
-                    
-                    print(f"  [{lbl}] Trims: Left={L:.3f}mm, Right={R:.3f}mm, Top={T:.3f}mm, Bottom={B:.3f}mm | Kept {num_kept}/{num_total} pts ({num_trimmed} trimmed)")
 
                     col = colors[i % len(colors)]
                     
                     # 1. Draw Original Boundary (faint grey dotted box)
-                    ox_min, ox_max = np.min(orig_x), np.max(orig_x)
-                    oy_min, oy_max = np.min(orig_y), np.max(orig_y)
-                    ax.plot([ox_min, ox_max, ox_max, ox_min, ox_min],
-                            [oy_min, oy_min, oy_max, oy_max, oy_min],
-                            color='gray', lw=1.2, ls=':', alpha=0.6)
+                    if num_total > 0:
+                        ox_min, ox_max = np.min(orig_x), np.max(orig_x)
+                        oy_min, oy_max = np.min(orig_y), np.max(orig_y)
+                        ax.plot([ox_min, ox_max, ox_max, ox_min, ox_min],
+                                [oy_min, oy_min, oy_max, oy_max, oy_min],
+                                color='gray', lw=1.2, ls=':', alpha=0.6)
 
                     # 2. Draw Trimmed Out Points (Subtle red x markers)
                     if num_trimmed > 0:
@@ -619,8 +664,29 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50), auto_trim=Fa
 
                     # 3. Draw Kept Data Area and Active Trimmed Boundary Box
                     if num_kept > 0:
-                        ax.tripcolor(tx, ty, intensities[i][ti_idx], shading='gouraud', 
-                                     edgecolors='none', vmin=vmin, vmax=vmax, cmap='viridis', alpha=0.85)
+                        kept_inten = intensities[i][ti_idx]
+                        triang_drawn = False
+                        try:
+                            triang = get_masked_triangulation(tx, ty)
+                            if triang is not None:
+                                ax.tripcolor(triang, kept_inten, shading='gouraud', 
+                                             edgecolors='none', vmin=vmin, vmax=vmax, cmap='viridis', alpha=0.85)
+                                triang_drawn = True
+                        except Exception:
+                            pass
+                        
+                        if not triang_drawn:
+                            try:
+                                ax.tripcolor(tx, ty, kept_inten, shading='gouraud', 
+                                             edgecolors='none', vmin=vmin, vmax=vmax, cmap='viridis', alpha=0.85)
+                                triang_drawn = True
+                            except Exception:
+                                pass
+                                
+                        if not triang_drawn:
+                            # Robust fallback to scatter plot
+                            ax.scatter(tx, ty, c=kept_inten, s=12, vmin=vmin, vmax=vmax,
+                                       cmap='viridis', marker='s', edgecolors='none', alpha=0.85)
                         
                         # Draw prominent active boundary box
                         kx_min, kx_max = np.min(tx), np.max(tx)
@@ -632,15 +698,41 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50), auto_trim=Fa
                         # Text label for image
                         ax.text((kx_min + kx_max) / 2.0, (ky_min + ky_max) / 2.0, lbl, 
                                 color=col, fontsize=9, fontweight='bold', ha='center', va='center',
-                                bbox=dict(boxstyle="round,pad=0.2", facecolor='white', alpha=0.7, edgecolor=col))
+                                bbox=dict(boxstyle="round,pad=0.2", facecolor='white', alpha=0.75, edgecolor=col))
 
                 ax.set_aspect('equal')
-                ax.set_title(f"Stitching Preview [{mode_label}] (Contrast: {p_low}% - {p_high}%)")
-                ax.set_xlabel("X (mm)")
-                ax.set_ylabel("Y (mm)")
+                ax.set_title(f"Stitching Preview [{mode_label}] (Contrast: {p_low}% - {p_high}%)", fontsize=10, fontweight='bold')
+                ax.set_xlabel("X (mm)", fontsize=9)
+                ax.set_ylabel("Y (mm)", fontsize=9)
                 ax.legend(loc='upper right', fontsize=8)
+
+                # Add colorbar
+                sm = plt.cm.ScalarMappable(cmap='viridis', norm=plt.Normalize(vmin=vmin, vmax=vmax))
+                sm.set_array([])
+                cbar = plt.colorbar(sm, ax=ax, fraction=0.046, pad=0.04)
+                cbar.set_label('Counts (ROI)', fontsize=8)
+
                 plt.tight_layout()
-                fig.canvas.draw_idle()
+                plt.show()
+                plt.close(fig)
+
+                # Summary status printed cleanly below the plot
+                print(f"--- LIVE TRIMMING & STITCHING STATUS [Mode: {mode_label}] ---")
+                for i in range(num_maps):
+                    lbl = labels[i] if i < len(labels) else f"Image {i+1}"
+                    s = sliders[i]
+                    L, R, T, B = s['L'].value, s['R'].value, s['T'].value, s['B'].value
+                    dp = data_packs[i]
+                    orig_x, orig_y = dp['x'], dp['y']
+                    all_idx = np.arange(len(orig_x))
+                    if active_mode == 'overlap_only':
+                        tx, ty, ti_idx = apply_overlap_only_trim(i, data_packs, current_trims)
+                    else:
+                        tx, ty, ti_idx = apply_asymmetric_trim(orig_x, orig_y, all_idx, left=L, right=R, top=T, bottom=B)
+                    num_kept = len(tx)
+                    num_total = len(orig_x)
+                    num_trimmed = num_total - num_kept
+                    print(f"  [{lbl}] Trims: Left={L:.3f}mm, Right={R:.3f}mm, Top={T:.3f}mm, Bottom={B:.3f}mm | Kept {num_kept}/{num_total} pts ({num_trimmed} trimmed)")
 
         # Link all sliders and mode toggle to update_plot
         for s_set in sliders:
@@ -746,7 +838,18 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50), auto_trim=Fa
             "• Click <b>'Bake Stitched Image'</b> when ready to generate the stitched dataset."
             "</div>"
         )
-        action_box = widgets.HBox([btn_zero_trims, btn_auto_trims, btn_flush_trims, stitch_btn])
+        buttons_list = []
+        if h5_files is None:
+            def on_back_clicked(b):
+                btn_proceed.disabled = False
+                btn_proceed.description = f"🚀 Proceed to Trimming ({len(selected_files)} files)"
+                container.children = [explorer_ui]
+            btn_back.on_click(on_back_clicked)
+            buttons_list.append(btn_back)
+            
+        btn_redraw.on_click(lambda b: update_plot())
+        buttons_list.extend([btn_zero_trims, btn_auto_trims, btn_flush_trims, btn_redraw, stitch_btn])
+        action_box = widgets.HBox(buttons_list)
         trim_view = widgets.VBox([notice_label, trim_mode_toggle, tab_widget, widgets.Label("Global Contrast Control:"), contrast_slider, action_box, output])
         container.children = [trim_view]
         update_plot()
