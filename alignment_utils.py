@@ -590,7 +590,8 @@ def safe_filedialog_call(func, *args, **kwargs):
                 # Check for existing file to prevent accidental overwrite
                 if os.path.exists(chosen_path):
                     try:
-                        ow_ans = input(f"  File '{os.path.basename(chosen_path)}' already exists. Overwrite? [y/N (N=auto-increment)]: ").strip().lower()
+                        print(f"  File '{os.path.basename(chosen_path)}' already exists.")
+                        ow_ans = input("  Overwrite? [y/N (N=auto-increment)]: ").strip().lower()
                         if ow_ans in ('y', 'yes'):
                             console_log(f"  [OVERWRITE] User confirmed overwrite of: {chosen_path}")
                             return chosen_path

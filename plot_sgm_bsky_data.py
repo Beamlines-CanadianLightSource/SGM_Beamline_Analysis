@@ -4177,11 +4177,10 @@ def configure_and_preview_i0_headless(x_sorted, y_sorted, label_name="Au Mesh I0
     initial_action = None
     while True:
         try:
-            mod_prompt = (
-                f"\nConfigure {label_name} (Smoothing, Constant, OD{', Shift' if allow_energy_shift else ''})? "
-                f"[y/N/p (p=preview raw, s=smoothing)]: "
-            )
-            mod_ans = input(mod_prompt).strip().lower()
+            print(f"\n--- Configure {label_name} ---")
+            print(f"Configure {label_name} (Smoothing, Constant, OD{', Shift' if allow_energy_shift else ''})?")
+            print(f"  Options: [y] Yes/configure | [N] No (use raw) | [p] Preview raw | [s] Smoothing")
+            mod_ans = input("Choice [y/N/p/s, default: N]: ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             mod_ans = 'n'
 
@@ -4244,7 +4243,7 @@ def configure_and_preview_i0_headless(x_sorted, y_sorted, label_name="Au Mesh I0
             print(f"  Commands: [s] Smoothing | [c] Constant | [d] Optical Density{shift_opt} | [p] Re-plot | [r] Reset | [Enter/y] Accept | [q] Cancel")
 
             try:
-                cmd = input("Select an option [default: Accept]: ").strip().lower()
+                cmd = input("Command [s/c/d/p/r/y/q, default: Accept]: ").strip().lower()
             except (EOFError, KeyboardInterrupt):
                 cmd = 'y'
 
@@ -4281,13 +4280,16 @@ def configure_and_preview_i0_headless(x_sorted, y_sorted, label_name="Au Mesh I0
 
         elif cmd in ('s', 'smooth', 'smoothing'):
             cur = f"ON (w={smooth_window})" if do_smooth else "OFF"
-            ans = input(f"  Configure Smoothing (currently {cur})? [y=turn ON/change, n=turn OFF]: ").strip().lower()
+            print(f"\n  Configure Smoothing (currently {cur})")
+            print("  Options: [y] Turn ON/change | [n] Turn OFF")
+            ans = input("  Choice [y/n]: ").strip().lower()
             if ans in ('n', 'no', 'off'):
                 do_smooth = False
                 print("    ✓ Smoothing turned OFF")
             else:
                 do_smooth = True
-                w_in = input(f"    Window length (odd integer >= 3, default {smooth_window}): ").strip()
+                print(f"    Window length (odd integer >= 3, default {smooth_window})")
+                w_in = input(f"    Window length [{smooth_window}]: ").strip()
                 if w_in:
                     try:
                         w = int(w_in)
@@ -4318,13 +4320,16 @@ def configure_and_preview_i0_headless(x_sorted, y_sorted, label_name="Au Mesh I0
 
         elif cmd in ('c', 'const', 'constant'):
             cur = f"{const_op} {const_val:.4g}" if (do_const and const_val != 0.0) else "OFF"
-            ans = input(f"  Modify by Constant (currently {cur})? [y=turn ON/change, n=turn OFF]: ").strip().lower()
+            print(f"\n  Modify by Constant (currently {cur})")
+            print("  Options: [y] Turn ON/change | [n] Turn OFF")
+            ans = input("  Choice [y/n]: ").strip().lower()
             if ans in ('n', 'no', 'off'):
                 do_const = False
                 const_val = 0.0
                 print("    ✓ Constant modification turned OFF")
             else:
-                op_in = input(f"    Operation: '+' (Add), '*' (Multiply), or '/' (Divide) [default '{const_op}']: ").strip()
+                print(f"    Operation: '+' (Add), '*' (Multiply), or '/' (Divide) [default '{const_op}']")
+                op_in = input("    Operation [+, *, /]: ").strip()
                 if op_in in ('+', '*', '/'):
                     const_op = "Multiply" if op_in == '*' else ("Divide" if op_in == '/' else "Add")
                 val_in = input("    Constant value (e.g. 100, 1.25): ").strip()
@@ -4359,19 +4364,21 @@ def configure_and_preview_i0_headless(x_sorted, y_sorted, label_name="Au Mesh I0
                 print("  ! sf.py module or Henke database not found; Optical Density unavailable.")
             else:
                 cur = f"{od_comp}" if do_od else "OFF"
-                ans = input(f"  Divide by Optical Density (currently {cur})? [y=turn ON/change, n=turn OFF]: ").strip().lower()
+                print(f"\n  Divide by Optical Density (currently {cur})")
+                print("  Options: [y] Turn ON/change | [n] Turn OFF")
+                ans = input("  Choice [y/n]: ").strip().lower()
                 if ans in ('n', 'no', 'off'):
                     do_od = False
                     print("    ✓ OD division turned OFF")
                 else:
                     do_od = True
-                    comp_in = input(f"    Compound formula [default '{od_comp}']: ").strip()
+                    comp_in = input(f"    Compound formula [{od_comp}]: ").strip()
                     if comp_in: od_comp = comp_in
-                    d_in = input(f"    Density (g/cm3) [default {od_dens}]: ").strip()
+                    d_in = input(f"    Density (g/cm3) [{od_dens}]: ").strip()
                     if d_in:
                         try: od_dens = float(d_in)
                         except: pass
-                    t_in = input(f"    Thickness (microns) [default {od_thick}]: ").strip()
+                    t_in = input(f"    Thickness (microns) [{od_thick}]: ").strip()
                     if t_in:
                         try: od_thick = float(t_in)
                         except: pass
@@ -4399,13 +4406,15 @@ def configure_and_preview_i0_headless(x_sorted, y_sorted, label_name="Au Mesh I0
 
         elif cmd in ('e', 'shift') and allow_energy_shift:
             cur = f"{shift_val:+.2f} eV" if (do_shift and shift_val != 0.0) else "OFF"
-            ans = input(f"  Apply Energy Shift (currently {cur})? [y=turn ON/change, n=turn OFF]: ").strip().lower()
+            print(f"\n  Apply Energy Shift (currently {cur})")
+            print("  Options: [y] Turn ON/change | [n] Turn OFF")
+            ans = input("  Choice [y/n]: ").strip().lower()
             if ans in ('n', 'no', 'off'):
                 do_shift = False
                 shift_val = 0.0
                 print("    ✓ Energy shift turned OFF")
             else:
-                s_in = input("    Energy shift in eV (e.g. +0.5, -1.2) [default 0.0]: ").strip()
+                s_in = input("    Energy shift in eV (e.g. +0.5, -1.2) [0.0]: ").strip()
                 if s_in:
                     try:
                         shift_val = float(s_in)
@@ -4422,8 +4431,7 @@ def configure_and_preview_i0_headless(x_sorted, y_sorted, label_name="Au Mesh I0
                 do_shift, shift_val,
                 do_od, od_comp, od_dens, od_thick, od_autoscale
             )
-            sh_str = f"{shift_val:+.2f} eV" if do_shift else "OFF"
-            console_log(f"\n--- [I0 PREVIEW] Modified {label_name} (Shift: {sh_str}) ---")
+            console_log(f"\n--- [I0 PREVIEW] Modified {label_name} (Shift: {shift_val:+.2f} eV) ---")
             render_i0_preview(
                 x_sorted, y_sorted, y_proc,
                 label_name=label_name,
@@ -4738,7 +4746,10 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
         # If running headless (HPC / JupyterHub), prompt interactively in the notebook console
         if not HAS_GUI:
             try:
-                ans = input("Use INTERNAL Au Mesh I0 (mcc1) for I0 normalization? [Y/n] (type 'n' to browse for an External I0 CSV): ").strip().lower()
+                print("\n--- I0 Normalization Selection ---")
+                print("Use INTERNAL Au Mesh I0 (mcc1) for I0 normalization?")
+                print("  Options: [Y] Internal Au Mesh I0 (mcc1) | [n] External I0 CSV")
+                ans = input("Choice [Y/n, default: Y]: ").strip().lower()
                 use_internal = not (ans == 'n' or ans == 'no')
             except (EOFError, KeyboardInterrupt):
                 use_internal = True
@@ -4758,7 +4769,8 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
             if not HAS_GUI:
                 # Offer option to navigate Loki folders or type a path
                 print("\n[External I0 Selection]")
-                mode_ans = input("Enter 'b' to Browse Loki folders interactively, or press Enter to type/paste a path: ").strip().lower()
+                print("Options: [b] Browse Loki folders interactively | [Enter] Type/paste path")
+                mode_ans = input("Choice [b/Enter]: ").strip().lower()
                 if mode_ans in ('b', 'browse'):
                     selected_holder = {'path': None}
                     def on_i0_selected(p):
@@ -4771,7 +4783,8 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                         title="Select External I0 CSV from Loki",
                         on_load=on_i0_selected
                     )
-                    input("👉 Use the file browser widget above to navigate to your CSV, select it, click 'Select File', then press ENTER here to continue: ")
+                    print("\n👉 Use the file browser widget above to navigate to your CSV, select it, click 'Select File', then press ENTER below:")
+                    input("Press ENTER when done: ")
                     ext_path = selected_holder['path']
 
             if not ext_path:
