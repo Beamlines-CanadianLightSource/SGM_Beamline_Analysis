@@ -7,7 +7,7 @@ import io
 import matplotlib.pyplot as plt
 import ipywidgets as widgets
 from IPython.display import display
-from analyze_sgm_bsky_data import analyze_sgm_bsky_data, get_last_dir, save_last_dir
+from analyze_sgm_bsky_data import analyze_sgm_bsky_data, get_last_dir, save_last_dir, resolve_preprocessed_save_dir
 from save_pymca_stack_h5 import get_user_file_action
 from alignment_utils import HAS_GUI, get_masked_triangulation
 
@@ -476,6 +476,27 @@ def interactive_stitching_trim(h5_files=None, channel_roi=None, auto_trim=False,
         data_packs = [analyze_sgm_bsky_data(f, verbose=False) for f in files_to_trim]
         num_maps = len(data_packs)
         
+        # Determine target preprocessed output directory for baking
+        target_preprocessed_dir = None
+        if files_to_trim and os.path.isfile(files_to_trim[0]):
+            first_file = os.path.abspath(files_to_trim[0])
+            h5_dir = os.path.dirname(first_file)
+            file_base = os.path.splitext(os.path.basename(first_file))[0]
+            if os.path.basename(h5_dir) == file_base:
+                parent_dir = os.path.dirname(h5_dir)
+            else:
+                parent_dir = h5_dir
+            try:
+                target_preprocessed_dir = resolve_preprocessed_save_dir(parent_dir)
+            except Exception:
+                target_preprocessed_dir = parent_dir
+        elif data_packs and data_packs[0].get('save_dir') and data_packs[0]['save_dir'] != 'N/A':
+            save_d = data_packs[0]['save_dir']
+            if files_to_trim and os.path.basename(save_d) == os.path.splitext(os.path.basename(files_to_trim[0]))[0]:
+                target_preprocessed_dir = os.path.dirname(save_d)
+            else:
+                target_preprocessed_dir = save_d
+        
         # Calculate zero-overlap trims for reference / on-demand button
         calculated_auto_trims = calculate_initial_zero_overlap_trims(data_packs)
         
@@ -815,8 +836,15 @@ def interactive_stitching_trim(h5_files=None, channel_roi=None, auto_trim=False,
             with bake_status:
                 bake_status.clear_output()
                 print(f"\n[PROCESS STARTED] Baking Stitched Image (Mode: {trim_mode_toggle.value})... Please wait.")
+                if target_preprocessed_dir:
+                    print(f"  -> Target Save Directory (Preprocessed): {target_preprocessed_dir}")
                 try:
-                    stitch_quadrant_maps(files_to_trim, trims=final_trims, trim_mode=trim_mode_toggle.value)
+                    stitch_quadrant_maps(
+                        files_to_trim, 
+                        output_dir=target_preprocessed_dir, 
+                        trims=final_trims, 
+                        trim_mode=trim_mode_toggle.value
+                    )
                 finally:
                     stitch_btn.description = "Bake Stitched Image"
                     stitch_btn.button_style = 'success'
@@ -837,6 +865,7 @@ def interactive_stitching_trim(h5_files=None, channel_roi=None, auto_trim=False,
             label = labels[i] if i < len(labels) else f"Image {i+1}"
             tab_widget.set_title(i, f"{label} Trims")
             
+        save_dir_info = f"<br>• <b>Output Directory (Preprocessed):</b> <code>{target_preprocessed_dir}</code>" if target_preprocessed_dir else ""
         notice_label = widgets.HTML(
             "<div style='background-color: #e8f4f8; padding: 8px 12px; border-left: 4px solid #0056b3; margin-bottom: 8px;'>"
             "<b style='color:#004085;'>Interactive Trimming & Stitching:</b> Adjust trim values manually in each tab below.<br>"
@@ -845,6 +874,7 @@ def interactive_stitching_trim(h5_files=None, channel_roi=None, auto_trim=False,
             "• Click <b>'Auto-Calculate Overlaps'</b> to compute zero-overlap cutoffs between adjacent tiles (supports staggered tiles).<br>"
             "• Click <b>'Align Flush Bounds (Crop)'</b> to also crop protruding top/bottom or left/right edges so staggered rows/columns align flush.<br>"
             "• Click <b>'Bake Stitched Image'</b> when ready to generate the stitched dataset."
+            f"{save_dir_info}"
             "</div>"
         )
         buttons_list = []
@@ -1087,7 +1117,21 @@ def stitch_quadrant_maps(h5_files=None, output_dir=None, trims=None, trim_mode='
         print("No files selected. Aborting.")
         return None
         
-    default_out = os.path.dirname(h5_files[0]) if h5_files and os.path.isfile(h5_files[0]) else os.getcwd()
+    if h5_files and os.path.isfile(h5_files[0]):
+        first_file = os.path.abspath(h5_files[0])
+        h5_dir = os.path.dirname(first_file)
+        file_base = os.path.splitext(os.path.basename(first_file))[0]
+        if os.path.basename(h5_dir) == file_base:
+            parent_dir = os.path.dirname(h5_dir)
+        else:
+            parent_dir = h5_dir
+        try:
+            default_out = resolve_preprocessed_save_dir(parent_dir)
+        except Exception:
+            default_out = parent_dir
+    else:
+        default_out = os.getcwd()
+
     if output_dir is None:
         if not HAS_GUI:
             try:
@@ -1107,12 +1151,21 @@ def stitch_quadrant_maps(h5_files=None, output_dir=None, trims=None, trim_mode='
         if not output_dir:
             output_dir = default_out
         
+    # Always ensure output_dir is redirected away from read-only 'raw' directories into 'preprocessed'
+    try:
+        output_dir = resolve_preprocessed_save_dir(output_dir)
+    except Exception:
+        pass
+
     if not output_dir:
         print("No output directory selected. Aborting.")
         return None
 
     if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
+        os.makedirs(output_dir, exist_ok=True)
+        
+    if verbose:
+        print(f"[OUTPUT REDIRECTION] Stitched dataset saving to: {output_dir}")
         
     data_packs = []
     for f in h5_files:
@@ -1299,7 +1352,7 @@ def stitch_quadrant_maps(h5_files=None, output_dir=None, trims=None, trim_mode='
                 pass
 
     if not os.path.exists(master_folder_path):
-        os.makedirs(master_folder_path)
+        os.makedirs(master_folder_path, exist_ok=True)
     
     with h5py.File(new_h5_path, 'w') as f_out:
         with h5py.File(h5_files[0], 'r') as f_in:
@@ -1386,7 +1439,7 @@ def stitch_quadrant_maps(h5_files=None, output_dir=None, trims=None, trim_mode='
             energy_subdir = f"Stitched_{stitched_tag}_{energy_str}eV"
             energy_path = os.path.join(master_folder_path, energy_subdir)
             if not os.path.exists(energy_path):
-                os.makedirs(energy_path)
+                os.makedirs(energy_path, exist_ok=True)
             
         for det in common_detectors:
             stitched_data = []
