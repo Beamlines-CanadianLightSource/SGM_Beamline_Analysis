@@ -6,7 +6,7 @@ import re
 import matplotlib.pyplot as plt
 import ipywidgets as widgets
 from IPython.display import display
-from analyze_sgm_bsky_data import analyze_sgm_bsky_data
+from analyze_sgm_bsky_data import analyze_sgm_bsky_data, get_last_dir, save_last_dir
 from save_pymca_stack_h5 import get_user_file_action
 from alignment_utils import HAS_GUI
 
@@ -161,41 +161,223 @@ def apply_overlap_only_trim(i, data_packs, trims):
     keep_mask = ~remove_mask
     return x[keep_mask], y[keep_mask], data_indices[keep_mask]
 
-def browse_for_quadrant_files(num_files=None):
+def browse_for_quadrant_files(num_files=None, start_dir=None):
     """
-    Opens file dialogs to select HDF5 files one by one.
-    This allows files to be in different folders.
+    Selects multiple HDF5 files for quadrant stitching.
+    Supports interactive Loki Beamline Data Explorer navigation in Jupyter / HPC,
+    and fallback to GUI dialogs or console input.
     """
-    if not HAS_GUI:
-        print("[Headless Mode] GUI file dialog is unavailable.")
-        if num_files is None:
+    try:
+        from IPython import get_ipython
+        in_jupyter = get_ipython() is not None
+    except ImportError:
+        in_jupyter = False
+
+    # In Jupyter or Headless mode (HPC / JupyterHub), launch the interactive CLS Beamline Data Explorer
+    if in_jupyter or not HAS_GUI:
+        candidates = [
+            start_dir,
+            get_last_dir() if 'get_last_dir' in globals() else None,
+            "/gpfs/Primary/beamlinedata/sgm",
+            "/gpfs/Primary/beamlinedata/SGM",
+            "/gpfs/Primary/beamlinedata",
+            "/gpfs/Primary",
+            "/projects",
+            os.path.expanduser("~/scratch"),
+            os.getcwd()
+        ]
+        base_dir = next((p for p in candidates if p and os.path.isdir(p)), os.getcwd())
+
+        selected_files = []
+        path_box = widgets.Text(value=base_dir, description="Folder:", layout=widgets.Layout(width="600px"))
+        btn_up = widgets.Button(description="Up ⬆", layout=widgets.Layout(width="80px"))
+        sort_dropdown = widgets.Dropdown(
+            options=[("Most Recent Projects First", "project_desc"), ("Alphabetical (A-Z)", "name_asc"), ("Reverse (Z-A)", "name_desc")],
+            value="project_desc",
+            description="Sort by:",
+            layout=widgets.Layout(width="380px")
+        )
+        folder_select = widgets.Select(description="Subfolders:", rows=7, layout=widgets.Layout(width="600px"))
+        file_select = widgets.Select(description="Files (.h5):", rows=6, layout=widgets.Layout(width="600px"))
+        btn_open = widgets.Button(description="Open Selected Folder", button_style="info", layout=widgets.Layout(width="180px"))
+        btn_add = widgets.Button(description="➕ Add File to Quadrants", button_style="success", icon="plus", layout=widgets.Layout(width="230px"))
+        btn_remove = widgets.Button(description="➖ Remove Last", button_style="warning", icon="minus", layout=widgets.Layout(width="130px"))
+        btn_clear = widgets.Button(description="🔄 Clear All", button_style="", layout=widgets.Layout(width="100px"))
+        
+        queue_box = widgets.HTML(value="<i>No quadrant files added yet.</i>")
+        status_msg = widgets.HTML(value=f"Current path: <code>{base_dir}</code>")
+
+        def refresh_view():
+            current = path_box.value.strip()
+            if not os.path.isdir(current):
+                folder_select.options = [("Directory not found", "")]
+                file_select.options = []
+                return
             try:
-                val = input("Enter number of images to stitch [4]: ").strip()
-                num_files = int(val) if val else 4
-            except (EOFError, ValueError):
-                num_files = 4
-        files = []
-        for i in range(num_files):
-            try:
-                p = input(f"Enter path for Image {i+1} HDF5 file (or Enter to finish): ").strip()
-                if not p:
-                    break
-                p = p.strip('\"\'')
-                if os.path.exists(p):
-                    files.append(p)
-                    print(f"  -> Added: {os.path.basename(p)}")
+                with os.scandir(current) as it:
+                    raw_entries = list(it)
+
+                dir_entries = [e for e in raw_entries if e.is_dir() and not e.name.startswith('.')]
+                file_entries = [e for e in raw_entries if e.is_file() and e.name.lower().endswith('.h5')]
+
+                sort_mode = sort_dropdown.value
+                def natural_project_key(entry):
+                    s = entry.name.strip()
+                    m = re.match(r'^(prj)?(\d+)([a-zA-Z]?)(\d+)?(.*)$', s, re.IGNORECASE)
+                    if m:
+                        has_prj = 1 if m.group(1) else 0
+                        cycle = int(m.group(2))
+                        sub_num = int(m.group(4)) if m.group(4) else 0
+                        letter = (m.group(3) or '').lower()
+                        rest = (m.group(5) or '').lower()
+                        return (1, has_prj, cycle, sub_num, letter, rest)
+                    parts = re.split(r'(\d+)', s.lower())
+                    parsed = [int(p) if p.isdigit() else p for p in parts]
+                    return (0, 0, 0, 0, '', parsed)
+
+                if sort_mode == "project_desc":
+                    dirs = [e.name for e in sorted(dir_entries, key=natural_project_key, reverse=True)]
+                    matched_files = [e.name for e in sorted(file_entries, key=natural_project_key, reverse=True)]
+                elif sort_mode == "name_desc":
+                    dirs = [e.name for e in sorted(dir_entries, key=lambda e: e.name.lower(), reverse=True)]
+                    matched_files = [e.name for e in sorted(file_entries, key=lambda e: e.name.lower(), reverse=True)]
                 else:
-                    print(f"  -> File not found: {p}")
-            except (EOFError, KeyboardInterrupt):
-                break
-        return files
+                    dirs = [e.name for e in sorted(dir_entries, key=lambda e: e.name.lower())]
+                    matched_files = [e.name for e in sorted(file_entries, key=lambda e: e.name.lower())]
+
+                folder_select.options = dirs if dirs else ["(No subfolders)"]
+                file_select.options = matched_files if matched_files else ["(No .h5 files in this folder)"]
+                status_msg.value = f"Current path: <code>{current}</code>"
+                try:
+                    save_last_dir(current)
+                except Exception:
+                    pass
+            except Exception as e:
+                status_msg.value = f"<b style='color:red;'>Error reading folder: {e}</b>"
+
+        def update_queue():
+            if not selected_files:
+                queue_box.value = (
+                    "<div style='background-color:#f8f9fa; border:1px solid #ddd; border-radius:4px; padding:6px 10px; margin-top:6px;'>"
+                    "<b>Quadrant Stitching Queue (0 files):</b> <i>(No files added yet. Select a file above and click '➕ Add File to Quadrants')</i>"
+                    "</div>"
+                )
+            else:
+                items = "".join([f"<li><b>Image {i+1}:</b> <code>{os.path.basename(f)}</code> <span style='color:#777; font-size:0.85em;'>({os.path.dirname(f)})</span></li>" for i, f in enumerate(selected_files)])
+                queue_box.value = (
+                    f"<div style='background-color:#e8f4f8; border:1px solid #b8daff; border-radius:4px; padding:8px 12px; margin-top:6px;'>"
+                    f"<b style='color:#004085;'>Quadrant Stitching Queue ({len(selected_files)} files selected):</b>"
+                    f"<ol style='margin:4px 0 2px 20px; padding:0;'>{items}</ol>"
+                    f"</div>"
+                )
+
+        def on_open_clicked(b):
+            chosen = folder_select.value
+            if chosen and chosen != "(No subfolders)":
+                new_path = os.path.join(path_box.value.strip(), chosen)
+                if os.path.isdir(new_path):
+                    path_box.value = new_path
+                    refresh_view()
+
+        def on_up_clicked(b):
+            parent = os.path.dirname(path_box.value.strip().rstrip('/\\'))
+            if parent and os.path.isdir(parent):
+                path_box.value = parent
+                refresh_view()
+
+        def on_add_clicked(b):
+            chosen = file_select.value
+            if chosen and chosen.lower().endswith('.h5'):
+                full_path = os.path.join(path_box.value.strip(), chosen)
+                selected_files.append(full_path)
+                update_queue()
+                status_msg.value = f"<b style='color:green;'>✓ Added Image {len(selected_files)}:</b> {chosen}"
+            else:
+                status_msg.value = "<b style='color:red;'>Please select a valid .h5 file from the list above</b>"
+
+        def on_remove_clicked(b):
+            if selected_files:
+                removed = selected_files.pop()
+                update_queue()
+                status_msg.value = f"Removed: {os.path.basename(removed)}"
+
+        def on_clear_clicked(b):
+            selected_files.clear()
+            update_queue()
+            status_msg.value = "Quadrant list cleared."
+
+        btn_open.on_click(on_open_clicked)
+        btn_up.on_click(on_up_clicked)
+        btn_add.on_click(on_add_clicked)
+        btn_remove.on_click(on_remove_clicked)
+        btn_clear.on_click(on_clear_clicked)
+        path_box.observe(lambda c: refresh_view(), names="value")
+        sort_dropdown.observe(lambda c: refresh_view(), names="value")
+
+        header_html = widgets.HTML(
+            "<div style='background-color:#e8f4f8; padding:8px 12px; border-left:4px solid #007acc; border-radius:4px; margin-bottom:6px;'>"
+            "<b style='color:#004085; font-size:1.1em;'>CLS Quadrant File Selection (Beamline Data Explorer)</b><br/>"
+            "Navigate to your Loki data folder, select each quadrant <code>.h5</code> file in order, and click <b>[➕ Add File to Quadrants]</b>.<br/>"
+            "When all quadrant files are in the queue (e.g. 2, 3, or 4 images), press <b>ENTER</b> below to proceed to trimming."
+            "</div>"
+        )
+
+        ui = widgets.VBox([
+            header_html,
+            widgets.HBox([path_box, btn_up]),
+            sort_dropdown,
+            folder_select,
+            btn_open,
+            file_select,
+            widgets.HBox([btn_add, btn_remove, btn_clear]),
+            queue_box,
+            status_msg
+        ], layout=widgets.Layout(border='1px solid #ccc', padding='10px', border_radius='6px', margin='8px 0'))
+
+        refresh_view()
+        update_queue()
+        display(ui)
+
+        print("\n👉 Select your quadrant files above, click '➕ Add File to Quadrants' for each file,")
+        print("   then press ENTER below when ready to proceed to interactive trimming:")
+        try:
+            input("Press ENTER when done selecting files: ")
+        except (EOFError, KeyboardInterrupt):
+            pass
+
+        if selected_files:
+            print(f"\n✓ Loaded {len(selected_files)} quadrant files for stitching:")
+            for idx, f in enumerate(selected_files):
+                print(f"  -> Image {idx+1}: {os.path.basename(f)}")
+            return selected_files
+        else:
+            print("[Notice] No files selected from explorer. Fallback to path entry:")
+            files = []
+            if num_files is None:
+                try:
+                    val = input("Enter number of images to stitch [4]: ").strip()
+                    num_files = int(val) if val else 4
+                except (EOFError, ValueError):
+                    num_files = 4
+            for i in range(num_files):
+                try:
+                    p = input(f"Enter path for Image {i+1} HDF5 file (or Enter to finish): ").strip()
+                    if not p: break
+                    p = p.strip('\"\'')
+                    if os.path.exists(p):
+                        files.append(p)
+                        print(f"  -> Added: {os.path.basename(p)}")
+                    else:
+                        print(f"  -> File not found: {p}")
+                except (EOFError, KeyboardInterrupt):
+                    break
+            return files
 
     import tkinter as tk
     from tkinter import filedialog
     from tkinter import simpledialog
     
     root = tk.Tk()
-    # Keep the window in the taskbar but make it invisible so the dialog can't get permanently lost
     root.attributes("-alpha", 0.0)
     root.attributes("-topmost", True)
     root.lift()
@@ -214,7 +396,7 @@ def browse_for_quadrant_files(num_files=None):
             root.destroy()
             return []
             
-    root.withdraw() # Hide completely for the file dialogs
+    root.withdraw()
     
     files = []
     labels = []
@@ -225,13 +407,18 @@ def browse_for_quadrant_files(num_files=None):
         label = labels[i] if i < len(labels) else f"Image {i+1}"
         f = filedialog.askopenfilename(
             title=f"Select {label} HDF5 File (Cancel to skip this file)",
-            filetypes=[("HDF5 files", "*.h5"), ("All files", "*.*")]
+            filetypes=[("HDF5 files", "*.h5"), ("All files", "*.*")],
+            initialdir=start_dir or (get_last_dir() if 'get_last_dir' in globals() else None)
         )
         if not f:
             print(f"  -> Skipped {label}")
             continue
         files.append(f)
         print(f"  -> Selected {label}: {os.path.basename(f)}")
+        try:
+            save_last_dir(os.path.dirname(f))
+        except Exception:
+            pass
     
     root.destroy()
     return files
@@ -416,7 +603,7 @@ def calculate_aligned_flush_trims(data_packs, base_trims=None):
     return flush_trims
 
 
-def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50), auto_trim=False, trim_mode='full_edge'):
+def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50), auto_trim=False, trim_mode='full_edge', start_dir=None):
     """
     Interactive widget to adjust trims for multiple maps before stitching.
     Includes contrast control, trim mode selection ('full_edge' vs 'overlap_only'),
@@ -425,7 +612,7 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50), auto_trim=Fa
     Parameters:
     -----------
     h5_files : list, optional
-        List of HDF5 file paths to stitch. If None, opens a file picker dialog.
+        List of HDF5 file paths to stitch. If None, opens a file picker dialog or Loki explorer.
     channel_roi : tuple, default (30, 50)
         Channel ROI to sum for live contrast preview.
     auto_trim : bool, default False
@@ -435,9 +622,11 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50), auto_trim=Fa
         'full_edge': Trims the entire edge length (straight rectangular cut).
         'overlap_only': Only trims pixels where adjacent tiles actually overlap in 2D,
                         keeping non-overlapping protruding edges on staggered tiles.
+    start_dir : str, optional
+        Initial directory for file selection.
     """
     if h5_files is None:
-        h5_files = browse_for_quadrant_files()
+        h5_files = browse_for_quadrant_files(start_dir=start_dir)
     
     if not h5_files:
         print("No files selected.")
@@ -445,14 +634,21 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50), auto_trim=Fa
 
     # Check for duplicates
     if len(h5_files) != len(set(h5_files)):
-        import tkinter as tk
-        from tkinter import messagebox
-        root = tk.Tk(); root.withdraw(); root.attributes("-topmost", True)
-        messagebox.showwarning("Duplicate Files", 
-                               "Warning: You have selected the same file for multiple quadrants.\n\n"
-                               "This may cause data overlap and visualization artifacts (like 'filling in' gaps).\n"
-                               "If you intended to skip a quadrant, please click 'Cancel' in one of the file dialogs next time.")
-        root.destroy()
+        if HAS_GUI:
+            try:
+                import tkinter as tk
+                from tkinter import messagebox
+                root = tk.Tk(); root.withdraw(); root.attributes("-topmost", True)
+                messagebox.showwarning("Duplicate Files", 
+                                       "Warning: You have selected the same file for multiple quadrants.\n\n"
+                                       "This may cause data overlap and visualization artifacts (like 'filling in' gaps).\n"
+                                       "If you intended to skip a quadrant, please click 'Cancel' in one of the file dialogs next time.")
+                root.destroy()
+            except Exception:
+                pass
+        else:
+            print("[Warning] You have selected the same file for multiple quadrants.")
+            print("          This may cause data overlap and visualization artifacts (like 'filling in' gaps).")
 
 
     data_packs = [analyze_sgm_bsky_data(f, verbose=False) for f in h5_files]
@@ -539,7 +735,7 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50), auto_trim=Fa
         with output:
             output.clear_output(wait=True)
             if not plt.fignum_exists(fig_id):
-                fig, ax = plt.subplots(1, 1, figsize=(10, 8), num=fig_id)
+                fig, ax = plt.subplots(1, 1, figsize=(7.0, 5.6), num=fig_id)
             else:
                 fig = plt.figure(fig_id)
                 ax = fig.gca()
@@ -734,33 +930,36 @@ def interactive_stitching_trim(h5_files=None, channel_roi=(30, 50), auto_trim=Fa
     display(widgets.VBox([notice_label, trim_mode_toggle, tab_widget, widgets.Label("Global Contrast Control:"), contrast_slider, action_box, output]))
     update_plot()
 
-def stitch_quadrant_maps(h5_files=None, output_dir=None, trims=None, trim_mode='full_edge', verbose=True):
+def stitch_quadrant_maps(h5_files=None, output_dir=None, trims=None, trim_mode='full_edge', verbose=True, start_dir=None):
     """
     Stitches multiple map datasets into a single unified dataset.
     """
     if h5_files is None:
-        h5_files = browse_for_quadrant_files()
+        h5_files = browse_for_quadrant_files(start_dir=start_dir)
         
     if not h5_files:
         print("No files selected. Aborting.")
         return None
         
+    default_out = os.path.dirname(h5_files[0]) if h5_files and os.path.isfile(h5_files[0]) else os.getcwd()
     if output_dir is None:
         if not HAS_GUI:
             try:
-                val = input("Enter output directory for Stitched Map [current working directory]: ").strip().strip('\"\'')
-                output_dir = val if val else os.getcwd()
+                val = input(f"Enter output directory for Stitched Map [{default_out}]: ").strip().strip('\"\'')
+                output_dir = val if val else default_out
             except (EOFError, KeyboardInterrupt):
-                output_dir = os.getcwd()
+                output_dir = default_out
         else:
             try:
                 import tkinter as tk
                 from tkinter import filedialog
                 root = tk.Tk(); root.withdraw(); root.attributes("-topmost", True)
-                output_dir = filedialog.askdirectory(title="Select Output Directory for Stitched Map")
+                output_dir = filedialog.askdirectory(title="Select Output Directory for Stitched Map", initialdir=default_out)
                 root.destroy()
             except Exception:
-                output_dir = os.getcwd()
+                output_dir = default_out
+        if not output_dir:
+            output_dir = default_out
         
     if not output_dir:
         print("No output directory selected. Aborting.")
