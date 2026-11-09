@@ -177,13 +177,13 @@ def browse_for_quadrant_files(num_files=None, start_dir=None):
     if in_jupyter or not HAS_GUI:
         candidates = [
             start_dir,
-            get_last_dir() if 'get_last_dir' in globals() else None,
             "/gpfs/Primary/beamlinedata/sgm",
             "/gpfs/Primary/beamlinedata/SGM",
             "/gpfs/Primary/beamlinedata",
             "/gpfs/Primary",
             "/projects",
             os.path.expanduser("~/scratch"),
+            get_last_dir() if 'get_last_dir' in globals() else None,
             os.getcwd()
         ]
         base_dir = next((p for p in candidates if p and os.path.isdir(p)), os.getcwd())
