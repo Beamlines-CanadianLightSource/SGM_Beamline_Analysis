@@ -4,6 +4,7 @@ import os
 import shutil
 import re
 import io
+from html import escape
 import matplotlib.pyplot as plt
 import ipywidgets as widgets
 from IPython.display import display
@@ -420,6 +421,94 @@ def calculate_aligned_flush_trims(data_packs, base_trims=None):
     return flush_trims
 
 
+def _stitching_destination_selector(initial_dir, on_confirm, on_cancel):
+    """Choose a baking destination without desktop dialogs or blocking input."""
+    path_box = widgets.Text(
+        value=initial_dir, description="Folder:", continuous_update=False,
+        layout=widgets.Layout(width="95%")
+    )
+    btn_up = widgets.Button(description="Up", icon="arrow-up")
+    btn_refresh = widgets.Button(description="Refresh Folders", icon="refresh")
+    folders = widgets.Select(
+        description="Subfolders:", rows=6, layout=widgets.Layout(width="95%")
+    )
+    btn_open = widgets.Button(description="Open Selected Folder", icon="folder-open")
+    new_folder = widgets.Text(
+        description="New subfolder:", placeholder="Optional; created only when you confirm",
+        continuous_update=False, style={"description_width": "initial"},
+        layout=widgets.Layout(width="95%")
+    )
+    status = widgets.HTML()
+    btn_confirm = widgets.Button(description="Save and Bake", button_style="success")
+    btn_cancel = widgets.Button(description="Cancel")
+
+    def destination():
+        if not path_box.value.strip():
+            raise ValueError("Enter an output folder.")
+        current = os.path.abspath(os.path.expanduser(path_box.value.strip()))
+        name = new_folder.value.strip()
+        if name in (".", "..") or any(sep in name for sep in (os.sep, os.altsep) if sep):
+            raise ValueError("New subfolder must be a single folder name, not a path.")
+        return current, resolve_preprocessed_save_dir(os.path.join(current, name))
+
+    def show_error(error):
+        status.value = f"<b style='color:red;'>{escape(str(error))}</b>"
+
+    def refresh_view(change=None):
+        folders.options = ()
+        btn_confirm.disabled = True
+        try:
+            current, output_dir = destination()
+            try:
+                with os.scandir(current) as entries:
+                    folders.options = sorted(
+                        (entry.name for entry in entries if entry.is_dir()), key=str.casefold
+                    )
+                note = ""
+            except FileNotFoundError:
+                note = "<br>This folder does not exist yet; it will be created on confirmation."
+            status.value = f"<b>Save under:</b> <code>{escape(output_dir)}</code>{note}"
+            btn_confirm.disabled = False
+        except (OSError, ValueError) as error:
+            show_error(error)
+
+    def on_open_clicked(button):
+        if folders.value:
+            path_box.value = os.path.join(path_box.value.strip(), folders.value)
+
+    def on_up_clicked(button):
+        if path_box.value.strip():
+            path_box.value = os.path.dirname(os.path.abspath(os.path.expanduser(path_box.value.strip())))
+
+    def on_confirm_clicked(button):
+        try:
+            _, output_dir = destination()
+            os.makedirs(output_dir, exist_ok=True)
+        except (OSError, ValueError) as error:
+            show_error(error)
+            return
+        on_confirm(output_dir)
+
+    btn_open.on_click(on_open_clicked)
+    btn_up.on_click(on_up_clicked)
+    btn_refresh.on_click(refresh_view)
+    btn_confirm.on_click(on_confirm_clicked)
+    btn_cancel.on_click(lambda button: on_cancel())
+    path_box.observe(refresh_view, names="value")
+    new_folder.observe(refresh_view, names="value")
+    refresh_view()
+    return widgets.VBox([
+        widgets.HTML("<b>Choose where to save the stitched dataset</b>"),
+        path_box,
+        widgets.HBox([btn_up, btn_refresh]),
+        folders,
+        btn_open,
+        new_folder,
+        status,
+        widgets.HBox([btn_confirm, btn_cancel])
+    ], layout=widgets.Layout(border="1px solid #ccc", padding="10px"))
+
+
 def interactive_stitching_trim(h5_files=None, channel_roi=None, auto_trim=False, trim_mode='full_edge', start_dir=None):
     """
     Interactive widget to adjust trims for multiple maps before stitching.
@@ -441,6 +530,9 @@ def interactive_stitching_trim(h5_files=None, channel_roi=None, auto_trim=False,
                         keeping non-overlapping protruding edges on staggered tiles.
     start_dir : str, optional
         Initial directory for file selection.
+
+    On headless HPC, baking first opens an in-notebook destination selector.
+    No output is written until Save and Bake is confirmed.
     """
     try:
         from IPython import get_ipython
@@ -633,6 +725,7 @@ def interactive_stitching_trim(h5_files=None, channel_roi=None, auto_trim=False,
         img_widget = widgets.Image(format='png', layout=widgets.Layout(max_width='100%', align_self='center'))
         status_box = widgets.HTML(value="")
         bake_status = widgets.Output()
+        destination_box = widgets.VBox([])
         
         batch_updating = [False]
 
@@ -822,7 +915,8 @@ def interactive_stitching_trim(h5_files=None, channel_roi=None, auto_trim=False,
         btn_auto_trims.on_click(on_auto_trims_clicked)
         btn_flush_trims.on_click(on_flush_trims_clicked)
 
-        def on_stitch_clicked(b):
+        def bake_to_directory(output_dir):
+            stitch_btn.disabled = True
             stitch_btn.description = "Baking Stitched Image..."
             stitch_btn.button_style = 'warning'
             
@@ -836,18 +930,41 @@ def interactive_stitching_trim(h5_files=None, channel_roi=None, auto_trim=False,
             with bake_status:
                 bake_status.clear_output()
                 print(f"\n[PROCESS STARTED] Baking Stitched Image (Mode: {trim_mode_toggle.value})... Please wait.")
-                if target_preprocessed_dir:
-                    print(f"  -> Target Save Directory (Preprocessed): {target_preprocessed_dir}")
+                if output_dir:
+                    print(f"  -> Target Save Directory (Preprocessed): {output_dir}")
                 try:
                     stitch_quadrant_maps(
                         files_to_trim, 
-                        output_dir=target_preprocessed_dir, 
+                        output_dir=output_dir,
                         trims=final_trims, 
                         trim_mode=trim_mode_toggle.value
                     )
                 finally:
                     stitch_btn.description = "Bake Stitched Image"
                     stitch_btn.button_style = 'success'
+                    stitch_btn.disabled = False
+
+        def on_destination_selected(output_dir):
+            destination_box.children = ()
+            bake_to_directory(output_dir)
+
+        def on_destination_cancelled():
+            destination_box.children = ()
+            stitch_btn.disabled = False
+            with bake_status:
+                bake_status.clear_output()
+                print("Baking cancelled. No files written.")
+
+        def on_stitch_clicked(b):
+            if not HAS_GUI:
+                stitch_btn.disabled = True
+                destination_box.children = (_stitching_destination_selector(
+                    target_preprocessed_dir or os.getcwd(),
+                    on_destination_selected,
+                    on_destination_cancelled
+                ),)
+            else:
+                bake_to_directory(target_preprocessed_dir)
 
         stitch_btn.on_click(on_stitch_clicked)
 
@@ -896,6 +1013,7 @@ def interactive_stitching_trim(h5_files=None, channel_roi=None, auto_trim=False,
             widgets.Label("Global Contrast Control:"),
             contrast_slider,
             action_box,
+            destination_box,
             img_widget,
             status_box,
             bake_status

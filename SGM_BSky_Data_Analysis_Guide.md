@@ -105,6 +105,7 @@ run_calibration()
 - **Contrast Control:** Includes a dedicated contrast slider to help you see fine details while aligning the boundaries.
 - **Data Preservation:** The stitched dataset now preserves all 4 MCC reference channels (`mcc1` through `mcc4`), ensuring complete metadata for normalization.
 - **Bake Stitched Map:** Once the maps join perfectly without visible "seams" or overshoots, click this button to generate a new master HDF5 file and data directory. The resulting "baked" map is fully compatible with the rest of the pipeline.
+  - **HPC save destination:** On headless JupyterHub/HPC, **Bake Stitched Image** opens an in-notebook folder selector instead of saving immediately. It starts at the preprocessed destination derived from the first selected HDF5 file. Navigate with **Up** and **Open Selected Folder**, or enter a folder path directly. Optionally enter a **New subfolder** name. **Save and Bake** creates missing folders and starts stitching; **Cancel** returns to trimming without writing anything. A selected `raw` path is still redirected to its matching `preprocessed` path, shown under **Save under**. The generated stitched dataset retains its own automatically named folder inside your chosen destination. Desktop behavior is unchanged.
 
 ### 2.2 `sf.py` (Scattering Factors & Compound Optical Density Correction)
 **Purpose:** Calculates anomalous atomic scattering factors ($f_1, f_2$), attenuation lengths, and X-ray Optical Density ($\text{OD}$) for any chemical compound using the Henke database (`henke.xdr`).
