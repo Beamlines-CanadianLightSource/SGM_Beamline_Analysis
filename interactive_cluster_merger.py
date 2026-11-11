@@ -1,5 +1,6 @@
 import os
 import sys
+import io
 
 # Prevent OpenMP duplicate runtime warnings from threadpoolctl / scikit-learn
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
@@ -16,6 +17,8 @@ import h5py
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_agg import FigureCanvasAgg
 import ipywidgets as widgets
 from IPython.display import display
 
@@ -69,7 +72,7 @@ def interactive_cluster_merger(h5_path, dataset_name='average'):
         dataset_name = available_ds[0]
 
     # --- UI Containers ---
-    plot_out = widgets.Output()
+    plot_img = widgets.Image(format='png', layout=widgets.Layout(max_width='100%', align_self='center', margin='4px 0'))
     status_out = widgets.Output()
     cb_box = widgets.HBox([], layout=widgets.Layout(flex_flow='row wrap', margin='6px 0'))
     title_html = widgets.HTML()
@@ -163,10 +166,12 @@ def interactive_cluster_merger(h5_path, dataset_name='average'):
     def update_plots(change=None):
         selected_c = [c for c, cb in state['checkboxes'] if cb.value]
         
-        with plot_out:
-            plot_out.clear_output(wait=True)
-            # Reduced figure size by 30% for compact notebook presentation
-            fig, (ax_map, ax_spec) = plt.subplots(1, 2, figsize=(7.7, 3.1))
+        try:
+            # Render offscreen via Agg so %matplotlib widget (ipympl) / VS Code Output never destroys the figure
+            fig = Figure(figsize=(7.7, 3.1), dpi=120)
+            FigureCanvasAgg(fig)
+            ax_map = fig.add_subplot(1, 2, 1)
+            ax_spec = fig.add_subplot(1, 2, 2)
             
             ds_label = get_sdd_label(state['current_dataset'], h5_path)
             ipfy = state.get('ipfy_mode', False)
@@ -236,11 +241,16 @@ def interactive_cluster_merger(h5_path, dataset_name='average'):
             ax_spec.set_xlabel("Energy (eV)")
             ax_spec.set_title(f"Merged Spectrum: {ds_label}\n[Normalized: {state.get('i0_info', 'Yes')}]", fontsize=9.5, fontweight='bold')
             ax_spec.grid(True, linestyle='--', alpha=0.5)
-            ax_spec.grid(True, linestyle='--', alpha=0.5)
 
-            plt.tight_layout()
-            plt.show()
-            plt.close(fig)
+            fig.tight_layout()
+            buf = io.BytesIO()
+            fig.savefig(buf, format='png', bbox_inches='tight', dpi=120)
+            buf.seek(0)
+            plot_img.value = buf.read()
+        except Exception as e:
+            with status_out:
+                status_out.clear_output()
+                print(f"Plot rendering error: {e}")
 
     def on_select_all(b):
         for _, cb in state['checkboxes']:
@@ -374,7 +384,7 @@ def interactive_cluster_merger(h5_path, dataset_name='average'):
         top_bar,
         title_html,
         cb_box,
-        plot_out,
+        plot_img,
         status_out
     ], layout=widgets.Layout(border='1px solid #ddd', padding='10px', border_radius='6px', margin='10px 0'))
 

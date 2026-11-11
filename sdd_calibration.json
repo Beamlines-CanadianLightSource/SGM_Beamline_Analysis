@@ -1,26 +1,27 @@
 {
     "sdd1": {
-        "gain": 10.195,
-        "offset": -15.435
+        "gain": 10.0382,
+        "offset": -19.3033
     },
     "sdd2": {
-        "gain": 10.195,
-        "offset": -56.215
+        "gain": 1.0,
+        "offset": 0.0
     },
     "sdd3": {
-        "gain": 10.4564,
-        "offset": -29.2897
+        "gain": 10.7439,
+        "offset": -22.8966
     },
     "sdd4": {
-        "gain": 10.7316,
-        "offset": -33.1421
+        "gain": 10.5584,
+        "offset": -14.04
     },
     "_metadata": {
-        "last_updated": "2026-11-07 16:40:17",
-        "scan_used": "032711_CuCl2_cu_l3l2_fine_stack\\2026-08-13_032713_stack_data.h5",
+        "last_updated": "2026-11-11 10:43:29",
+        "scan_used": "025825_Sodium_metasilicate_si_k_fine_stack\\2026-07-19_025826_stack_data.h5",
         "edges_used": [
             "O-K",
-            "Cu-L"
+            "Na-K",
+            "Si-K"
         ]
     }
 }
