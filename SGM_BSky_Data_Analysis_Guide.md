@@ -377,7 +377,8 @@ Once you have the HTML file, open it in any modern web browser (Edge, Chrome, Fi
 When you click **"Save All Images"** on the dashboard toolbar:
 - High-resolution PNG and TIFF files are saved for every detector's representative energy map and stack average map.
 - In addition, a standalone high-resolution **Pixel Intensity Distribution Histogram** PNG is automatically saved for each detector (`<scan_name>_<detector>_Histogram.png`).
-- All exported image and histogram files are saved directly into an `Images/` subdirectory within the scan's `preprocessed` folder (automatically created if not present).
+- On headless HPC/JupyterHub, **Save All Images** first shows an editable **Save folder** inside the notebook. The suggested destination is `<save_dir>/<scan_name>/Images`, with `raw` redirected to `preprocessed`; the scan-name component is not repeated if the save directory already has that name. This separates maps even when their HDF5 files share a directory. Change the path or folder name, then click **Save Images**; **Cancel** writes nothing. Missing folders are created only on confirmation, and the final absolute destination is shown in the export status and notebook output. `save_images=True` retains automatic export without prompting, using this map-specific default.
+- Desktop exports retain the original `<save_dir>/Images` destination and one-click behavior.
 
 ### PyMca Analysis (XANES vs XRF)
 When you export data from the dashboard for use in PyMca, pay attention to the file suffix:

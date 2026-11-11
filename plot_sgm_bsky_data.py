@@ -7,6 +7,8 @@ from matplotlib.figure import Figure
 import sys
 import os
 import csv
+import re
+from html import escape
 import traceback
 import sys
 
@@ -31,7 +33,8 @@ except (ImportError, ModuleNotFoundError):
 
 from analyze_sgm_bsky_data import (
     analyze_sgm_bsky_data, extract_sample_name, resolve_sample_name, build_scan_filename_base,
-    get_sdd_names_map, get_sdd_label, SDD_NAMES_PRE_2026_08_12, SDD_NAMES_POST_2026_08_12
+    get_sdd_names_map, get_sdd_label, SDD_NAMES_PRE_2026_08_12, SDD_NAMES_POST_2026_08_12,
+    resolve_preprocessed_save_dir
 )
 from alignment_utils import (
     grid_interpolate_map, get_safe_save_path, get_tk_root, get_masked_triangulation,
@@ -2570,6 +2573,7 @@ class DashboardRow:
 class SummaryDashboard:
     def __init__(self, sync_obj, context):
         self.sync, self.ctx = sync_obj, context
+        self.image_export_panel = widgets.VBox([])
         self.fig, self.ax = None, []
         self.btn_theme = None
         self.det_lines_raw = {}
@@ -3434,11 +3438,86 @@ class SummaryDashboard:
             except:
                 pass
 
-    def save_all_images(self, event=None):
+    def default_image_export_directory(self):
+        base = resolve_preprocessed_save_dir(self.ctx['save_dir'])
+        scan = re.sub(r'[^\w.-]', '_', str(self.ctx['scan_name'])).strip('._')
+        if not scan:
+            raise ValueError("A scan name is required to name the image export folder.")
+        if os.path.basename(base) != scan:
+            base = os.path.join(base, scan)
+        return os.path.join(base, "Images")
+
+    def request_image_export(self, event=None):
+        if HAS_GUI:
+            return self.save_all_images(event)
+
+        path_box = widgets.Text(
+            value=self.default_image_export_directory(), description="Save folder:",
+            continuous_update=False, layout=widgets.Layout(width="95%"),
+            style={"description_width": "initial"}
+        )
+        status = widgets.HTML()
+        btn_save = widgets.Button(description="Save Images", button_style="success")
+        btn_cancel = widgets.Button(description="Cancel")
+
+        def destination():
+            if not path_box.value.strip():
+                raise ValueError("Enter an image export folder.")
+            return resolve_preprocessed_save_dir(
+                os.path.abspath(os.path.expanduser(path_box.value.strip()))
+            )
+
+        def update_destination(change=None):
+            try:
+                status.value = f"<b>Save images to:</b> <code>{escape(destination())}</code>"
+                btn_save.disabled = False
+            except ValueError as error:
+                status.value = f"<b style='color:red;'>{escape(str(error))}</b>"
+                btn_save.disabled = True
+
+        def on_save(button):
+            try:
+                output_dir = destination()
+            except ValueError as error:
+                status.value = f"<b style='color:red;'>{escape(str(error))}</b>"
+                return
+            btn_save.disabled = True
+            try:
+                if self.save_all_images(output_dir=output_dir):
+                    self.image_export_panel.children = ()
+                else:
+                    status.value = "<b style='color:red;'>Export failed. See the export status and notebook output.</b>"
+            finally:
+                btn_save.disabled = False
+
+        def on_cancel(button):
+            self.image_export_panel.children = ()
+            if self.sync.status_widget:
+                self.sync.status_widget.value = "Image export cancelled. No files written."
+
+        path_box.observe(update_destination, names="value")
+        btn_save.on_click(on_save)
+        btn_cancel.on_click(on_cancel)
+        update_destination()
+        self.image_export_panel.children = (widgets.VBox([
+            widgets.HTML("<b>Choose an image export folder</b><br>Edit the path or folder name below. Missing folders are created only when you save."),
+            path_box, status, widgets.HBox([btn_save, btn_cancel])
+        ], layout=widgets.Layout(border="1px solid #ccc", padding="10px")),)
+
+    def save_all_images(self, event=None, output_dir=None):
         console_log("\n[BUTTON CLICK] 'Save All Images' clicked!")
         try:
             total = len(self.sync.dashboards)
-            target_dir = os.path.join(self.ctx['save_dir'], "Images")
+            if output_dir is not None:
+                if not str(output_dir).strip():
+                    raise ValueError("Enter an image export folder.")
+                target_dir = os.path.abspath(os.path.expanduser(output_dir))
+            elif not HAS_GUI:
+                target_dir = self.default_image_export_directory()
+            else:
+                target_dir = os.path.join(self.ctx['save_dir'], "Images")
+            if not HAS_GUI:
+                target_dir = resolve_preprocessed_save_dir(target_dir)
             os.makedirs(target_dir, exist_ok=True)
             save_dir_abs = os.path.abspath(target_dir)
 
@@ -3450,6 +3529,7 @@ class SummaryDashboard:
             console_log(f"\n--- [EXPORT START] Saving High-Quality PNG and TIFF Images for {total} Detectors ---")
             console_log(f"Target Directory: {save_dir_abs}")
             
+            failures = []
             for i, d in enumerate(self.sync.dashboards):
                 idx = i + 1
                 percent = (idx / total) * 100
@@ -3462,6 +3542,9 @@ class SummaryDashboard:
                     d.export_images(output_dir=target_dir)
                 except Exception as e:
                     console_log(f"    ! Error exporting {d.name}: {e}")
+                    failures.append(f"{d.name}: {e}")
+            if failures:
+                raise RuntimeError("Image export failed for " + "; ".join(failures))
             
             # 3. Final Summary
             if self.sync.status_widget:
@@ -3469,17 +3552,21 @@ class SummaryDashboard:
             plt.ion()
 
             # Safe Tkinter MessageBox
-            root_msg = get_tk_root()
-            if root_msg:
-                root_msg.attributes("-topmost", True)
-            safe_messagebox_showinfo("Export Complete", f"Successfully exported all maps (PNG & TIFF) to:\n{save_dir_abs}", parent=root_msg)
+            if HAS_GUI:
+                root_msg = get_tk_root()
+                if root_msg:
+                    root_msg.attributes("-topmost", True)
+                safe_messagebox_showinfo("Export Complete", f"Successfully exported all maps (PNG & TIFF) to:\n{save_dir_abs}", parent=root_msg)
             
             if self.sync.status_widget:
                 self.sync.status_widget.value = f"✓ EXPORT COMPLETE: All {total} maps & histograms saved to {save_dir_abs}"
-            print(f"\n=======================================================\n✓ [SUCCESS] All {total} detector maps & histograms saved to:\n  {save_dir_abs}\n=======================================================\n", flush=True)
+            print(f"\n=======================================================\n[SUCCESS] All {total} detector maps & histograms saved to:\n  {save_dir_abs}\n=======================================================\n", flush=True)
             console_log(f"--- [EXPORT COMPLETE] All {total} detectors saved to {save_dir_abs} ---\n")
+            return True
         except Exception as e:
             console_log(f"[ERROR] Exception in save_all_images: {e}")
+            if self.sync.status_widget:
+                self.sync.status_widget.value = f"IMAGE EXPORT FAILED: {e}"
             import traceback
             traceback.print_exc(file=sys.stderr)
             try:
@@ -3487,6 +3574,9 @@ class SummaryDashboard:
                 sys.__stderr__.flush()
             except:
                 pass
+            return False
+        finally:
+            plt.ion()
 
     def save_pymca_stack_call(self, event):
         """Callback for saving ROI-summed PyMca stack (3D)."""
@@ -3884,7 +3974,7 @@ class SummaryDashboard:
 
             ax_save_imgs = self.fig.add_axes([0.43, btn_y, 0.11, btn_h])
             self.btn_save_imgs = Button(ax_save_imgs, 'Save All\nImages', color='yellow', hovercolor='khaki')
-            self.btn_save_imgs.on_clicked(self.save_all_images); self.btn_save_imgs.label.set_fontsize(7)
+            self.btn_save_imgs.on_clicked(self.request_image_export); self.btn_save_imgs.label.set_fontsize(7)
 
             ax_save_pm4d = self.fig.add_axes([0.56, btn_y, 0.30, btn_h])
             self.btn_save_pm4d = Button(ax_save_pm4d, 'Save XRF Spectra for Elemental\nAnalysis using PyMca', color='yellow', hovercolor='khaki')
@@ -3925,7 +4015,7 @@ class SummaryDashboard:
 
             ax_save_imgs = self.fig.add_axes([0.37, btn_y, 0.08, btn_h])
             self.btn_save_imgs = Button(ax_save_imgs, 'Save All\nImages', color='yellow', hovercolor='khaki')
-            self.btn_save_imgs.on_clicked(self.save_all_images); self.btn_save_imgs.label.set_fontsize(7)
+            self.btn_save_imgs.on_clicked(self.request_image_export); self.btn_save_imgs.label.set_fontsize(7)
 
             ax_save_pm3d = self.fig.add_axes([0.46, btn_y, 0.14, btn_h])
             self.btn_save_pm3d = Button(ax_save_pm3d, 'Save Normalized XANES\nSpectra for PCA/CA', color='yellow', hovercolor='khaki')
@@ -5147,7 +5237,7 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
 
         def _on_save_imgs(b):
             if sync.summary_dash:
-                sync.summary_dash.save_all_images(None)
+                sync.summary_dash.request_image_export(None)
         btn_save_imgs.on_click(_on_save_imgs)
 
         def _on_save_pm4d(b):
@@ -5170,7 +5260,7 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
             btn_save_pm3d
         ], layout=widgets.Layout(margin='6px 0 4px 0', align_items='center'))
 
-        controls = widgets.VBox([top_controls_row, save_controls_row])
+        controls = widgets.VBox([top_controls_row, save_controls_row, summary.image_export_panel])
 
         # 9. Decoupled & Synced Energy Sliders
         all_energy_sliders = []
