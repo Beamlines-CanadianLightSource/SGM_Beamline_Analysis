@@ -186,10 +186,11 @@ The dashboard is organized vertically to provide immediate access to global spec
   - **Internal I0 (`mcc1`):** Uses the Au mesh reference current collected during your scan.
   - **External I0 CSV:** Uses a previously collected standard (e.g., BN for Carbon C K-edge analysis).
 - An **I0 Preview Dialog** opens to configure processing parameters:
-  - **Column Selection:** Select Energy (X) and Intensity (Y) columns.
+  - **Column Selection:** On the desktop, select Energy (X) and Intensity (Y) columns. On the HPC, the external CSV columns are selected automatically and their names are printed.
   - **Smoothing:** Enable Savitzky-Golay smoothing with an adjustable window size to filter out noise in your $I_0$ standard.
   - **Energy Shift:** Apply an energy calibration offset (eV) to align the $I_0$ standard with your scan energies.
   - **Compound Optical Density (SF) Correction:** Optionally divide the $I_0$ signal by the Optical Density of a compound (e.g., BN) using the Henke database (`sf.py`), with custom density (g/cm³), thickness (µm), and auto-scaling.
+- **HPC notebook preview:** For either source, the original and modified I0 curves are overlaid and update when the controls change. Use an odd smoothing window of at least 3 points and no longer than the spectrum. Click **Apply** to build the dashboard using the modified I0, or **Cancel** to build it using the original I0. Invalid settings disable Apply and show an error. The plotting call returns before this choice is made; the dashboard appears after the button is clicked.
 - **Normalized Plot Titles:** $I_0$ normalization details are formatted into compact, 2-line small print (`fontsize=8.5`) above normalized subplots so long parameter strings never overlap or crowd the spectral curves.
 
 **IPFY Mode (Inverse Partial Fluorescence Yield):**

@@ -59,6 +59,7 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 from scipy.signal import savgol_filter, convolve2d
 import ipywidgets as widgets
 from IPython.display import display
+from IPython import get_ipython
 import io
 import time
 from scipy.interpolate import griddata, RegularGridInterpolator
@@ -4256,6 +4257,111 @@ def compute_modified_i0(x_sorted, y_sorted, do_smooth, smooth_window, do_const, 
 
     return y_proc, od_vals, mod_desc, extra_str
 
+def _i0_preview_widget(x_sorted, y_sorted, label_name, allow_energy_shift, on_finish):
+    """Preview and apply headless I0 processing without blocking Jupyter callbacks."""
+    x_sorted = np.asarray(x_sorted, dtype=float)
+    y_sorted = np.asarray(y_sorted, dtype=float)
+    smooth = widgets.Checkbox(value=False, description="Smooth", indent=False)
+    window = widgets.IntText(value=11, description="Window:", continuous_update=False)
+    constant = widgets.Checkbox(value=False, description="Constant", indent=False)
+    operation = widgets.Dropdown(options=["Add", "Multiply", "Divide"], value="Add", description="Operation:")
+    constant_value = widgets.FloatText(value=0.0, description="Value:", continuous_update=False)
+    shift_enabled = widgets.Checkbox(value=False, description="Energy shift", indent=False)
+    shift_value = widgets.FloatText(value=0.0, description="Shift (eV):", continuous_update=False)
+    od_enabled = widgets.Checkbox(value=False, description="Divide by OD", indent=False)
+    od_compound = widgets.Text(value="BN", description="Compound:", continuous_update=False)
+    od_density = widgets.FloatText(value=2.1, description="Density:", continuous_update=False)
+    od_thickness = widgets.FloatText(value=0.1, description="Thickness:", continuous_update=False)
+    od_autoscale = widgets.Checkbox(value=True, description="Auto-scale OD", indent=False)
+    image = widgets.Image(format="png")
+    status = widgets.HTML()
+    apply_button = widgets.Button(description="Apply", button_style="success")
+    cancel_button = widgets.Button(description="Cancel", button_style="")
+    state = {"result": None}
+
+    def update_preview(change=None):
+        state["result"] = None
+        apply_button.disabled = True
+        try:
+            if len(x_sorted) != len(y_sorted) or len(x_sorted) == 0:
+                raise ValueError("I0 energy and intensity arrays must have matching, nonzero lengths.")
+            if not np.all(np.isfinite(x_sorted)) or not np.all(np.isfinite(y_sorted)):
+                raise ValueError("I0 energies and intensities must be finite.")
+            if smooth.value and (window.value < 3 or window.value % 2 == 0 or window.value > len(y_sorted)):
+                raise ValueError(f"Smoothing window must be odd, at least 3, and no greater than {len(y_sorted)}.")
+            if constant.value and operation.value in ("Multiply", "Divide") and constant_value.value == 0:
+                raise ValueError("The multiplication or division constant must be nonzero.")
+            if constant.value and not np.isfinite(constant_value.value):
+                raise ValueError("The constant must be finite.")
+            if allow_energy_shift and shift_enabled.value and not np.isfinite(shift_value.value):
+                raise ValueError("The energy shift must be finite.")
+            if od_enabled.value and not HAS_SF:
+                raise ValueError("Optical density calculation is unavailable.")
+            y_proc, od_vals, descriptions, extra = compute_modified_i0(
+                x_sorted, y_sorted, smooth.value, window.value,
+                constant.value, operation.value, constant_value.value,
+                allow_energy_shift and shift_enabled.value, shift_value.value,
+                od_enabled.value, od_compound.value, od_density.value,
+                od_thickness.value, od_autoscale.value
+            )
+            if od_enabled.value and od_vals is None:
+                raise ValueError("Optical density calculation failed; check the compound and parameters.")
+            if not np.all(np.isfinite(y_proc)):
+                raise ValueError("The modified I0 contains non-finite values.")
+            shifted = allow_energy_shift and shift_enabled.value and shift_value.value != 0.0
+            fig = Figure(figsize=(7, 4))
+            FigureCanvasAgg(fig)
+            ax = fig.subplots()
+            ax.plot(x_sorted, y_sorted, color="gray", linestyle="--", label="Original I0")
+            ax.plot(x_sorted + (shift_value.value if shifted else 0.0), y_proc,
+                    color="blue", label="Modified I0")
+            ax.set_xlabel("Energy (eV)")
+            ax.set_ylabel(label_name)
+            ax.set_title("I0 preview" + (": " + ", ".join(descriptions) if descriptions else ""))
+            ax.grid(True, linestyle="--", alpha=0.4)
+            ax.legend()
+            fig.tight_layout()
+            buf = io.BytesIO()
+            fig.savefig(buf, format="png", dpi=100)
+            image.value = buf.getvalue()
+            state["result"] = (
+                y_proc, extra, constant_value.value if constant.value else 0.0,
+                operation.value if constant.value else "Add", shifted,
+                shift_value.value if shifted else 0.0
+            )
+            status.value = "Preview updated. Apply to use the modified I0; Cancel uses the original."
+            apply_button.disabled = False
+        except (ValueError, TypeError, ArithmeticError) as error:
+            status.value = f"<b style='color:red;'>{escape(str(error))}</b>"
+
+    def finish(result):
+        apply_button.disabled = True
+        cancel_button.disabled = True
+        on_finish(result)
+
+    apply_button.on_click(lambda button: finish(state["result"]) if state["result"] is not None else None)
+    cancel_button.on_click(lambda button: finish((y_sorted.copy(), "", 0.0, "Add", False, 0.0)))
+    controls = [smooth, window, constant, operation, constant_value, od_enabled,
+                od_compound, od_density, od_thickness, od_autoscale]
+    if allow_energy_shift:
+        controls.extend([shift_enabled, shift_value])
+    for control in controls:
+        control.observe(update_preview, names="value")
+    rows = [
+        widgets.HTML(f"<b>I0 preview: {escape(label_name)}</b>"),
+        widgets.HBox([smooth, window]),
+        widgets.HBox([constant, operation, constant_value]),
+    ]
+    if allow_energy_shift:
+        rows.append(widgets.HBox([shift_enabled, shift_value]))
+    rows.extend([
+        widgets.HBox([od_enabled, od_compound, od_density, od_thickness, od_autoscale]),
+        image, status, widgets.HBox([apply_button, cancel_button])
+    ])
+    update_preview()
+    return widgets.VBox(rows)
+
+
 def configure_and_preview_i0_headless(x_sorted, y_sorted, label_name="Au Mesh I0 (mcc1)", allow_energy_shift=False):
     """
     Headless interactive configuration and inline preview for I0 (Internal or External).
@@ -4537,7 +4643,7 @@ def configure_and_preview_i0_headless(x_sorted, y_sorted, label_name="Au Mesh I0
 
 # --- Main Entry Point ---
 
-def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 256), xrf_roi=None, auto_element_roi: bool = False, element=None, n_sigma: float = 2.0, roll_shift=0, as_scatter_plot: bool = False, map_roi=None, contrast=None, show_markers: bool = True, output_csv: bool = False, energy_shift=0.0, mcc_channels=None, mcc_to_map=None, x_trim=0.0, y_trim=0.0, save_images: bool = False, fixed_roi: bool = False, use_color: bool = True, use_full_metadata: bool = False, histogram_scope: str = 'full'):
+def _plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 256), xrf_roi=None, auto_element_roi: bool = False, element=None, n_sigma: float = 2.0, roll_shift=0, as_scatter_plot: bool = False, map_roi=None, contrast=None, show_markers: bool = True, output_csv: bool = False, energy_shift=0.0, mcc_channels=None, mcc_to_map=None, x_trim=0.0, y_trim=0.0, save_images: bool = False, fixed_roi: bool = False, use_color: bool = True, use_full_metadata: bool = False, histogram_scope: str = 'full'):
     """
     Beautiful Stack Dashboard (Refactored for Fresh Starts).
     """
@@ -4928,9 +5034,13 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                         x_sorted = x_raw[valid_mask][sort_idx]
                         y_sorted = y_raw[valid_mask][sort_idx]
                         
-                        y_proc, extra_str, const_offset_val, const_op, cal_en, cal_val = configure_and_preview_i0_headless(
-                            x_sorted, y_sorted, label_name=f"{os.path.basename(ext_path)} [{selected_i_col}]", allow_energy_shift=True
-                        )
+                        label = f"{os.path.basename(ext_path)} [{selected_i_col}]"
+                        if get_ipython() is not None and getattr(get_ipython(), "kernel", None) is not None:
+                            y_proc, extra_str, const_offset_val, const_op, cal_en, cal_val = yield (x_sorted, y_sorted, label, True)
+                        else:
+                            y_proc, extra_str, const_offset_val, const_op, cal_en, cal_val = configure_and_preview_i0_headless(
+                                x_sorted, y_sorted, label_name=label, allow_energy_shift=True
+                            )
                         y_sorted = y_proc
 
                     if selected_e_col and selected_i_col:
@@ -5021,9 +5131,12 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
                         x_sorted = x_raw[sort_idx]
                         y_sorted = y_raw[sort_idx]
 
-                        y_proc, extra_str, const_offset_val, const_op, _, _ = configure_and_preview_i0_headless(
-                            x_sorted, y_sorted, label_name="Au Mesh I0 (mcc1)", allow_energy_shift=False
-                        )
+                        if get_ipython() is not None and getattr(get_ipython(), "kernel", None) is not None:
+                            y_proc, extra_str, const_offset_val, const_op, _, _ = yield (x_sorted, y_sorted, "Au Mesh I0 (mcc1)", False)
+                        else:
+                            y_proc, extra_str, const_offset_val, const_op, _, _ = configure_and_preview_i0_headless(
+                                x_sorted, y_sorted, label_name="Au Mesh I0 (mcc1)", allow_energy_shift=False
+                            )
 
                         path_pack['i0_const_offset'] = const_offset_val
                         path_pack['i0_const_op'] = const_op
@@ -5497,11 +5610,7 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
         deconv_fwhm_slider.observe(lambda c: sync.broadcast_deconv(deconv_fwhm_um=c['new']), names='value')
         deconv_iter_slider.observe(lambda c: sync.broadcast_deconv(deconv_iterations=c['new']), names='value')
 
-        try:
-            get_ipython()
-            in_jupyter = True
-        except NameError:
-            in_jupyter = False
+        in_jupyter = get_ipython() is not None
 
         if in_jupyter:
             summary_canvases = []
@@ -5672,6 +5781,40 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
         plt.ion() # Safety restore
         print(f"Error in plot_sgm_bsky_data: {e}")
         traceback.print_exc()
+
+
+def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 256), xrf_roi=None, auto_element_roi: bool = False, element=None, n_sigma: float = 2.0, roll_shift=0, as_scatter_plot: bool = False, map_roi=None, contrast=None, show_markers: bool = True, output_csv: bool = False, energy_shift=0.0, mcc_channels=None, mcc_to_map=None, x_trim=0.0, y_trim=0.0, save_images: bool = False, fixed_roi: bool = False, use_color: bool = True, use_full_metadata: bool = False, histogram_scope: str = 'full'):
+    """Plot a scan; headless notebooks continue after the I0 preview is confirmed."""
+    plot = _plot_sgm_bsky_data(
+        path_pack, representative_energy, channel_roi, xrf_roi, auto_element_roi,
+        element, n_sigma, roll_shift, as_scatter_plot, map_roi, contrast, show_markers,
+        output_csv, energy_shift, mcc_channels, mcc_to_map, x_trim, y_trim, save_images,
+        fixed_roi, use_color, use_full_metadata, histogram_scope
+    )
+    try:
+        x, y, label, allow_shift = next(plot)
+    except StopIteration as finished:
+        return finished.value
+
+    preview_box = widgets.VBox()
+    output = widgets.Output()
+
+    def finish(result):
+        preview_box.children = ()
+        with output:
+            try:
+                plt.ioff()
+                plot.send(result)
+            except StopIteration:
+                pass
+            except Exception:
+                traceback.print_exc()
+
+    preview_box.children = (_i0_preview_widget(x, y, label, allow_shift, finish),)
+    display(widgets.VBox([preview_box, output]))
+    plt.ion()
+    return None
+
 
 if __name__ == '__main__':
     import argparse
