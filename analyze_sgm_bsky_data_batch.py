@@ -103,8 +103,8 @@ def analyze_sgm_bsky_data_batch(file_paths=None, verbose=True):
                 nx = dp.get('nx', 'N/A')
                 ny = dp.get('ny', 'N/A')
                 grid_str = f"{nx} x {ny}" if (nx != 'N/A' and ny != 'N/A') else "N/A"
-                print(f"  {idx:2d}. {dp.get('scan_name', 'N/A')}")
-                print(f"      File:       {os.path.basename(dp.get('h5_file_path', ''))}")
+                print(f"  {idx:2d}. Sample Name: {dp.get('sample_name', 'N/A')}")
+                print(f"      Scan Name:  {dp.get('scan_name', 'N/A')}")
                 print(f"      Grid:       {grid_str} ({dp.get('Number of images', 0)} images)")
                 print(f"      Representative Energy: {dp.get('representative_energy', -1.0):.2f} eV")
                 print(f"      Date:       {dp.get('date', 'N/A')}")

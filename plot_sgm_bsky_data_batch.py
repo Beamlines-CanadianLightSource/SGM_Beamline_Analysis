@@ -10,6 +10,7 @@ try:
 except (ImportError, ModuleNotFoundError):
     filedialog = None
 import mplcursors
+import sdd_element_roi_utils as elem_roi_utils
 
 from alignment_utils import (
     safe_filedialog_call,
@@ -25,6 +26,19 @@ from sdd_calibration_utils import (
 )
 from plot_sgm_bsky_data import read_csv_with_comments, ExternalI0PreviewDialog, get_tk_root
 from analyze_sgm_bsky_data import build_scan_filename_base, resolve_sample_name, get_sdd_label
+
+def _batch_roi_label(channel_roi, energy_min, energy_max, calibrated):
+    if calibrated and energy_min is not None and energy_max is not None:
+        return f"SDD Energy ROI: {energy_min:.1f}-{energy_max:.1f} eV"
+    return f"SDD Channel ROI: {channel_roi[0]}-{channel_roi[1]} (energy unavailable without calibration)"
+
+
+def _batch_spectrum_label(path_pack, scan_name):
+    sample = path_pack.get('sample_name')
+    if not sample or sample == 'N/A':
+        sample = resolve_sample_name(path_pack.get('h5_file_path'), scan_name=scan_name)
+    return sample
+
 
 def get_mcc_val(path_pack, energy, channel, spatial_mask):
     """
@@ -47,7 +61,7 @@ def get_mcc_val(path_pack, energy, channel, spatial_mask):
             pass
     return 1.0 if channel == 1 else 0.0
 
-def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi=None, show_markers=True, use_color=True):
+def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi=None, show_markers=True, use_color=True, auto_element_roi=False, element=None, n_sigma=2.0):
     """
     Plots the XANES spectra (energy dependence) of multiple loaded scans together,
     supporting interactive ROI selection, live ROI refresh, I0 normalization,
@@ -60,6 +74,10 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
         map_roi (tuple/list of float, optional): [x1, x2, y1, y2]. Defaults to the full map.
         show_markers (bool): Whether to draw markers on the spectral lines.
         use_color (bool): Whether to use a color palette.
+        auto_element_roi (bool): Fit the first multi-energy stack and share its energy ROI
+            across the batch. Requires applying SDD calibration. Overrides xrf_roi on success.
+        element (str, optional): Element override for automatic fitting (also enables fitting).
+        n_sigma (float): Gaussian ROI half-width in standard deviations.
     """
     if not data_packs:
         print("No scans to plot.", file=sys.stderr)
@@ -80,6 +98,30 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
         if not calib_data:
             print("Warning: sdd_calibration.json not found. Falling back to fixed channel ROI.", file=sys.stderr)
             use_calibration = False
+
+    if auto_element_roi or element is not None:
+        if not use_calibration or not calib_data:
+            print("[Batch Auto Element ROI] SDD calibration must be applied for automatic fitting. "
+                  "Using the supplied ROI or default channel ROI.", file=sys.stderr)
+        else:
+            reference = next(
+                (pack for pack in data_packs if len(pack.get('energies', [])) > 2), None
+            )
+            fit_res = None
+            if reference is not None:
+                print(f"[Batch Auto Element ROI] Reference: {reference.get('scan_name', 'first spectrum stack')}")
+                fit_res = elem_roi_utils.auto_detect_and_fit_stack_roi(
+                    reference, map_roi=map_roi, element_override=element,
+                    n_sigma=n_sigma, verbose=True
+                )
+            if fit_res and 'xrf_roi' in fit_res:
+                xrf_roi = fit_res['xrf_roi']
+                reference['auto_element_roi_info'] = fit_res
+                print(f"[Batch Auto Element ROI] Shared ROI for all scans: "
+                      f"{min(xrf_roi):.2f}-{max(xrf_roi):.2f} eV")
+            else:
+                print("[Batch Auto Element ROI] No ROI could be fitted from the first spectrum stack. "
+                      "Using the supplied ROI or default channel ROI.", file=sys.stderr)
 
     # 2. Set Initial ROI bounds for batch plotting
     ref_det_gain, ref_det_offset = 1.0, 0.0
@@ -194,6 +236,7 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
 
         for scan_idx, path_pack in enumerate(data_packs):
             scan_name = path_pack.get('scan_name', f"Scan_{scan_idx + 1}")
+            spectrum_label = _batch_spectrum_label(path_pack, scan_name)
             all_energies = np.array(sorted(path_pack.get('energies', [])))
             if len(all_energies) <= 2:
                 print(f"  [Batch Loader] Skipping spatial map / survey scan '{scan_name}' ({len(all_energies)} energy image(s); batch mode processes multi-energy spectrum stacks).")
@@ -266,8 +309,8 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
                         val_norm = val_raw / norm_factor
                     norm_intensities.append(val_norm)
 
-                data_out[f"{det_name}_raw"].append({"scan_name": scan_name, "energies": all_energies, "intensities": np.array(raw_intensities)})
-                data_out[f"{det_name}_norm"].append({"scan_name": scan_name, "energies": all_energies, "intensities": np.array(norm_intensities)})
+                data_out[f"{det_name}_raw"].append({"scan_name": scan_name, "spectrum_label": spectrum_label, "energies": all_energies, "intensities": np.array(raw_intensities)})
+                data_out[f"{det_name}_norm"].append({"scan_name": scan_name, "spectrum_label": spectrum_label, "energies": all_energies, "intensities": np.array(norm_intensities)})
 
             mcc1_raw_list, mcc4_raw_list, mcc4_norm_list = [], [], []
             for e_idx, energy in enumerate(all_energies):
@@ -279,9 +322,9 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
                 if norm_factor <= 0: norm_factor = 1.0
                 mcc4_norm_list.append(mcc4_val / norm_factor)
 
-            data_out['mcc1_raw'].append({"scan_name": scan_name, "energies": all_energies, "intensities": np.array(mcc1_raw_list)})
-            data_out['mcc4_raw'].append({"scan_name": scan_name, "energies": all_energies, "intensities": np.array(mcc4_raw_list)})
-            data_out['mcc4_norm'].append({"scan_name": scan_name, "energies": all_energies, "intensities": np.array(mcc4_norm_list)})
+            data_out['mcc1_raw'].append({"scan_name": scan_name, "spectrum_label": spectrum_label, "energies": all_energies, "intensities": np.array(mcc1_raw_list)})
+            data_out['mcc4_raw'].append({"scan_name": scan_name, "spectrum_label": spectrum_label, "energies": all_energies, "intensities": np.array(mcc4_raw_list)})
+            data_out['mcc4_norm'].append({"scan_name": scan_name, "spectrum_label": spectrum_label, "energies": all_energies, "intensities": np.array(mcc4_norm_list)})
 
         return data_out
 
@@ -511,7 +554,8 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
     line_xrf, = ax_xrf.plot(xrf_x, xrf_spec, color='blue', lw=1.5, label=f"XRF Spectrum ({ref_det_label})")
     ax_xrf.set_xlabel(xlabel_str, fontsize=10, fontweight='bold')
     ax_xrf.set_ylabel("PFY Counts", fontsize=10, fontweight='bold')
-    ax_xrf.set_title(f"Interactive XRF Spectrum ROI Inspector ({ref_pack.get('scan_name', 'Scan 1')} - {ref_det_label})\n(Drag mouse left/right on peak to change ROI dynamically)", fontsize=11, fontweight='bold')
+    reference_label = _batch_spectrum_label(ref_pack, ref_pack.get('scan_name', 'Scan 1'))
+    ax_xrf.set_title(f"Interactive XRF Spectrum ROI Inspector ({reference_label} - {ref_det_label})\n(Drag mouse left/right on peak to change ROI dynamically)", fontsize=11, fontweight='bold')
     ax_xrf.grid(True, linestyle=':', alpha=0.6)
     ax_xrf.legend(loc='upper right')
 
@@ -544,8 +588,15 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
     norm_keys = ['sdd1_norm', 'sdd2_norm', 'sdd3_norm', 'sdd4_norm', 'mcc1_raw', 'mcc4_norm']
 
     # ------------------ Figure 1: Raw Spectra (3x2 Subplots) ------------------
-    fig_raw, axes_raw = plt.subplots(3, 2, figsize=(11, 13.0))
-    fig_raw.suptitle(f"Batch RAW Spectra Comparison\nSDD Channel ROI: {channel_roi[0]}-{channel_roi[1]}", fontsize=14, fontweight='bold')
+    colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
+    scan_colors = {
+        ds['scan_name']: colors[index % len(colors)]
+        for index, ds in enumerate(plot_data['mcc1_raw'])
+    }
+    figure_height = max(13.0, 2.0 + 0.25 * len(plot_data['mcc1_raw']))
+    fig_raw, axes_raw = plt.subplots(3, 2, figsize=(15, figure_height))
+    roi_label = _batch_roi_label(channel_roi, energy_min, energy_max, use_calibration)
+    fig_raw.suptitle(f"Batch RAW Spectra Comparison\n{roi_label}", fontsize=14, fontweight='bold')
     ax_list_raw = axes_raw.flatten()
     
     for idx, key in enumerate(raw_keys):
@@ -579,23 +630,24 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
         
         for ds_idx, ds in enumerate(datasets):
             y_plot = ds["intensities"]
-            label_suffix = ""
             if apply_waterfall:
                 offset_val = ds_idx * offset_step
                 y_plot = y_plot + offset_val
-                label_suffix = f" (+{offset_val:.1f})"
             
             fmt = 'o-' if show_markers else '-'
-            line, = ax.plot(ds["energies"], y_plot, fmt, label=f"{ds['scan_name']}{label_suffix}", alpha=0.85)
+            line, = ax.plot(ds["energies"], y_plot, fmt, label=ds['spectrum_label'],
+                            color=scan_colors[ds['scan_name']], alpha=0.85)
             lines_for_cursor.append(line)
             lines_by_key[key].append(line)
-        ax.legend(fontsize='x-small', loc='best')
         
-    fig_raw.subplots_adjust(hspace=0.35, wspace=0.25, bottom=0.07)
+    fig_raw.subplots_adjust(hspace=0.35, wspace=0.25, bottom=0.07, right=0.70)
+    handles, labels = ax_list_raw[4].get_legend_handles_labels()
+    fig_raw.legend(handles, labels, title="Sample Name", loc='upper left',
+                   bbox_to_anchor=(0.72, 0.90), fontsize='small')
     figs_to_display.append(fig_raw)
 
     # ------------------ Figure 2: Normalized Spectra (3x2 Subplots) ------------------
-    fig_norm, axes_norm = plt.subplots(3, 2, figsize=(11, 13.0))
+    fig_norm, axes_norm = plt.subplots(3, 2, figsize=(15, figure_height))
     # Format suptitle with multi-line wrap if i0_source_label is long
     i0_fmt_str = i0_source_label
     if len(i0_fmt_str) > 60 and " (Divided by OD:" in i0_fmt_str:
@@ -603,7 +655,7 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
     elif len(i0_fmt_str) > 60 and " (Smoothed" in i0_fmt_str:
         i0_fmt_str = i0_fmt_str.replace(" (Smoothed", "\n(Smoothed")
 
-    fig_norm.suptitle(f"Batch NORMALIZED XANES Comparison\n(I0 Source: {i0_fmt_str})\nSDD Channel ROI: {channel_roi[0]}-{channel_roi[1]}", fontsize=12, fontweight='bold')
+    fig_norm.suptitle(f"Batch NORMALIZED XANES Comparison\n(I0 Source: {i0_fmt_str})\n{roi_label}", fontsize=12, fontweight='bold')
     ax_list_norm = axes_norm.flatten()
     
     for idx, key in enumerate(norm_keys):
@@ -637,19 +689,20 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
         
         for ds_idx, ds in enumerate(datasets):
             y_plot = ds["intensities"]
-            label_suffix = ""
             if apply_waterfall:
                 offset_val = ds_idx * offset_step
                 y_plot = y_plot + offset_val
-                label_suffix = f" (+{offset_val:.1f})"
             
             fmt = 'o-' if show_markers else '-'
-            line, = ax.plot(ds["energies"], y_plot, fmt, label=f"{ds['scan_name']}{label_suffix}", alpha=0.85)
+            line, = ax.plot(ds["energies"], y_plot, fmt, label=ds['spectrum_label'],
+                            color=scan_colors[ds['scan_name']], alpha=0.85)
             lines_for_cursor.append(line)
             lines_by_key[key].append(line)
-        ax.legend(fontsize='x-small', loc='best')
         
-    fig_norm.subplots_adjust(hspace=0.35, wspace=0.25, bottom=0.07)
+    fig_norm.subplots_adjust(hspace=0.35, wspace=0.25, bottom=0.07, right=0.70)
+    handles, labels = ax_list_norm[4].get_legend_handles_labels()
+    fig_norm.legend(handles, labels, title="Sample Name", loc='upper left',
+                    bbox_to_anchor=(0.72, 0.90), fontsize='small')
     figs_to_display.append(fig_norm)
     
     # Add hover interactive cursors to all lines
@@ -711,17 +764,19 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
                     ch_s = int(max(0, (current_state['energy_min'] - ref_det_offset) / (ref_det_gain if ref_det_gain != 0 else 1.0)))
                     ch_e = int(min(255, (current_state['energy_max'] - ref_det_offset) / (ref_det_gain if ref_det_gain != 0 else 1.0)))
                     current_state['channel_roi'] = (ch_s, ch_e)
-                    roi_str = f"SDD Energy ROI: {current_state['energy_min']:.1f}-{current_state['energy_max']:.1f} eV (Ch {ch_s}-{ch_e})"
                     span_start_plot = current_state['energy_min']
                     span_end_plot = current_state['energy_max']
                 else:
                     ch_s = int(max(0, min(s_val, e_val)))
                     ch_e = int(min(255, max(s_val, e_val)))
                     current_state['channel_roi'] = (ch_s, ch_e)
-                    roi_str = f"SDD Channel ROI: {ch_s}-{ch_e}"
                     span_start_plot = ch_s
                     span_end_plot = ch_e
 
+                roi_str = _batch_roi_label(
+                    current_state['channel_roi'], current_state['energy_min'],
+                    current_state['energy_max'], use_calibration
+                )
                 new_plot_data = compute_batch_spectra(current_state['channel_roi'], current_state['energy_min'], current_state['energy_max'])
                 current_state['plot_data'] = new_plot_data
 
