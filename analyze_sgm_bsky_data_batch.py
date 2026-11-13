@@ -1,12 +1,134 @@
 import os
 import sys
 import glob
+import traceback
+from html import escape
 try:
     from tkinter import filedialog
 except (ImportError, ModuleNotFoundError):
     filedialog = None
-from analyze_sgm_bsky_data import analyze_sgm_bsky_data
+from analyze_sgm_bsky_data import analyze_sgm_bsky_data, browse_beamline_data
 from alignment_utils import safe_filedialog_call, show_custom_dialog, HAS_GUI
+
+
+def _browse_batch_scans(data_packs, verbose):
+    """Display a non-blocking notebook selector and populate data_packs on load."""
+    import ipywidgets as widgets
+    from IPython.display import display
+
+    selected = []
+    selection = widgets.SelectMultiple(
+        options=[], description="Selected:", rows=6,
+        layout=widgets.Layout(width="100%"),
+    )
+    status = widgets.HTML(value="Add files or a folder, then click Load Batch.")
+    output = widgets.Output()
+    load_button = widgets.Button(description="Load Batch", button_style="success")
+    remove_button = widgets.Button(description="Remove Selected")
+    clear_button = widgets.Button(description="Clear Selection")
+    cancel_button = widgets.Button(description="Cancel")
+
+    def update_selection():
+        selection.options = list(selected)
+
+    def add_paths(paths):
+        count = 0
+        existing = set(selected)
+        for path in paths:
+            path = os.path.abspath(path)
+            if path not in existing:
+                selected.append(path)
+                existing.add(path)
+                count += 1
+        update_selection()
+        status.value = f"Added {count} file(s). {len(selected)} file(s) selected."
+
+    def add_folder(folder):
+        def raise_walk_error(error):
+            raise error
+
+        paths = []
+        try:
+            for root, dirs, files in os.walk(folder, onerror=raise_walk_error):
+                dirs[:] = [name for name in dirs if not name.startswith(".")]
+                paths.extend(os.path.join(root, name) for name in files
+                             if not name.startswith(".") and name.endswith(".h5"))
+        except OSError as error:
+            status.value = f"<b style='color:red;'>Error reading folder: {escape(str(error))}</b>"
+            return
+        paths.sort()
+        if not paths:
+            status.value = "<b style='color:red;'>No HDF5 (.h5) files found in this folder or its subfolders.</b>"
+            return
+        add_paths(paths)
+
+    def add_file(path):
+        if not os.path.isfile(path):
+            status.value = "<b style='color:red;'>The selected file no longer exists.</b>"
+            return
+        add_paths([path])
+
+    def remove_selected(button):
+        to_remove = set(selection.value)
+        selected[:] = [path for path in selected if path not in to_remove]
+        update_selection()
+        status.value = f"{len(selected)} file(s) selected."
+
+    def clear_selection(button):
+        selected.clear()
+        update_selection()
+        status.value = "Selection cleared."
+
+    def load_selected(button):
+        if not selected:
+            status.value = "<b style='color:red;'>Add at least one HDF5 file before loading.</b>"
+            return
+        load_button.disabled = True
+        status.value = "Loading batch. Please wait..."
+        try:
+            with output:
+                output.clear_output(wait=True)
+                loaded = analyze_sgm_bsky_data_batch(list(selected), verbose=verbose)
+            data_packs[:] = loaded
+            if data_packs:
+                status.value = f"Loaded {len(data_packs)} scan(s). You can now run the batch plotting cell."
+            else:
+                status.value = "<b style='color:red;'>No scans were loaded. Check the messages below.</b>"
+        except Exception as error:
+            status.value = f"<b style='color:red;'>Batch loading failed: {escape(str(error))}</b>"
+            with output:
+                traceback.print_exc()
+        finally:
+            load_button.disabled = False
+
+    container = widgets.VBox()
+
+    def cancel(button):
+        message = ("Batch browser closed; previously loaded scans remain available."
+                   if data_packs else "Batch selection cancelled; no scans loaded.")
+        container.children = (widgets.HTML(message),)
+
+    remove_button.on_click(remove_selected)
+    clear_button.on_click(clear_selection)
+    load_button.on_click(load_selected)
+    cancel_button.on_click(cancel)
+    browser = browse_beamline_data(
+        on_load=add_file,
+        on_select_folder=add_folder,
+        title="Select HDF5 scans for batch analysis",
+        file_button_label="Add Selected File",
+        auto_display=False,
+    )
+    if browser is None:
+        raise RuntimeError("The batch browser requires ipywidgets and IPython.")
+    container.children = (
+        widgets.HTML("Navigate to a project, add individual files or add the current folder "
+                     "(including its subfolders), then click <b>Load Batch</b>."),
+        browser, selection, widgets.HBox([remove_button, clear_button]),
+        widgets.HBox([load_button, cancel_button]), status, output,
+    )
+    display(container)
+
 
 def analyze_sgm_bsky_data_batch(file_paths=None, verbose=True):
     """
@@ -20,8 +142,17 @@ def analyze_sgm_bsky_data_batch(file_paths=None, verbose=True):
 
     Returns:
         list of dict: A list of loaded data_pack dictionaries, sorted by scan name.
+        In a headless Jupyter notebook, the returned list is initially empty and
+        is populated when Load Batch is clicked in the browser.
     """
     if file_paths is None or len(file_paths) == 0:
+        if not HAS_GUI:
+            from IPython import get_ipython
+            shell = get_ipython()
+            if shell is not None and getattr(shell, "kernel", None) is not None:
+                data_packs = []
+                _browse_batch_scans(data_packs, verbose)
+                return data_packs
         # Prompt user to choose between directory scanning or multi-file selection
         choice = show_custom_dialog(
             title="Batch Mode Selection",

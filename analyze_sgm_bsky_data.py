@@ -854,10 +854,11 @@ def analyze_sgm_bsky_data(file_path=None, verbose=True):
     return data_pack
 
 
-def browse_beamline_data(start_dir=None, on_load=None, file_filter=".h5", title="CLS Beamline Data Explorer", auto_display=True):
+def browse_beamline_data(start_dir=None, on_load=None, file_filter=".h5", title="CLS Beamline Data Explorer", auto_display=True, on_select_folder=None, file_button_label="Select File"):
     """
     Launches an interactive, non-blocking Jupyter GUI browser for CLS Loki beamline data.
     Allows navigating through subfolders and selecting .h5 stack files or .csv files directly inside JupyterLab.
+    If on_select_folder is provided, an additional button passes the current folder to it.
     """
     try:
         import ipywidgets as widgets
@@ -897,7 +898,7 @@ def browse_beamline_data(start_dir=None, on_load=None, file_filter=".h5", title=
     lbl_files = f"Files ({', '.join(filters)}):"
     file_select = widgets.Select(description=lbl_files, rows=6, layout=widgets.Layout(width="650px"))
     btn_open = widgets.Button(description="Open Selected Folder", button_style="info", layout=widgets.Layout(width="200px"))
-    btn_load = widgets.Button(description="Select File", button_style="success", icon="folder-open", layout=widgets.Layout(width="200px"))
+    btn_load = widgets.Button(description=file_button_label, button_style="success", icon="folder-open", layout=widgets.Layout(width="200px"))
     status_msg = widgets.HTML(value=f"<i>Select a folder to navigate, or select a file to load</i>")
 
     def refresh_view():
@@ -985,16 +986,29 @@ def browse_beamline_data(start_dir=None, on_load=None, file_filter=".h5", title=
     path_box.observe(lambda c: refresh_view(), names="value")
     sort_dropdown.observe(lambda c: refresh_view(), names="value")
 
-    ui = widgets.VBox([
+    browser_children = [
         widgets.HTML(f"<h3>{title}</h3>"),
         widgets.HBox([path_box, btn_up]),
         sort_dropdown,
         folder_select,
         btn_open,
         file_select,
-        btn_load,
-        status_msg
-    ])
+        btn_load
+    ]
+    if on_select_folder is not None:
+        btn_folder = widgets.Button(description="Add Current Folder", layout=widgets.Layout(width="200px"))
+
+        def on_folder_clicked(b):
+            current = path_box.value.strip()
+            if not os.path.isdir(current):
+                status_msg.value = "<b style='color:red;'>Please select a valid folder.</b>"
+                return
+            on_select_folder(current)
+
+        btn_folder.on_click(on_folder_clicked)
+        browser_children.append(btn_folder)
+    browser_children.append(status_msg)
+    ui = widgets.VBox(browser_children)
     refresh_view()
     if auto_display:
         display(ui)
