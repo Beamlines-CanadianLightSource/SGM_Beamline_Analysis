@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import numpy as np
 
+import alignment_utils
 import plot_sgm_bsky_data_batch as batch
 
 
@@ -67,11 +68,15 @@ class BatchHPCPreviewTests(unittest.TestCase):
     def test_spectrum_preview_calibration_choice_and_shared_i0_settings(self):
         ui, captured = self.setup_ui()
         self.assertIn("calibration scan", ui.children[0].children[0].value)
+        self.assertIn("loaded sample", ui.children[0].children[0].value)
+        self.assertEqual(find(ui, "Spectrum:").options[0][0], "sample0 | scan0 | sdd1")
+        self.assertIn("Sample: sample0", ui.children[0].children[3].value)
         self.assertIn("gain = 10", ui.children[0].children[3].value)
         self.assertGreater(len(ui.children[0].children[2].value), 0)
         find(ui, "Apply SDD calibration").value = False
         find(ui, "Waterfall offsets").value = True
         find(ui, "Continue").click()
+        self.assertEqual(find(ui, "Scan:").options[1][0], "sample1 | scan1")
         find(ui, "Scan:").value = 1
         find(ui, "Constant").value = True
         find(ui, "Value:").value = 2.
@@ -149,12 +154,78 @@ class BatchHPCPreviewTests(unittest.TestCase):
                         and batch.plt.figure(n)._suptitle.get_text().startswith("Batch NORMALIZED"))
             np.testing.assert_allclose(norm.axes[0].lines[0].get_ydata(), 10 / np.array([4., 5., 6.]))
             np.testing.assert_allclose(norm.axes[0].lines[1].get_ydata(), 10 / np.array([6., 7., 8.]))
+            raw = next(batch.plt.figure(n) for n in batch.plt.get_fignums()
+                       if batch.plt.figure(n)._suptitle
+                       and batch.plt.figure(n)._suptitle.get_text().startswith("Batch RAW"))
+            xrf = next(batch.plt.figure(n) for n in batch.plt.get_fignums()
+                       if batch.plt.figure(n).axes
+                       and batch.plt.figure(n).axes[0].get_title().startswith("Interactive XRF"))
+            np.testing.assert_allclose(xrf.get_size_inches(), [7., 3.15])
+            np.testing.assert_allclose(raw.get_size_inches(), [10.5, 9.1])
+            np.testing.assert_allclose(norm.get_size_inches(), [10.5, 9.1])
+            for figure in (raw, norm):
+                figure.canvas.draw()
+                renderer = figure.canvas.get_renderer()
+                legend = figure.legends[0].get_window_extent(renderer)
+                self.assertTrue(all(not legend.overlaps(axis.get_window_extent(renderer))
+                                    for axis in figure.axes))
             norm._btn_save_csv._observers.process("clicked", None)
         csvs = list(self.root.glob("**/*summary.csv"))
         self.assertEqual(len(csvs), 2)
         text = csvs[0].read_text(encoding="utf-8-sig")
         self.assertIn("Modified_Au_Mesh_I0 (used for normalization)", text)
         self.assertIn("+ Constant", text)
+
+    def test_hpc_exports_to_matching_preprocessed_folders_without_overwrite(self):
+        for index, pack in enumerate(self.packs):
+            pack["save_dir"] = str(self.root / "project" / "raw" / "2026-10-30" / f"stack{index}")
+        ui, captured = self.setup_ui()
+        find(ui, "Apply SDD calibration").value = False
+        find(ui, "Continue").click()
+        find(ui, "Cancel").click()
+        with (
+            patch("IPython.get_ipython", return_value=None),
+            patch.object(batch.plt, "show"),
+            patch.object(batch, "show_custom_dialog", return_value="ok"),
+            patch.object(alignment_utils, "HAS_GUI", False),
+            contextlib.redirect_stdout(io.StringIO()) as output,
+        ):
+            batch._plot_sgm_bsky_data_batch(self.packs, channel_roi=(20, 20), hpc_config=captured[0])
+            norm = next(batch.plt.figure(n) for n in batch.plt.get_fignums()
+                        if batch.plt.figure(n)._suptitle
+                        and batch.plt.figure(n)._suptitle.get_text().startswith("Batch NORMALIZED"))
+            norm._btn_save_csv._observers.process("clicked", None)
+            norm._btn_save_csv._observers.process("clicked", None)
+        for index in range(2):
+            target = self.root / "project" / "preprocessed" / "2026-10-30" / f"stack{index}"
+            files = sorted(target.glob("*summary*.csv"))
+            self.assertEqual(len(files), 2)
+            self.assertTrue(any(p.stem.endswith("_1") for p in files))
+            for path in files:
+                self.assertIn(str(path), output.getvalue())
+        self.assertFalse((self.root / "project" / "raw").exists())
+
+    def test_unwritable_hpc_destination_reports_failure(self):
+        ui, captured = self.setup_ui()
+        find(ui, "Continue").click()
+        find(ui, "Cancel").click()
+        with (
+            patch("IPython.get_ipython", return_value=None),
+            patch.object(batch.plt, "show"),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            batch._plot_sgm_bsky_data_batch(self.packs, channel_roi=(20, 20), hpc_config=captured[0])
+        norm = next(batch.plt.figure(n) for n in batch.plt.get_fignums()
+                    if batch.plt.figure(n)._suptitle
+                    and batch.plt.figure(n)._suptitle.get_text().startswith("Batch NORMALIZED"))
+        with (
+            patch.object(batch.os, "makedirs", side_effect=PermissionError("read-only")),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()) as errors,
+        ):
+            norm._btn_save_csv._observers.process("clicked", None)
+        self.assertIn("read-only", errors.getvalue())
+        self.assertIn("No XANES spectra CSV files were saved", errors.getvalue())
 
     def test_missing_i0_reports_error_without_starting_plot(self):
         Path(self.packs[0]["mcc_files"][100.]).unlink()

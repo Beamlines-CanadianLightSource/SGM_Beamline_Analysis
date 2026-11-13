@@ -34,7 +34,8 @@ from plot_sgm_bsky_data import (
     _i0_preview_widget, compute_modified_i0
 )
 from analyze_sgm_bsky_data import (
-    build_scan_filename_base, resolve_sample_name, get_sdd_label, browse_beamline_data
+    build_scan_filename_base, resolve_sample_name, get_sdd_label, browse_beamline_data,
+    resolve_preprocessed_save_dir
 )
 
 def _batch_roi_label(channel_roi, energy_min, energy_max, calibrated):
@@ -388,10 +389,25 @@ def _plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_ro
 
         for scan_idx, path_pack in enumerate(data_packs):
             h5_path = path_pack.get('h5_file_path') or path_pack.get('h5_dir')
-            save_dir = path_pack.get('save_dir') if path_pack.get('save_dir') and path_pack.get('save_dir') != 'N/A' else (
-                os.path.dirname(os.path.abspath(h5_path)) if h5_path and os.path.isfile(h5_path) else (
-                    os.path.abspath(h5_path) if h5_path and os.path.isdir(h5_path) else os.getcwd()))
             scan_name = path_pack.get('scan_name', f"Scan_{scan_idx + 1}")
+            save_dir = path_pack.get('save_dir')
+            if not save_dir or save_dir == 'N/A':
+                if h5_path and os.path.isfile(h5_path):
+                    save_dir = os.path.dirname(os.path.abspath(h5_path))
+                elif h5_path and os.path.isdir(h5_path):
+                    save_dir = os.path.abspath(h5_path)
+                elif hpc_config is not None:
+                    print(f"  [ERROR] No output directory is available for {scan_name}; skipped.", file=sys.stderr)
+                    continue
+                else:
+                    save_dir = os.getcwd()
+            if hpc_config is not None:
+                try:
+                    save_dir = resolve_preprocessed_save_dir(save_dir)
+                    os.makedirs(save_dir, exist_ok=True)
+                except OSError as error:
+                    print(f"  [ERROR] Cannot create output directory for {scan_name}: {error}", file=sys.stderr)
+                    continue
             sample_name = path_pack.get('sample_name')
             if not sample_name or str(sample_name).strip() in ('N/A', 'None', '', 'Sample'):
                 sample_name = resolve_sample_name(h5_path, scan_name=scan_name)
@@ -408,8 +424,16 @@ def _plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_ro
                 
             csv_filename = f"{base_filename}_Rect_{roi_str}_summary.csv"
             csv_filepath = os.path.join(save_dir, csv_filename)
-            
-            if os.path.exists(csv_filepath):
+            if hpc_config is not None:
+                try:
+                    csv_filepath = get_safe_save_path(save_dir, csv_filename)
+                except OSError as error:
+                    print(f"  [ERROR] Cannot prepare output file for {scan_name}: {error}", file=sys.stderr)
+                    continue
+                if not csv_filepath:
+                    print(f"  [SKIP] Skipped saving CSV for {scan_name}.", file=sys.stderr)
+                    continue
+            elif os.path.exists(csv_filepath):
                 overwrite = show_custom_dialog(
                     title="File Exists",
                     message=f"The CSV file '{csv_filename}' already exists in:\n{save_dir}\n\nDo you want to overwrite it?",
@@ -553,19 +577,23 @@ def _plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_ro
             try:
                 with open(csv_filepath, 'w', encoding='utf-8-sig') as f_out:
                     f_out.write("\n".join(rows) + "\n")
-                print(f"  Saved XANES CSV: {csv_filename}")
+                print(f"  Saved XANES CSV: {csv_filepath}")
                 saved_count += 1
             except Exception as e:
-                print(f"  Error saving CSV for {scan_name}: {e}", file=sys.stderr)
+                print(f"  Error saving CSV for {scan_name} at {csv_filepath}: {e}", file=sys.stderr)
                 
-        show_custom_dialog(
-            title="Save Complete",
-            message=f"Successfully saved XANES spectra CSV files for {saved_count} scans in their original folders.",
-            dialog_type="info"
-        )
+        if saved_count:
+            show_custom_dialog(
+                title="Save Complete",
+                message=f"Saved XANES spectra CSV files for {saved_count} scans. See the paths above.",
+                dialog_type="info"
+            )
+        else:
+            print("No XANES spectra CSV files were saved.", file=sys.stderr)
 
     # ------------------ Figure 0: XRF Emission Spectrum (Tab 0 Inspector) ------------------
-    fig_xrf, ax_xrf = plt.subplots(figsize=(10, 4.5))
+    figure_scale = 0.7 if hpc_config is not None else 1.0
+    fig_xrf, ax_xrf = plt.subplots(figsize=(10 * figure_scale, 4.5 * figure_scale))
     ref_pack = data_packs[0]
     ref_det = 'sdd3' if 'sdd3' in ref_pack.get('sdd_files', {}) else next(iter(ref_pack.get('sdd_files', {}).keys()), 'sdd1')
     
@@ -639,7 +667,7 @@ def _plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_ro
         for index, ds in enumerate(plot_data['mcc1_raw'])
     }
     figure_height = max(13.0, 2.0 + 0.25 * len(plot_data['mcc1_raw']))
-    fig_raw, axes_raw = plt.subplots(3, 2, figsize=(15, figure_height))
+    fig_raw, axes_raw = plt.subplots(3, 2, figsize=(15 * figure_scale, figure_height * figure_scale))
     roi_label = _batch_roi_label(channel_roi, energy_min, energy_max, use_calibration)
     fig_raw.suptitle(f"Batch RAW Spectra Comparison\n{roi_label}", fontsize=14, fontweight='bold')
     ax_list_raw = axes_raw.flatten()
@@ -692,7 +720,7 @@ def _plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_ro
     figs_to_display.append(fig_raw)
 
     # ------------------ Figure 2: Normalized Spectra (3x2 Subplots) ------------------
-    fig_norm, axes_norm = plt.subplots(3, 2, figsize=(15, figure_height))
+    fig_norm, axes_norm = plt.subplots(3, 2, figsize=(15 * figure_scale, figure_height * figure_scale))
     # Format suptitle with multi-line wrap if i0_source_label is long
     i0_fmt_str = i0_source_label
     if len(i0_fmt_str) > 60 and " (Divided by OD:" in i0_fmt_str:
@@ -750,6 +778,13 @@ def _plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_ro
                     bbox_to_anchor=(0.72, 0.90), fontsize='small')
     figs_to_display.append(fig_norm)
     
+    if hpc_config is not None:
+        from matplotlib.text import Text
+        for fig in figs_to_display:
+            for text in fig.findobj(match=Text):
+                text.set_fontsize(text.get_fontsize() * figure_scale)
+        fig_xrf.tight_layout()
+
     # Add hover interactive cursors to all lines
     if lines_for_cursor:
         try:
@@ -887,7 +922,7 @@ def _plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_ro
         scroll_boxes = []
         for fig in figs_to_display:
             if hasattr(fig.canvas, 'layout'):
-                fig.canvas.layout.min_width = '1000px'
+                fig.canvas.layout.min_width = '700px' if hpc_config is not None else '1000px'
             scroll_boxes.append(widgets.VBox([fig.canvas], layout=widgets.Layout(width='100%', overflow_x='auto')))
         
         tab_widget = widgets.Tab()
@@ -904,9 +939,19 @@ def _plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_ro
             layout=widgets.Layout(width='240px', height='36px', margin='10px 0px 0px 5px'),
             style={'button_color': '#FFD700', 'font_weight': 'bold'}
         )
-        btn_save_widget.on_click(execute_save_csvs)
+        if hpc_config is not None:
+            save_output = widgets.Output()
 
-        display(widgets.VBox([controls_box, tab_widget, btn_save_widget]))
+            def save_with_visible_output(button):
+                with save_output:
+                    save_output.clear_output(wait=True)
+                    execute_save_csvs(button)
+
+            btn_save_widget.on_click(save_with_visible_output)
+            display(widgets.VBox([controls_box, tab_widget, btn_save_widget, save_output]))
+        else:
+            btn_save_widget.on_click(execute_save_csvs)
+            display(widgets.VBox([controls_box, tab_widget, btn_save_widget]))
     else:
         # CLI Mode: add single Matplotlib yellow button to fig_norm canvas
         ax_save_norm = fig_norm.add_axes([0.38, 0.012, 0.24, 0.035])
@@ -942,11 +987,13 @@ def _batch_hpc_setup(data_packs, map_roi, on_start):
                     energy, path = min(paths, key=lambda pair: abs(float(pair[0]) - float(representative)))
                 else:
                     energy, path = paths[0]
-                spectrum_options.append((f"{pack.get('scan_name', 'Scan')} - {detector}", (pack, detector, energy, path)))
+                scan = pack.get('scan_name', 'Scan')
+                sample = _batch_spectrum_label(pack, scan)
+                spectrum_options.append((f"{sample} | {scan} | {detector}", (pack, detector, energy, path)))
 
     spectrum_select = widgets.Dropdown(
         options=[(label, index) for index, (label, _) in enumerate(spectrum_options)],
-        description="Spectrum:", layout=widgets.Layout(width="650px")
+        description="Spectrum:", layout=widgets.Layout(width="900px")
     )
     spectrum_image = widgets.Image(format="png")
     spectrum_status = widgets.HTML()
@@ -1005,8 +1052,9 @@ def _batch_hpc_setup(data_packs, map_roi, on_start):
                 right.plot(gain * channels + offset, spectrum)
                 right.set_xlabel("Emission energy (eV)")
                 right.set_title("Saved calibration")
+                sample = _batch_spectrum_label(pack, pack.get('scan_name', 'Scan'))
                 spectrum_status.value = (
-                    f"{escape(detector)} at {energy:.2f} eV: "
+                    f"Sample: {escape(str(sample))}; {escape(detector)}; incident energy {energy:.2f} eV. "
                     f"gain = {gain:.4g} eV/channel; offset = {offset:.4g} eV."
                 )
             else:
@@ -1055,7 +1103,9 @@ def _batch_hpc_setup(data_packs, map_roi, on_start):
                         continue
                     mask = _batch_spatial_mask(pack, map_roi)
                     values = np.array([get_mcc_val(pack, en, 1, mask, strict=True) for en in energies])
-                    curves.append((pack.get('scan_name', 'Scan'), energies, values))
+                    scan = pack.get('scan_name', 'Scan')
+                    sample = _batch_spectrum_label(pack, scan)
+                    curves.append((f"{sample} | {scan}", energies, values))
                 if not curves:
                     raise ValueError("No multi-energy scans are available for the internal I0 preview.")
             except (ValueError, OSError, TypeError) as error:
@@ -1117,7 +1167,8 @@ def _batch_hpc_setup(data_packs, map_roi, on_start):
     cancel_button.on_click(cancel)
     update_spectrum()
     stage.children = (
-        widgets.HTML("<b>SDD calibration preview</b><br>" + details),
+        widgets.HTML("<b>SDD calibration preview</b><br>Preview shows a spectrum from a loaded sample, "
+                     "not necessarily the calibration scan.<br>" + details),
         spectrum_select, spectrum_image, spectrum_status,
         use_calibration, source, waterfall, widgets.HBox([next_button, cancel_button]), status
     )

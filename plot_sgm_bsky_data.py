@@ -4269,7 +4269,7 @@ def _i0_preview_widget(x_sorted, y_sorted, label_name, allow_energy_shift, on_fi
                   for name, x, y in curves]
     curve_selector = widgets.Dropdown(
         options=[(name, index) for index, (name, _, _) in enumerate(curves)],
-        description="Scan:"
+        description="Scan:", layout=widgets.Layout(width="900px")
     )
     smooth = widgets.Checkbox(value=False, description="Smooth", indent=False)
     window = widgets.IntText(value=11, description="Window:", continuous_update=False)
