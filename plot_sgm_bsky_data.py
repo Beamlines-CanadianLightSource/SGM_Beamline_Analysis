@@ -4257,10 +4257,20 @@ def compute_modified_i0(x_sorted, y_sorted, do_smooth, smooth_window, do_const, 
 
     return y_proc, od_vals, mod_desc, extra_str
 
-def _i0_preview_widget(x_sorted, y_sorted, label_name, allow_energy_shift, on_finish):
+def _i0_preview_widget(x_sorted, y_sorted, label_name, allow_energy_shift, on_finish,
+                       curves=None, include_settings=False):
     """Preview and apply headless I0 processing without blocking Jupyter callbacks."""
     x_sorted = np.asarray(x_sorted, dtype=float)
     y_sorted = np.asarray(y_sorted, dtype=float)
+    if curves is None:
+        curves = [(label_name, x_sorted, y_sorted)]
+    else:
+        curves = [(name, np.asarray(x, dtype=float), np.asarray(y, dtype=float))
+                  for name, x, y in curves]
+    curve_selector = widgets.Dropdown(
+        options=[(name, index) for index, (name, _, _) in enumerate(curves)],
+        description="Scan:"
+    )
     smooth = widgets.Checkbox(value=False, description="Smooth", indent=False)
     window = widgets.IntText(value=11, description="Window:", continuous_update=False)
     constant = widgets.Checkbox(value=False, description="Constant", indent=False)
@@ -4283,12 +4293,8 @@ def _i0_preview_widget(x_sorted, y_sorted, label_name, allow_energy_shift, on_fi
         state["result"] = None
         apply_button.disabled = True
         try:
-            if len(x_sorted) != len(y_sorted) or len(x_sorted) == 0:
-                raise ValueError("I0 energy and intensity arrays must have matching, nonzero lengths.")
-            if not np.all(np.isfinite(x_sorted)) or not np.all(np.isfinite(y_sorted)):
-                raise ValueError("I0 energies and intensities must be finite.")
-            if smooth.value and (window.value < 3 or window.value % 2 == 0 or window.value > len(y_sorted)):
-                raise ValueError(f"Smoothing window must be odd, at least 3, and no greater than {len(y_sorted)}.")
+            if smooth.value and (window.value < 3 or window.value % 2 == 0):
+                raise ValueError("Smoothing window must be odd and at least 3.")
             if constant.value and operation.value in ("Multiply", "Divide") and constant_value.value == 0:
                 raise ValueError("The multiplication or division constant must be nonzero.")
             if constant.value and not np.isfinite(constant_value.value):
@@ -4297,26 +4303,40 @@ def _i0_preview_widget(x_sorted, y_sorted, label_name, allow_energy_shift, on_fi
                 raise ValueError("The energy shift must be finite.")
             if od_enabled.value and not HAS_SF:
                 raise ValueError("Optical density calculation is unavailable.")
-            y_proc, od_vals, descriptions, extra = compute_modified_i0(
-                x_sorted, y_sorted, smooth.value, window.value,
-                constant.value, operation.value, constant_value.value,
-                allow_energy_shift and shift_enabled.value, shift_value.value,
-                od_enabled.value, od_compound.value, od_density.value,
-                od_thickness.value, od_autoscale.value
+            settings = dict(
+                do_smooth=smooth.value, smooth_window=window.value,
+                do_const=constant.value, const_op=operation.value, const_val=constant_value.value,
+                do_shift=allow_energy_shift and shift_enabled.value, shift_val=shift_value.value,
+                do_od=od_enabled.value, od_comp=od_compound.value, od_dens=od_density.value,
+                od_thick=od_thickness.value, od_autoscale=od_autoscale.value,
             )
-            if od_enabled.value and od_vals is None:
-                raise ValueError("Optical density calculation failed; check the compound and parameters.")
-            if not np.all(np.isfinite(y_proc)):
-                raise ValueError("The modified I0 contains non-finite values.")
+            calculated = []
+            for name, x, y in curves:
+                if len(x) != len(y) or len(x) == 0:
+                    raise ValueError(f"{name}: I0 energy and intensity arrays must have matching, nonzero lengths.")
+                if not np.all(np.isfinite(x)) or not np.all(np.isfinite(y)):
+                    raise ValueError(f"{name}: I0 energies and intensities must be finite.")
+                if smooth.value and window.value > len(y):
+                    raise ValueError(f"{name}: smoothing window cannot exceed {len(y)} points.")
+                processed = compute_modified_i0(x, y, **settings)
+                if smooth.value and not any(desc.startswith("Smoothed w=") for desc in processed[2]):
+                    raise ValueError(f"{name}: smoothing calculation failed.")
+                if od_enabled.value and processed[1] is None:
+                    raise ValueError(f"{name}: optical density calculation failed; check the compound and parameters.")
+                if not np.all(np.isfinite(processed[0])):
+                    raise ValueError(f"{name}: the modified I0 contains non-finite values.")
+                calculated.append(processed)
+            current_label, current_x, current_y = curves[curve_selector.value]
+            y_proc, od_vals, descriptions, extra = calculated[curve_selector.value]
             shifted = allow_energy_shift and shift_enabled.value and shift_value.value != 0.0
             fig = Figure(figsize=(7, 4))
             FigureCanvasAgg(fig)
             ax = fig.subplots()
-            ax.plot(x_sorted, y_sorted, color="gray", linestyle="--", label="Original I0")
-            ax.plot(x_sorted + (shift_value.value if shifted else 0.0), y_proc,
+            ax.plot(current_x, current_y, color="gray", linestyle="--", label="Original I0")
+            ax.plot(current_x + (shift_value.value if shifted else 0.0), y_proc,
                     color="blue", label="Modified I0")
             ax.set_xlabel("Energy (eV)")
-            ax.set_ylabel(label_name)
+            ax.set_ylabel(current_label)
             ax.set_title("I0 preview" + (": " + ", ".join(descriptions) if descriptions else ""))
             ax.grid(True, linestyle="--", alpha=0.4)
             ax.legend()
@@ -4329,6 +4349,8 @@ def _i0_preview_widget(x_sorted, y_sorted, label_name, allow_energy_shift, on_fi
                 operation.value if constant.value else "Add", shifted,
                 shift_value.value if shifted else 0.0
             )
+            if include_settings:
+                state["result"] += (settings,)
             status.value = "Preview updated. Apply to use the modified I0; Cancel uses the original."
             apply_button.disabled = False
         except (ValueError, TypeError, ArithmeticError) as error:
@@ -4340,18 +4362,26 @@ def _i0_preview_widget(x_sorted, y_sorted, label_name, allow_energy_shift, on_fi
         on_finish(result)
 
     apply_button.on_click(lambda button: finish(state["result"]) if state["result"] is not None else None)
-    cancel_button.on_click(lambda button: finish((y_sorted.copy(), "", 0.0, "Add", False, 0.0)))
+    def cancel(button):
+        y = curves[curve_selector.value][2]
+        result = (y.copy(), "", 0.0, "Add", False, 0.0)
+        finish(result + (None,) if include_settings else result)
+
+    cancel_button.on_click(cancel)
     controls = [smooth, window, constant, operation, constant_value, od_enabled,
                 od_compound, od_density, od_thickness, od_autoscale]
     if allow_energy_shift:
         controls.extend([shift_enabled, shift_value])
+    if len(curves) > 1:
+        controls.append(curve_selector)
     for control in controls:
         control.observe(update_preview, names="value")
     rows = [
         widgets.HTML(f"<b>I0 preview: {escape(label_name)}</b>"),
-        widgets.HBox([smooth, window]),
-        widgets.HBox([constant, operation, constant_value]),
     ]
+    if len(curves) > 1:
+        rows.append(curve_selector)
+    rows.extend([widgets.HBox([smooth, window]), widgets.HBox([constant, operation, constant_value])])
     if allow_energy_shift:
         rows.append(widgets.HBox([shift_enabled, shift_value]))
     rows.extend([

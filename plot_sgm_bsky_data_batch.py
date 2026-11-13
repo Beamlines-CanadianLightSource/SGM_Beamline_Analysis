@@ -1,9 +1,13 @@
 import os
 import sys
 import traceback
+import io
+from html import escape
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.widgets import Button, SpanSelector
 try:
     from tkinter import filedialog
@@ -17,15 +21,21 @@ from alignment_utils import (
     show_custom_dialog,
     interactive_channel_selector,
     get_safe_save_path,
-    format_num_val
+    format_num_val,
+    HAS_GUI
 )
 from sdd_calibration_utils import (
     load_calibration,
     channel_to_energy,
     get_calibrated_bounds
 )
-from plot_sgm_bsky_data import read_csv_with_comments, ExternalI0PreviewDialog, get_tk_root
-from analyze_sgm_bsky_data import build_scan_filename_base, resolve_sample_name, get_sdd_label
+from plot_sgm_bsky_data import (
+    read_csv_with_comments, ExternalI0PreviewDialog, get_tk_root,
+    _i0_preview_widget, compute_modified_i0
+)
+from analyze_sgm_bsky_data import (
+    build_scan_filename_base, resolve_sample_name, get_sdd_label, browse_beamline_data
+)
 
 def _batch_roi_label(channel_roi, energy_min, energy_max, calibrated):
     if calibrated and energy_min is not None and energy_max is not None:
@@ -40,7 +50,7 @@ def _batch_spectrum_label(path_pack, scan_name):
     return sample
 
 
-def get_mcc_val(path_pack, energy, channel, spatial_mask):
+def get_mcc_val(path_pack, energy, channel, spatial_mask, strict=False):
     """
     Extracts the average value of a given MCC channel inside the spatial mask
     at a specific energy step.
@@ -57,11 +67,37 @@ def get_mcc_val(path_pack, energy, channel, spatial_mask):
                 val = col_data[spatial_mask[:num_pts]].mean()
                 if not np.isnan(val):
                     return val
-        except Exception:
-            pass
+        except Exception as error:
+            if strict:
+                raise ValueError(f"Cannot read MCC channel {channel} at {energy} eV: {error}") from error
+    if strict:
+        raise ValueError(f"MCC channel {channel} is unavailable at {energy} eV in {path_pack.get('scan_name', 'scan')}.")
     return 1.0 if channel == 1 else 0.0
 
-def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi=None, show_markers=True, use_color=True, auto_element_roi=False, element=None, n_sigma=2.0):
+
+def _batch_spatial_mask(path_pack, map_roi):
+    x_raw = path_pack.get('x', np.array([]))
+    y_raw = path_pack.get('y', np.array([]))
+    count = min(x_raw.size, y_raw.size)
+    try:
+        first_det = list(path_pack['sdd_files'].keys())[0]
+        first_path = path_pack['sdd_files'][first_det].get(path_pack['energies'][0])
+        if first_path and os.path.exists(first_path):
+            count = min(os.path.getsize(first_path) // 1024, count)
+    except (IndexError, KeyError, TypeError, OSError):
+        pass
+    x, y = x_raw[:count], y_raw[:count]
+    if map_roi is None:
+        if len(x) and len(y):
+            map_roi = [np.min(x), np.max(x), np.min(y), np.max(y)]
+        else:
+            map_roi = [0.0, 1.0, 0.0, 1.0]
+    x1, x2 = sorted(map_roi[0:2])
+    y1, y2 = sorted(map_roi[2:4])
+    return (x >= x1) & (x <= x2) & (y >= y1) & (y <= y2)
+
+
+def _plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi=None, show_markers=True, use_color=True, auto_element_roi=False, element=None, n_sigma=2.0, hpc_config=None):
     """
     Plots the XANES spectra (energy dependence) of multiple loaded scans together,
     supporting interactive ROI selection, live ROI refresh, I0 normalization,
@@ -87,14 +123,15 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
     plt.ioff()
 
     # 1. Prompt for SDD Calibration FIRST
-    use_calibration = show_custom_dialog(
-        title="SDD Calibration",
-        message="Apply SDD Energy Calibration (using sdd_calibration.json)?",
-        dialog_type="yesno"
-    )
+    use_calibration = (hpc_config['use_calibration'] if hpc_config is not None else
+                       show_custom_dialog(
+                           title="SDD Calibration",
+                           message="Apply SDD Energy Calibration (using sdd_calibration.json)?",
+                           dialog_type="yesno"
+                       ))
     calib_data = {}
     if use_calibration is True:
-        calib_data = load_calibration()
+        calib_data = hpc_config['calib_data'] if hpc_config is not None else load_calibration()
         if not calib_data:
             print("Warning: sdd_calibration.json not found. Falling back to fixed channel ROI.", file=sys.stderr)
             use_calibration = False
@@ -154,11 +191,12 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
             print(f"Initial Batch ROI: channels {channel_roi[0]} to {channel_roi[1]}")
 
     # 3. Prompt for I0 normalization source
-    use_internal = show_custom_dialog(
-        title="I0 Selection",
-        message="Use INTERNAL Au Mesh I0 (mcc1) for I0 normalization?\n\n(Select 'No' to load an EXTERNAL I0 CSV)",
-        dialog_type="yesno"
-    )
+    use_internal = (hpc_config['use_internal'] if hpc_config is not None else
+                    show_custom_dialog(
+                        title="I0 Selection",
+                        message="Use INTERNAL Au Mesh I0 (mcc1) for I0 normalization?\n\n(Select 'No' to load an EXTERNAL I0 CSV)",
+                        dialog_type="yesno"
+                    ))
     if use_internal is None:
         print("I0 selection cancelled. Exiting plot.", file=sys.stderr)
         plt.ion()
@@ -166,7 +204,11 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
 
     x_sorted, y_sorted = None, None
     i0_source_label = "Au Mesh I0 (mcc1)"
-    if not use_internal:
+    i0_settings = hpc_config.get('i0_settings') if hpc_config is not None else None
+    if hpc_config is not None:
+        x_sorted, y_sorted = hpc_config['external_xy']
+        i0_source_label = hpc_config['i0_source_label']
+    elif not use_internal:
         func = getattr(filedialog, 'askopenfilename', 'askopenfilename') if filedialog else 'askopenfilename'
         ext_path = safe_filedialog_call(
             func,
@@ -207,11 +249,12 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
             use_internal = True
 
     # 4. Prompt for Waterfall/Vertical Offset
-    apply_waterfall = show_custom_dialog(
-        title="Waterfall Offset",
-        message="Apply a vertical offset (waterfall plot) to separate the spectra?\n\n(Select 'No' to overlay them directly)",
-        dialog_type="yesno"
-    )
+    apply_waterfall = (hpc_config['apply_waterfall'] if hpc_config is not None else
+                       show_custom_dialog(
+                           title="Waterfall Offset",
+                           message="Apply a vertical offset (waterfall plot) to separate the spectra?\n\n(Select 'No' to overlay them directly)",
+                           dialog_type="yesno"
+                       ))
     if apply_waterfall is None:
         apply_waterfall = False
 
@@ -231,6 +274,7 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
             'sdd3_raw': [], 'sdd3_norm': [],
             'sdd4_raw': [], 'sdd4_norm': [],
             'mcc1_raw': [],
+            'mcc1_used': [],
             'mcc4_raw': [], 'mcc4_norm': []
         }
 
@@ -242,38 +286,25 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
                 print(f"  [Batch Loader] Skipping spatial map / survey scan '{scan_name}' ({len(all_energies)} energy image(s); batch mode processes multi-energy spectrum stacks).")
                 continue
 
-            x_coords_raw = path_pack.get('x', np.array([]))
-            y_coords_raw = path_pack.get('y', np.array([]))
-            actual_num_s = min(x_coords_raw.size, y_coords_raw.size)
-            
-            try:
-                first_det = list(path_pack['sdd_files'].keys())[0]
-                first_en = path_pack['energies'][0]
-                first_path = path_pack['sdd_files'][first_det].get(first_en)
-                if first_path and os.path.exists(first_path):
-                    actual_num_s = min(os.path.getsize(first_path) // 1024, actual_num_s)
-            except Exception:
-                pass
-
-            x_coords = x_coords_raw[:actual_num_s]
-            y_coords = y_coords_raw[:actual_num_s]
-
-            if map_roi is None:
-                if len(x_coords) > 0 and len(y_coords) > 0:
-                    curr_map_roi = [np.min(x_coords), np.max(x_coords), np.min(y_coords), np.max(y_coords)]
-                else:
-                    curr_map_roi = [0.0, 1.0, 0.0, 1.0]
-            else:
-                curr_map_roi = map_roi
-
-            x1, x2 = sorted(curr_map_roi[0:2])
-            y1, y2 = sorted(curr_map_roi[2:4])
-            spatial_mask = (x_coords >= x1) & (x_coords <= x2) & (y_coords >= y1) & (y_coords <= y2)
+            spatial_mask = _batch_spatial_mask(path_pack, map_roi)
 
             all_energies = np.array(sorted(path_pack['energies']))
             i0_values = np.ones(len(all_energies))
             if not use_internal and x_sorted is not None and y_sorted is not None:
                 i0_values = np.interp(all_energies, x_sorted, y_sorted)
+            elif use_internal and i0_settings is not None:
+                original_i0 = np.array([
+                    get_mcc_val(path_pack, energy, 1, spatial_mask, strict=True)
+                    for energy in all_energies
+                ])
+                i0_values, od_vals, descriptions, _ = compute_modified_i0(all_energies, original_i0, **i0_settings)
+                if ((i0_settings['do_od'] and od_vals is None)
+                        or (i0_settings['do_smooth'] and not any(d.startswith("Smoothed w=") for d in descriptions))
+                        or not np.all(np.isfinite(i0_values))):
+                    raise ValueError(f"I0 processing failed for {scan_name}.")
+            if hpc_config is not None and (not use_internal or i0_settings is not None):
+                if not np.all(np.isfinite(i0_values)) or np.any(i0_values <= 0):
+                    raise ValueError(f"The selected I0 for {scan_name} must be finite and positive for normalization.")
 
             for det_name in ['sdd1', 'sdd2', 'sdd3', 'sdd4']:
                 if det_name not in path_pack['sdd_files']:
@@ -304,7 +335,7 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
                     val_norm = np.nan
                     if not np.isnan(val_raw):
                         mcc_val = get_mcc_val(path_pack, energy, 1, spatial_mask)
-                        norm_factor = mcc_val if use_internal else i0_values[e_idx]
+                        norm_factor = mcc_val if use_internal and i0_settings is None else i0_values[e_idx]
                         if norm_factor <= 0: norm_factor = 1.0
                         val_norm = val_raw / norm_factor
                     norm_intensities.append(val_norm)
@@ -318,11 +349,13 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
                 mcc4_val = get_mcc_val(path_pack, energy, 4, spatial_mask)
                 mcc1_raw_list.append(mcc1_val)
                 mcc4_raw_list.append(mcc4_val)
-                norm_factor = mcc1_val if use_internal else i0_values[e_idx]
+                norm_factor = mcc1_val if use_internal and i0_settings is None else i0_values[e_idx]
                 if norm_factor <= 0: norm_factor = 1.0
                 mcc4_norm_list.append(mcc4_val / norm_factor)
 
             data_out['mcc1_raw'].append({"scan_name": scan_name, "spectrum_label": spectrum_label, "energies": all_energies, "intensities": np.array(mcc1_raw_list)})
+            if use_internal and i0_settings is not None:
+                data_out['mcc1_used'].append({"scan_name": scan_name, "energies": all_energies, "intensities": i0_values})
             data_out['mcc4_raw'].append({"scan_name": scan_name, "spectrum_label": spectrum_label, "energies": all_energies, "intensities": np.array(mcc4_raw_list)})
             data_out['mcc4_norm'].append({"scan_name": scan_name, "spectrum_label": spectrum_label, "energies": all_energies, "intensities": np.array(mcc4_norm_list)})
 
@@ -354,6 +387,7 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
         curr_e_max = current_state['energy_max']
 
         for scan_idx, path_pack in enumerate(data_packs):
+            h5_path = path_pack.get('h5_file_path') or path_pack.get('h5_dir')
             save_dir = path_pack.get('save_dir') if path_pack.get('save_dir') and path_pack.get('save_dir') != 'N/A' else (
                 os.path.dirname(os.path.abspath(h5_path)) if h5_path and os.path.isfile(h5_path) else (
                     os.path.abspath(h5_path) if h5_path and os.path.isdir(h5_path) else os.getcwd()))
@@ -363,6 +397,9 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
                 sample_name = resolve_sample_name(h5_path, scan_name=scan_name)
             base_filename = build_scan_filename_base(scan_name, sample_name)
             scan_energies = np.array(sorted(path_pack['energies']))
+            if i0_settings is not None and len(scan_energies) <= 2:
+                print(f"  [SKIP] {scan_name} is not a multi-energy spectrum stack.")
+                continue
             
             if use_calibration and curr_e_min is not None and curr_e_max is not None:
                 roi_str = f"{curr_e_min:.1f}-{curr_e_max:.1f}eV"
@@ -463,8 +500,11 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
             rows.append(f"# Column {c_idx}: NORM_Average_SDD"); c_idx += 1
             
             rows.append(f"# Column {c_idx}: RAW_Au Mesh I0 (mcc1)"); c_idx += 1
+            if use_internal and i0_settings is not None:
+                rows.append(f"# Column {c_idx}: Modified_Au_Mesh_I0 (used for normalization)"); c_idx += 1
             if ext_i0_col_values is not None:
-                rows.append(f"# Column {c_idx}: RAW_External_I0 (from {i0_source_label})"); c_idx += 1
+                label = "External_I0_used_for_normalization" if hpc_config is not None else "RAW_External_I0"
+                rows.append(f"# Column {c_idx}: {label} (from {i0_source_label})"); c_idx += 1
             rows.append(f"# Column {c_idx}: RAW_TEY of Sample (mcc4)"); c_idx += 1
             rows.append(f"# Column {c_idx}: NORM_TEY of Sample (mcc4) (by {i0_source_label})"); c_idx += 1
             rows.append("#")
@@ -487,6 +527,7 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
             norm_avg = np.nanmean(sdd_norm_data, axis=0)
             
             mcc1_raw_data = next((ds['intensities'] for ds in active_plot_data['mcc1_raw'] if ds['scan_name'] == scan_name), np.zeros(len(scan_energies)))
+            mcc1_used_data = next((ds['intensities'] for ds in active_plot_data['mcc1_used'] if ds['scan_name'] == scan_name), None)
             mcc4_raw_data = next((ds['intensities'] for ds in active_plot_data['mcc4_raw'] if ds['scan_name'] == scan_name), np.zeros(len(scan_energies)))
             mcc4_norm_data = next((ds['intensities'] for ds in active_plot_data['mcc4_norm'] if ds['scan_name'] == scan_name), np.zeros(len(scan_energies)))
             
@@ -499,6 +540,10 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
                     row_vals.append(f"{sdd_norm_data[d_idx][i]:.6f}")
                 row_vals.append(f"{norm_avg[i]:.6f}")
                 row_vals.append(f"{mcc1_raw_data[i]:.6f}")
+                if use_internal and i0_settings is not None:
+                    if mcc1_used_data is None:
+                        raise ValueError(f"Modified I0 data unavailable for {scan_name}.")
+                    row_vals.append(f"{mcc1_used_data[i]:.6f}")
                 if ext_i0_col_values is not None:
                     row_vals.append(f"{ext_i0_col_values[i]:.6f}")
                 row_vals.append(f"{mcc4_raw_data[i]:.6f}")
@@ -873,4 +918,230 @@ def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi
         plt.show()
 
     plt.ion() # Restore interactive mode
+
+
+def _batch_hpc_setup(data_packs, map_roi, on_start):
+    """Choose calibration and preview batch I0 without blocking the notebook kernel."""
+    import ipywidgets as widgets
+    from IPython.display import display
+
+    calibration = load_calibration()
+    metadata = calibration.get('_metadata', {}) if calibration else {}
+    details = (
+        f"Scan: {escape(str(metadata.get('scan_used', 'N/A')))}; "
+        f"Edges: {escape(str(metadata.get('edges_used', 'N/A')))}; "
+        f"Updated: {escape(str(metadata.get('last_updated', 'N/A')))}"
+    )
+    spectrum_options = []
+    for pack in data_packs:
+        for detector, files in sorted(pack.get('sdd_files', {}).items()):
+            paths = [(energy, path) for energy, path in files.items() if path and os.path.isfile(path)]
+            if paths:
+                representative = pack.get('representative_energy')
+                if representative is not None:
+                    energy, path = min(paths, key=lambda pair: abs(float(pair[0]) - float(representative)))
+                else:
+                    energy, path = paths[0]
+                spectrum_options.append((f"{pack.get('scan_name', 'Scan')} - {detector}", (pack, detector, energy, path)))
+
+    spectrum_select = widgets.Dropdown(
+        options=[(label, index) for index, (label, _) in enumerate(spectrum_options)],
+        description="Spectrum:", layout=widgets.Layout(width="650px")
+    )
+    spectrum_image = widgets.Image(format="png")
+    spectrum_status = widgets.HTML()
+    detectors = {det for pack in data_packs if len(pack.get('energies', [])) > 2
+                 for det in pack.get('sdd_files', {})}
+    missing = []
+    for detector in sorted(detectors):
+        params = calibration.get(detector)
+        try:
+            gain, offset = float(params['gain']), float(params['offset'])
+            if not np.isfinite(gain) or not np.isfinite(offset) or gain == 0:
+                missing.append(detector)
+        except (TypeError, KeyError, ValueError):
+            missing.append(detector)
+    use_calibration = widgets.Checkbox(value=bool(calibration) and not missing,
+                                       description="Apply SDD calibration", indent=False)
+    if not calibration or missing:
+        use_calibration.disabled = True
+        reason = "No saved calibration available." if not calibration else f"Missing or invalid calibration: {', '.join(missing)}."
+        details += f" <b style='color:red;'>{escape(reason)} Continue without calibration or update the calibration file.</b>"
+    source = widgets.RadioButtons(options=[("Internal Au Mesh I0 (mcc1)", "internal"),
+                                           ("External I0 CSV", "external")],
+                                  value="internal", description="I0 source:")
+    waterfall = widgets.Checkbox(value=False, description="Waterfall offsets", indent=False)
+    next_button = widgets.Button(description="Continue", button_style="success")
+    cancel_button = widgets.Button(description="Cancel")
+    status = widgets.HTML()
+    stage = widgets.VBox()
+    output = widgets.Output()
+
+    def update_spectrum(change=None):
+        if not spectrum_options:
+            spectrum_image.value = b""
+            spectrum_status.value = "<b style='color:red;'>No SDD spectrum file is available for preview.</b>"
+            return
+        _, (pack, detector, energy, path) = spectrum_options[spectrum_select.value]
+        try:
+            raw = np.fromfile(path, dtype=np.uint32)
+            mask = _batch_spatial_mask(pack, map_roi)
+            count = len(raw) // 256
+            if count < len(mask) or not np.any(mask):
+                raise ValueError("Spectrum file does not match the selected map area.")
+            spectrum = raw[:count * 256].reshape(count, 256)[:len(mask)][mask].sum(axis=0)
+            channels = np.arange(256)
+            fig = Figure(figsize=(9, 3.5))
+            FigureCanvasAgg(fig)
+            left, right = fig.subplots(1, 2)
+            left.plot(channels, spectrum)
+            left.set_xlabel("Channel")
+            left.set_title("Uncalibrated")
+            params = calibration.get(detector)
+            if isinstance(params, dict) and 'gain' in params and 'offset' in params:
+                gain, offset = float(params['gain']), float(params['offset'])
+                if not np.isfinite(gain) or not np.isfinite(offset) or gain == 0:
+                    raise ValueError(f"Invalid saved calibration for {detector}.")
+                right.plot(gain * channels + offset, spectrum)
+                right.set_xlabel("Emission energy (eV)")
+                right.set_title("Saved calibration")
+                spectrum_status.value = (
+                    f"{escape(detector)} at {energy:.2f} eV: "
+                    f"gain = {gain:.4g} eV/channel; offset = {offset:.4g} eV."
+                )
+            else:
+                right.text(0.5, 0.5, "No saved calibration for this detector", ha="center", va="center",
+                           transform=right.transAxes)
+                spectrum_status.value = f"<b style='color:red;'>No calibration for {escape(detector)}.</b>"
+            for ax in (left, right):
+                ax.set_ylabel("Counts")
+                ax.grid(True, linestyle="--", alpha=0.4)
+            fig.tight_layout()
+            buffer = io.BytesIO()
+            fig.savefig(buffer, format="png", dpi=100)
+            spectrum_image.value = buffer.getvalue()
+        except (OSError, ValueError, TypeError) as error:
+            spectrum_image.value = b""
+            spectrum_status.value = f"<b style='color:red;'>Cannot preview spectrum: {escape(str(error))}</b>"
+
+    def start_plot(config):
+        stage.children = (widgets.HTML("Preparing batch plots..."),)
+        with output:
+            try:
+                on_start(config)
+                stage.children = (widgets.HTML("Batch plots ready."),)
+            except Exception:
+                plt.ion()
+                stage.children = (widgets.HTML("<b style='color:red;'>Batch plotting failed; see error below.</b>"),)
+                traceback.print_exc()
+
+    def next_step(button):
+        config = {
+            'use_calibration': use_calibration.value,
+            'calib_data': calibration,
+            'use_internal': source.value == 'internal',
+            'apply_waterfall': waterfall.value,
+            'external_xy': (None, None),
+            'i0_settings': None,
+            'i0_source_label': "Au Mesh I0 (mcc1)",
+        }
+        status.value = ""
+        if config['use_internal']:
+            try:
+                curves = []
+                for pack in data_packs:
+                    energies = np.array(sorted(pack.get('energies', [])), dtype=float)
+                    if len(energies) <= 2:
+                        continue
+                    mask = _batch_spatial_mask(pack, map_roi)
+                    values = np.array([get_mcc_val(pack, en, 1, mask, strict=True) for en in energies])
+                    curves.append((pack.get('scan_name', 'Scan'), energies, values))
+                if not curves:
+                    raise ValueError("No multi-energy scans are available for the internal I0 preview.")
+            except (ValueError, OSError, TypeError) as error:
+                status.value = f"<b style='color:red;'>{escape(str(error))}</b>"
+                return
+
+            def finish_internal(result):
+                config['i0_settings'] = result[6]
+                config['i0_source_label'] += result[1]
+                start_plot(config)
+
+            preview = _i0_preview_widget(
+                curves[0][1], curves[0][2], "Internal Au Mesh I0", False,
+                finish_internal, curves=curves, include_settings=True
+            )
+            stage.children = (
+                widgets.HTML("Select a scan to preview. The same settings apply to each scan's own I0."),
+                preview,
+            )
+        else:
+            def external_selected(path):
+                try:
+                    df = read_csv_with_comments(path)
+                    df.columns = [c.strip() for c in df.columns]
+                    if len(df.columns) < 2:
+                        raise ValueError("The I0 file needs energy and intensity columns.")
+                    e_col = next((c for c in df.columns if 'energy' in c.lower()), df.columns[0])
+                    i_col = next((c for c in df.columns if any(k in c.lower() for k in ('i0', 'intensity', 'norm', 'tey'))), df.columns[1])
+                    x = pd.to_numeric(df[e_col], errors='coerce').to_numpy()
+                    y = pd.to_numeric(df[i_col], errors='coerce').to_numpy()
+                    valid = np.isfinite(x) & np.isfinite(y)
+                    order = np.argsort(x[valid])
+                    x, y = x[valid][order], y[valid][order]
+                    if len(x) == 0:
+                        raise ValueError("No valid energy and intensity pairs found.")
+
+                    def finish_external(result):
+                        processed, extra, _, _, shift_enabled, shift = result
+                        config['external_xy'] = (x + (shift if shift_enabled else 0.0), processed)
+                        config['i0_source_label'] = f"External: {os.path.basename(path)} [{i_col}]{extra}"
+                        start_plot(config)
+
+                    preview = _i0_preview_widget(x, y, f"{os.path.basename(path)} [{i_col}]", True, finish_external)
+                    stage.children = (widgets.HTML(f"Energy column: {escape(e_col)}; I0 column: {escape(i_col)}"), preview)
+                except (OSError, ValueError, TypeError, IndexError) as error:
+                    status.value = f"<b style='color:red;'>Cannot load external I0: {escape(str(error))}</b>"
+
+            browser = browse_beamline_data(
+                on_load=external_selected, file_filter=('.csv', '.txt'),
+                title="Select external I0 for the batch", auto_display=False
+            )
+            stage.children = (browser, status, cancel_button)
+
+    def cancel(button):
+        stage.children = (widgets.HTML("Batch plotting cancelled."),)
+
+    spectrum_select.observe(update_spectrum, names="value")
+    next_button.on_click(next_step)
+    cancel_button.on_click(cancel)
+    update_spectrum()
+    stage.children = (
+        widgets.HTML("<b>SDD calibration preview</b><br>" + details),
+        spectrum_select, spectrum_image, spectrum_status,
+        use_calibration, source, waterfall, widgets.HBox([next_button, cancel_button]), status
+    )
+    display(widgets.VBox([stage, output]))
+
+
+def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi=None, show_markers=True, use_color=True, auto_element_roi=False, element=None, n_sigma=2.0):
+    """Plot batch spectra, with interactive configuration in headless notebooks."""
+    if not data_packs:
+        print("No scans to plot.", file=sys.stderr)
+        return
+    if not HAS_GUI:
+        from IPython import get_ipython
+        shell = get_ipython()
+        if shell is not None and getattr(shell, "kernel", None) is not None:
+            def start(config):
+                return _plot_sgm_bsky_data_batch(
+                    data_packs, channel_roi, xrf_roi, map_roi, show_markers, use_color,
+                    auto_element_roi, element, n_sigma, hpc_config=config
+                )
+            _batch_hpc_setup(data_packs, map_roi, start)
+            return
+    return _plot_sgm_bsky_data_batch(
+        data_packs, channel_roi, xrf_roi, map_roi, show_markers, use_color,
+        auto_element_roi, element, n_sigma
+    )
 
