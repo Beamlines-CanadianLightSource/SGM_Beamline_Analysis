@@ -174,21 +174,28 @@ from analyze_sgm_bsky_data import analyze_sgm_bsky_data, browse_beamline_data
 browse_beamline_data()
 ```
 * Project folders are automatically sorted naturally by cycle number (`prj43...`, `prj42...`, `prj41...`).
-* Select your project folder, select your `.h5` file, and click **Load Selected H5**.
+* Select your project folder, select your `.h5` file, and click **Select File**.
 * The scan is immediately parsed into `sgm_data`.
 
 *(Alternative: You can also specify direct file paths with `sgm_data = analyze_sgm_bsky_data("/gpfs/Primary/beamlinedata/sgm/.../scan.h5")`).*
 
 ### Step 5: Execute Dashboard & Export Data
 Run the `plot_sgm_bsky_data(...)` cell:
-* **Interactive $I_0$ Preview**: If modifying Internal or External $I_0$ (smoothing, constant arithmetic, Optical Density division), an inline preview comparison plot will display in the notebook. You can inspect the changes and type **`Y`** (accept), **`r`** (retry with new parameters), or **`n`** (revert to raw $I_0$).
+* **Interactive $I_0$ Preview**: Select internal Au mesh or an external $I_0$ file. The notebook overlays original and modified curves as you adjust smoothing, constant arithmetic, optical density division, or the external energy shift. Click **Apply** to use the changes or **Cancel** to use the original; the dashboard appears after your choice.
 * **Native Jupyter Export Toolbar**: A row of export buttons is embedded directly above the plots in the notebook:
   - **`💾 Save XANES (CSV)`**: Exports active ROI XANES spectra.
   - **`💾 Save XRF (CSV)`**: Exports active ROI Consolidated XRF/XRD spectra.
-  - **`🖼️ Save All Images`**: Exports all detector energy maps, average maps (PNG & TIFF), and standalone histograms with complete statistics.
+  - **`🖼️ Save All Images`**: Opens an editable destination in the notebook, defaulting to a scan-specific `Images` folder in preprocessed storage. Click **Save Images** to export detector maps and histograms or **Cancel** to write nothing.
   - **`📦 Save 4D XRF (PyMca)`**: Exports full 4D stack for elemental analysis in PyMca.
   - **`📊 Save 3D XANES (PCA)`**: Exports 3D normalized stack for PCA/CA.
 * **Anti-Overwrite Protection**: All export operations verify if a file with the same name already exists. In headless mode, filenames automatically increment (`_1`, `_2`, `_3`, etc.) so that **your previously saved data is never overwritten**.
+
+### Batch analysis on HPC
+1. Open `SGM_BSky_Data_Analysis-batch.ipynb` and run the setup and batch-loading cells. In the browser, navigate to your project, add individual HDF5 files or **Add Current Folder** to include its subfolders, then click **Load Batch**. Wait for the loaded-scan summary before running the plotting cell.
+2. The plotting setup shows saved SDD calibration details and a representative spectrum labeled by sample, scan, and detector. Choose whether to apply calibration and select internal or external $I_0$. For internal $I_0$, inspect individual scans in the preview; the same processing settings are applied to each scan's own curve. Click **Apply** to use the modifications or **Cancel** to use the original $I_0$.
+3. Click **Save XANES Spectra CSVs** to export. For scans under `<project>/raw/<date>/<scan>/`, files are saved in the matching `<project>/preprocessed/<date>/<scan>/` folder, created if needed. The full paths appear below the button; existing files receive numbered suffixes.
+
+For details, see the batch section of [SGM_BSky_Data_Analysis_Guide.md](SGM_BSky_Data_Analysis_Guide.md).
 
 ---
 
