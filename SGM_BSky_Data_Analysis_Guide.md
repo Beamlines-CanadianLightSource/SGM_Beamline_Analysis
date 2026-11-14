@@ -190,6 +190,7 @@ The dashboard is organized vertically to provide immediate access to global spec
   - **Smoothing:** Enable Savitzky-Golay smoothing with an adjustable window size to filter out noise in your $I_0$ standard.
   - **Energy Shift:** Apply an energy calibration offset (eV) to align the $I_0$ standard with your scan energies.
   - **Compound Optical Density (SF) Correction:** Optionally divide the $I_0$ signal by the Optical Density of a compound (e.g., BN) using the Henke database (`sf.py`), with custom density (g/cm³), thickness (µm), and auto-scaling.
+  - **CSV compatibility:** OD correction descriptions use plain-text `density` and `thickness` labels with `g/cm^3` and `um` units, avoiding a Windows decoding error in readers such as Axis2000. CSVs remain UTF-8 with a BOM. For previously exported files that fail to open after BN correction, restart the kernel, rerun the analysis with the updated code, and save the XANES CSV again.
 - **HPC notebook preview:** For either source, the original and modified I0 curves are overlaid and update when the controls change. Use an odd smoothing window of at least 3 points and no longer than the spectrum. Click **Apply** to build the dashboard using the modified I0, or **Cancel** to build it using the original I0. Invalid settings disable Apply and show an error. The plotting call returns before this choice is made; the dashboard appears after the button is clicked.
 - **Normalized Plot Titles:** $I_0$ normalization details are formatted into compact, 2-line small print (`fontsize=8.5`) above normalized subplots so long parameter strings never overlap or crowd the spectral curves.
 
@@ -399,4 +400,5 @@ When you export data from the dashboard for use in PyMca, pay attention to the f
 ### Exporting to PowerPoint/Excel
 The application supports direct clipboard exports for all interactive dashboards and clustering results. 
 - **Images:** Simply **double-click** on any interactive plot (Map or Spectrum) to copy a high-resolution bitmap directly to your Windows clipboard. You can then paste it instantly into PowerPoint or Word.
+- **Au Mesh I0 / TEY plots:** Copies include the top title and both left and right axis labels and scales when an external I0 overlay is displayed. After updating the code, restart the notebook kernel and rerun the plotting cells to use the corrected clipboard export.
 - **Data:** Many modules also support copying the raw buffer data into Excel via dedicated "Copy Data" buttons (where available).

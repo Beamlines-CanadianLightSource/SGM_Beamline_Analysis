@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import logging
 logging.getLogger('matplotlib.font_manager').setLevel(logging.ERROR)
 from matplotlib.figure import Figure
+from matplotlib.transforms import Bbox
 import sys
 import os
 import csv
@@ -101,9 +102,11 @@ def _copy_fig_to_clipboard(fig, ax=None):
         if ax is not None:
             # Re-draw to ensure renderer is available
             fig.canvas.draw()
-            # Calculate the bounding box of the specific subplot
-            # Convert display coordinates to figure-inch coordinates
-            extent = ax.get_tightbbox(fig.canvas.get_renderer()).transformed(fig.dpi_scale_trans.inverted())
+            # A click can select the overlay axis; include its twin's title and labels too.
+            renderer = fig.canvas.get_renderer()
+            boxes = [axis.get_tightbbox(renderer)
+                     for axis in ax._twinned_axes.get_siblings(ax) if axis.get_visible()]
+            extent = Bbox.union([box for box in boxes if box is not None]).transformed(fig.dpi_scale_trans.inverted())
             # Save just that extent
             fig.savefig(buf, format='png', bbox_inches=extent, dpi=150)
         else:
@@ -696,7 +699,7 @@ if HAS_TK and tk is not None:
                 d_str = self.od_density.get()
                 t_str = self.od_thickness.get()
                 scale_str = " auto-scaled" if self.do_autoscale.get() else ""
-                od_str = f" (Divided by OD: {c_str} ρ={d_str} t={t_str}µm{scale_str})"
+                od_str = f" (Divided by OD: {c_str} density={d_str} g/cm^3 thickness={t_str} um{scale_str})"
             if c_val != 0.0:
                 if c_op == "Multiply":
                     console_log(f"[I0 Preview] Constant multiplication applied: *{c_val:.4g}")
@@ -4249,7 +4252,7 @@ def compute_modified_i0(x_sorted, y_sorted, do_smooth, smooth_window, do_const, 
                         y_od_div = y_od_div * (mean_orig / mean_div)
                 y_proc = y_od_div
                 mod_desc.append(f"OD-Div ({od_comp})")
-                extra_str += f" (Divided by OD: {od_comp} ρ={od_dens} t={od_thick}µm{' auto-scaled' if od_autoscale else ''})"
+                extra_str += f" (Divided by OD: {od_comp} density={od_dens} g/cm^3 thickness={od_thick} um{' auto-scaled' if od_autoscale else ''})"
             else:
                 console_log(f"    ! OD calculation returned None for '{od_comp}'.")
         except Exception as e_od:
