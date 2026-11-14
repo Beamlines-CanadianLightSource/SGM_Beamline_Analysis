@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 
 # Prevent OpenMP duplicate runtime warnings from threadpoolctl / scikit-learn
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
@@ -17,6 +18,7 @@ import h5py
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from PIL import Image, PngImagePlugin
 from sklearn.cluster import KMeans
 try:
     import tkinter as tk
@@ -29,6 +31,7 @@ except (ImportError, ModuleNotFoundError):
 
 from alignment_utils import format_num_val, safe_metadata_dialog_call, HAS_GUI
 from analyze_sgm_bsky_data import get_sdd_label
+from analysis_output_utils import create_analysis_run
 
 # Global cache to prevent multiple prompts during a multi-detector run
 _USER_METADATA_CACHE = None
@@ -200,8 +203,50 @@ def save_csv_with_header(csv_path, df, scan_info, full_meta=None):
             df.to_csv(f, index=False, header=False)
     except Exception as e:
         print(f"  [CSV Export] Error saving to {csv_path}: {e}")
+        raise
 
 from pca_xanes_analysis import resolve_pca_h5_path
+
+def _cluster_colormap(n_clusters):
+    try:
+        return plt.colormaps['tab10'].resampled(n_clusters)
+    except (AttributeError, KeyError):
+        return plt.cm.get_cmap('tab10', n_clusters)
+
+def _save_cluster_map_images(cluster_map, x_axis, y_axis, n_clusters, dataset_name, output_dir, scan_name):
+    """Export native-resolution labels: zero is masked, N is plotted Cluster N."""
+    if not 1 <= n_clusters <= 65535:
+        raise ValueError("PNG/TIFF cluster maps support 1 to 65535 clusters.")
+    labels = (cluster_map.astype(np.int64) + 1).astype(np.uint16)
+    description = json.dumps({
+        "scan_name": scan_name,
+        "dataset": dataset_name,
+        "n_clusters": int(n_clusters),
+        "label_encoding": "0 = masked/invalid; pixel N = Cluster N (HDF5 cluster_map + 1)",
+        "x_mm": np.asarray(x_axis).tolist(),
+        "y_mm": np.asarray(y_axis).tolist(),
+        "axes": "rows follow y_mm; columns follow x_mm; no resizing or flipping",
+    })
+    base = os.path.abspath(os.path.join(output_dir, f"{scan_name}_{dataset_name}_cluster_map"))
+    if n_clusters <= 255:
+        png_image = Image.fromarray(labels.astype(np.uint8)).convert("P")
+        palette = np.zeros((256, 3), dtype=np.uint8)
+        palette[1:n_clusters + 1] = _cluster_colormap(n_clusters)(np.arange(n_clusters), bytes=True)[:, :3]
+        png_image.putpalette(palette.ravel().tolist())
+    else:
+        png_image = Image.fromarray(labels)
+    png_info = PngImagePlugin.PngInfo()
+    png_info.add_text("Description", description)
+    png_image.save(f"{base}.png", pnginfo=png_info, transparency=0)
+    Image.fromarray(labels).save(
+        f"{base}.tiff", compression="tiff_deflate", tiffinfo={270: description},
+    )
+    print(f"    -> {dataset_name} cluster map images saved to:\n       {base}.png\n       {base}.tiff")
+
+def _on_cluster_figure_click(event):
+    if event.dblclick:
+        from plot_sgm_bsky_data import _copy_fig_to_clipboard
+        _copy_fig_to_clipboard(event.canvas.figure)
 
 def cluster_xanes_analysis(h5_path, dataset_name='average', n_clusters=4, show_plot=True, return_dict=False, use_full_metadata=False, metadata=None,
                            apply_waterfall=False, waterfall_offset=None, energy_range=None, figsize=(11, 5)):
@@ -319,6 +364,15 @@ def cluster_xanes_analysis(h5_path, dataset_name='average', n_clusters=4, show_p
             scan_info_det['dataset_source'] = get_sdd_label(dataset_name, scan_info if scan_info.get('date') not in (None, 'N/A', '') else h5_path)
             save_csv_with_header(csv_path, df, scan_info_det, full_meta)
 
+            spectra_csv_path = os.path.abspath(os.path.join(
+                output_dir, f"{scan_name}_{dataset_name}_cluster_spectra.csv"
+            ))
+            spectra_cols = {'Energy_eV': energy}
+            for i in range(n_clusters):
+                spectra_cols[f'Cluster_{i+1}'] = cluster_spectra_pfy[i]
+            save_csv_with_header(spectra_csv_path, pd.DataFrame(spectra_cols), scan_info_det, full_meta)
+            print(f"    -> {dataset_name} cluster spectra CSV saved to: {spectra_csv_path}")
+
             # 5. Save back to HDF5
             cluster_group_path = f"entry/pca_results/{dataset_name}/clustering"
             if cluster_group_path in f:
@@ -336,6 +390,9 @@ def cluster_xanes_analysis(h5_path, dataset_name='average', n_clusters=4, show_p
             
             print(f"    -> {dataset_name} cluster results saved.")
 
+        _save_cluster_map_images(
+            cluster_map, x_axis, y_axis, n_clusters, dataset_name, output_dir, scan_name,
+        )
         if show_plot:
             # For plotting and interactive use, we use the PFY (peaks up) version
             plot_results(x_axis, y_axis, energy, cluster_map, cluster_spectra_pfy, dataset_name, output_dir, scan_name, i0_info=i0_info,
@@ -362,9 +419,10 @@ def run_clustering_all_detectors(h5_path, n_clusters=4, use_full_metadata=False,
                                  show_individual_plots=True, apply_waterfall=False, waterfall_offset=None,
                                  energy_range=None, figsize=(7.7, 3.5)):
     """
-    Performs K-Means clustering on sdd1-4 and average, then plots individual and comparison results.
+    Run clustering in a new numbered folder and return its independent HDF5 path.
     """
     h5_path = resolve_pca_h5_path(h5_path)
+    h5_path = create_analysis_run(h5_path, "Cluster Analysis", {"n_clusters": int(n_clusters)})
     scan_info = get_h5_metadata(h5_path)
     i0_source = scan_info.get('i0_source', 'Internal (mcc1)')
     norm_status = scan_info.get('normalized', 'Yes')
@@ -413,16 +471,29 @@ def run_clustering_all_detectors(h5_path, n_clusters=4, use_full_metadata=False,
 
 def _display_scrollable_figure(fig):
     """
-    Attempts to display a matplotlib figure with a horizontal scrollbar in Jupyter Notebooks.
-    If not in Jupyter or if an error occurs, it leaves the figure open for standard plt.show().
+    Displays a live widget canvas or static image with a scrollbar in Jupyter.
+    Native GUI figures are left open for standard plt.show().
     """
     try:
         from IPython import get_ipython
         if get_ipython() is not None:
             from IPython.display import display, HTML
+            import ipywidgets as widgets
             import io
             import base64
-            
+
+            if isinstance(fig.canvas, widgets.Widget):
+                fig.canvas.layout.width = f"{int(fig.get_figwidth() * fig.dpi)}px"
+                fig.canvas.layout.flex = "0 0 auto"
+                display(widgets.Box(
+                    [fig.canvas], layout=widgets.Layout(width="100%", overflow="auto"),
+                ))
+                return True
+
+            if fig.canvas.required_interactive_framework is not None:
+                return False
+
+            print("  [Clipboard] For double-click copying, use %matplotlib widget and rerun clustering (Windows clipboard).")
             buf = io.BytesIO()
             fig.savefig(buf, format='png', bbox_inches='tight', facecolor='white')
             buf.seek(0)
@@ -460,17 +531,17 @@ def plot_multi_cluster_results(all_results, h5_path, i0_info=None, apply_waterfa
     
     # --- Figure 1: Cluster Maps ---
     map_figsize = (2.24*n_det, 2.8) if figsize is None else (figsize[0]*0.7, figsize[1]*0.56)
-    fig_map, axes_map = plt.subplots(1, n_det, figsize=map_figsize, squeeze=False)
+    with plt.ioff():
+        fig_map, axes_map = plt.subplots(1, n_det, figsize=map_figsize, squeeze=False)
+    fig_map.canvas.mpl_connect('button_press_event', _on_cluster_figure_click)
     fig_map.suptitle(f"Multi-Detector Cluster Maps: {scan_name}\n[Normalized: {i0_info}]", fontsize=12, fontweight='bold')
-    try:
-        cmap = plt.colormaps['tab10'].resampled(n_clusters)
-    except (AttributeError, KeyError):
-        cmap = plt.cm.get_cmap('tab10', n_clusters)
+    cmap = _cluster_colormap(n_clusters)
     
     for i, res in enumerate(all_results):
         ax = axes_map[0, i]
         masked_map = np.ma.masked_where(res['cluster_map'] == -1, res['cluster_map'])
-        ax.imshow(masked_map, extent=[x_axis[0], x_axis[-1], y_axis[-1], y_axis[0]], cmap=cmap, interpolation='nearest')
+        ax.imshow(masked_map, extent=[x_axis[0], x_axis[-1], y_axis[-1], y_axis[0]], cmap=cmap,
+                  vmin=0, vmax=max(n_clusters - 1, 1), interpolation='nearest')
         ax.set_title(f"{get_sdd_label(res['dataset'], h5_path)}", fontsize=9.5, fontweight='bold')
         ax.set_xlabel("X (mm)")
         if i == 0: ax.set_ylabel("Y (mm)")
@@ -481,7 +552,9 @@ def plot_multi_cluster_results(all_results, h5_path, i0_info=None, apply_waterfa
 
     # --- Figure 2: Cluster Spectra ---
     spec_figsize = (2.66*n_det, 3.85) if figsize is None else (figsize[0]*0.7, figsize[1]*0.7)
-    fig_spec, axes_spec = plt.subplots(1, n_det, figsize=spec_figsize, squeeze=False)
+    with plt.ioff():
+        fig_spec, axes_spec = plt.subplots(1, n_det, figsize=spec_figsize, squeeze=False)
+    fig_spec.canvas.mpl_connect('button_press_event', _on_cluster_figure_click)
     fig_spec.suptitle(f"Multi-Detector Cluster Spectra: {scan_name}\n[Normalized: {i0_info}]", fontsize=12, fontweight='bold')
     
     for i, res in enumerate(all_results):
@@ -565,19 +638,18 @@ def plot_results(x_coords, y_coords, energy, cluster_map, spectra, dataset_name,
         i0_info = "Yes"
 
     n_clusters = spectra.shape[0]
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
+    with plt.ioff():
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
+    fig.canvas.mpl_connect('button_press_event', _on_cluster_figure_click)
 
     det_lbl = get_sdd_label(dataset_name, os.path.join(output_dir, f"{scan_name}.h5"))
     fig.suptitle(f"K-Means Cluster Analysis: {det_lbl}\n[Normalized: {i0_info}]", fontsize=12, fontweight='bold')
 
-    try:
-        cmap = plt.colormaps['tab10'].resampled(n_clusters)
-    except (AttributeError, KeyError):
-        cmap = plt.cm.get_cmap('tab10', n_clusters)
+    cmap = _cluster_colormap(n_clusters)
     masked_map = np.ma.masked_where(cluster_map == -1, cluster_map)
     
     im = ax1.imshow(masked_map, extent=[x_coords[0], x_coords[-1], y_coords[-1], y_coords[0]], 
-                    cmap=cmap, interpolation='nearest')
+                    cmap=cmap, vmin=0, vmax=max(n_clusters - 1, 1), interpolation='nearest')
     
     cbar = fig.colorbar(im, ax=ax1, ticks=range(n_clusters))
     cbar.ax.set_yticklabels([f"{i+1}" for i in range(n_clusters)])

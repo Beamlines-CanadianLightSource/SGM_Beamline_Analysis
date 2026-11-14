@@ -19,6 +19,7 @@ import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from analyze_sgm_bsky_data import get_sdd_label
+from analysis_output_utils import create_analysis_run
 
 def resolve_pca_h5_path(h5_path):
     """
@@ -237,9 +238,10 @@ def pca_xanes_analysis(h5_path, dataset_name='average', n_components=5, show_plo
 
 def run_pca_all_detectors(h5_path, n_components=3):
     """
-    Performs PCA on sdd1, sdd2, sdd3, sdd4 and average, then plots them side-by-side.
+    Run PCA in a new numbered folder and return its independent HDF5 path.
     """
     h5_path = resolve_pca_h5_path(h5_path)
+    h5_path = create_analysis_run(h5_path, "PCA Analysis", {"n_components": int(n_components)})
     i0_info, i0_source = get_i0_info(h5_path)
     print(f"\n{'='*60}\nRunning Multi-Detector PCA Analysis\n{'='*60}")
     print(f"Dataset File: {os.path.basename(h5_path)}")

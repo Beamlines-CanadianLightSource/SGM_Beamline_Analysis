@@ -301,6 +301,20 @@ When calling `plot_sgm_bsky_data(sgm_data, as_scatter_plot=...)`, you can choose
 - Running them all at once automatically generates comparative, side-by-side grids (one for eigenimages, one for eigenvectors) so you can easily spot detector-specific artifacts or verify consistency across all SDDs. All figure titles display $I_0$ normalization metadata (e.g. `[Normalized: Yes (I0 Source: Internal (mcc1 / Au Mesh))]`).
 - *Note: To maintain high visibility in Jupyter, these large comparative grids are rendered with a built-in horizontal scrollbar, preventing them from overflowing or shrinking too small.*
 
+**Separate, numbered analysis runs:**
+- `run_pca_all_detectors` creates `PCA Analysis/Run_001` within the scan folder (the folder containing the input stack HDF5). Further runs create `Run_002`, `Run_003`, etc., without reusing an existing run folder.
+- `run_clustering_all_detectors` similarly creates `Cluster Analysis/Run_001`, `Run_002`, etc. When its input is a saved PCA run, the cluster folder is still created under the original scan folder, not nested inside the PCA run.
+- Each run contains **all of its exported images and CSVs plus an independent HDF5 copy**, with the original filename. Analysis is performed on that copy: the input HDF5 and previous runs are not modified. The HDF5 copy records the source path, creation time (UTC), and requested component/cluster count.
+- Both functions return the **new run's HDF5 path**. Keep assigning those return values so clustering and the merger use the intended saved analysis:
+  ```python
+  pca_results = run_pca_all_detectors(h5_path, n_components=3)
+  cluster_results = run_clustering_all_detectors(pca_results, n_clusters=7)
+  interactive_cluster_merger(cluster_results)
+  ```
+- To reopen an older run, pass its saved HDF5 path to the merger or use it as input to a new analysis. A new analysis always gets a new run folder. Full output paths are printed in the notebook.
+- Independent HDF5 copies require additional disk space, approximately one input-file copy per run plus the analysis results. Existing exports are not moved. Direct single-detector calls (`pca_xanes_analysis` and `cluster_xanes_analysis`) retain their existing in-place saving behavior; automatic run isolation applies to the two **run-all** functions.
+- Restart the notebook kernel after updating, then rerun the setup/import cells before creating new runs.
+
 ### 5. `cluster_xanes_analysis.py`
 **Purpose:** Uses K-Means clustering on the PCA scores (eigenimages) to group pixels that share similar XANES signatures.
 **How it works:**
@@ -313,9 +327,23 @@ When calling `plot_sgm_bsky_data(sgm_data, as_scatter_plot=...)`, you can choose
 
 **Multi-Detector "Run All" Mode:**
 - Just like the PCA analysis, you can cluster all SDD detectors and the `average` simultaneously.
+- All exports and the independent analysis HDF5 are grouped in a fresh `Cluster Analysis/Run_NNN` folder for each call; see **Separate, numbered analysis runs** above.
 - This outputs a comparative grid of cluster maps and a grid of the extracted cluster XANES spectra. It is extremely useful for validating that the chemical zones detected are real sample features and not just anomalies occurring on a single detector.
 - *Note: Similar to PCA, these multi-detector outputs are rendered as horizontally scrollable figures within Jupyter Notebooks.*
-- **Cluster Sums:** In multi-detector mode, the tool also calculates and saves the **Sum** of all spectra in each cluster (in addition to the Mean), providing the total integrated signal per detector.
+- **Mean versus Sum in `*_cluster_spectra_summary.csv`:** Both combine the spectra from all pixels belonging to a cluster, separately at each energy (not by summing across energies).
+  - **Mean:** The sum of pixel intensities divided by the number of cluster pixels, representing the average spectrum per pixel.
+  - **Sum:** The total signal from all pixels in the cluster, without division. It reflects both cluster size and signal strength.
+  - For the original spectra, **Sum = Mean x number of cluster pixels**. For example, a cluster with 100 pixels and a mean intensity of 10 at one energy has a summed intensity of 1,000 at that energy. Mean and Sum have the same spectral shape, differing only by this scale factor.
+  - **Which to use:** Mean is generally preferable for comparing XANES spectra between clusters of different sizes. Sum describes the cluster's total signal; a larger sum alone does not establish a higher concentration.
+  - **IPFY mode:** This relationship applies to `Mean_Original` and `Sum`, not to the separately transformed, peaks-up `Mean_PFY` spectrum.
+- **Data-preserving cluster map images:** Each detector also saves `<scan>_<detector>_cluster_map.png` and `.tiff` beside the run's HDF5 copy, even with `show_individual_plots=False`. These are map-only images at the original pixel dimensions, without axes, borders, resizing, or interpolation. Pixel value **0** means masked/invalid; values **1, 2, ...** identify the same numbered clusters as the plot and spectra CSVs. The HDF5 map remains unchanged (zero-based clusters and `-1` for invalid pixels).
+  - The **TIFF** stores lossless unsigned 16-bit cluster labels and is recommended for quantitative image analysis. The **PNG** preserves label indices with plot-matching colors and a transparent invalid-pixel background for up to 255 clusters; larger cluster counts use a 16-bit grayscale PNG. Some image readers expand a color PNG into RGB; use the TIFF when you need the numeric labels directly.
+  - Both files embed metadata describing the label numbering and original X/Y coordinates in mm, in row/column order. Full save paths appear in the notebook output. Existing PNG figure previews containing the map and spectra, and the comparison figures, are retained.
+- **Double-click to copy (Windows):** Double-click a live clustering figure to copy the **whole figure**, including titles, axes, legends, maps, and spectra, for pasting into PowerPoint or Word. In Jupyter, run `%matplotlib widget` before plotting; the scrollable outputs retain their live canvases. Static/inline outputs cannot receive double-clicks and show guidance to switch backends. Copying uses the Python host's Windows clipboard; a remote HPC kernel cannot write to your local clipboard.
+- **Separate detector spectra CSVs:** `run_clustering_all_detectors` automatically saves `<scan>_sdd1_cluster_spectra.csv` through `<scan>_sdd4_cluster_spectra.csv`, plus separate files for `average` and `selected_average` when available. They are saved beside the run's HDF5 copy, and the full paths are printed in the notebook output.
+  - Each file contains energy (eV) followed by one cluster-averaged spectrum per column. The commented column descriptions identify `Cluster_1`, `Cluster_2`, etc., matching that detector's plot labels (`C1`, `C2`, etc.). Cluster numbers are assigned independently for each detector.
+  - Values match the plotted spectra before display-only waterfall offsets or energy-axis zooming. In IPFY mode, these files contain the peaks-up PFY spectra shown in the plot; the existing `*_cluster_spectra_summary.csv` retains the original means, PFY means, and sums.
+  - Existing summary and combined-sums CSV exports are unchanged. Restart the notebook kernel after updating the code, then rerun the clustering cell to generate the new files.
 
 **Metadata & CSV Export:**
 - All clustering CSV exports include a standard header with beamline metadata and $I_0$ normalization details (`# Normalized: Yes (I0 Source: Internal (mcc1 / Au Mesh))`).
