@@ -4326,13 +4326,21 @@ def _i0_preview_widget(x_sorted, y_sorted, label_name, allow_energy_shift, on_fi
             current_label, current_x, current_y = curves[curve_selector.value]
             y_proc, od_vals, descriptions, extra = calculated[curve_selector.value]
             shifted = allow_energy_shift and shift_enabled.value and shift_value.value != 0.0
-            fig = Figure(figsize=(7, 4))
+            fig = Figure(figsize=(7, 5.5 if od_vals is not None else 4))
             FigureCanvasAgg(fig)
-            ax = fig.subplots()
+            if od_vals is not None:
+                ax, od_ax = fig.subplots(2, 1, sharex=True, height_ratios=(1.6, 1))
+                od_ax.plot(current_x, od_vals, color="#2ca02c", label=f"OD ({od_compound.value})")
+                od_ax.set_ylabel("Optical Density")
+                od_ax.set_xlabel("Energy (eV)")
+                od_ax.grid(True, linestyle="--", alpha=0.4)
+                od_ax.legend()
+            else:
+                ax = fig.subplots()
+                ax.set_xlabel("Energy (eV)")
             ax.plot(current_x, current_y, color="gray", linestyle="--", label="Original I0")
             ax.plot(current_x + (shift_value.value if shifted else 0.0), y_proc,
                     color="blue", label="Modified I0")
-            ax.set_xlabel("Energy (eV)")
             ax.set_ylabel(current_label)
             ax.set_title("I0 preview" + (": " + ", ".join(descriptions) if descriptions else ""))
             ax.grid(True, linestyle="--", alpha=0.4)

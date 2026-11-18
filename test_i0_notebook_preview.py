@@ -76,6 +76,34 @@ class I0NotebookPreviewTests(unittest.TestCase):
             find(ui, "Cancel").click()
             np.testing.assert_array_equal(self.finish.call_args.args[0][0], self.y)
 
+    def test_optical_density_adds_a_separate_curve_without_hiding_either_i0(self):
+        od = np.linspace(1., 3., len(self.x))
+        figures = []
+        figure_type = plotting.Figure
+
+        def capture_figure(*args, **kwargs):
+            fig = figure_type(*args, **kwargs)
+            figures.append(fig)
+            return fig
+
+        with patch.object(plotting, "HAS_SF", True), \
+             patch.object(plotting, "sf", return_value=od), \
+             patch.object(plotting, "Figure", side_effect=capture_figure):
+            ui = self.preview()
+            self.assertEqual(len(figures[-1].axes), 1)
+            find(ui, "Auto-scale OD").value = False
+            find(ui, "Divide by OD").value = True
+            comparison, od_plot = figures[-1].axes
+            original, modified = comparison.lines
+            np.testing.assert_array_equal(original.get_ydata(), self.y)
+            np.testing.assert_allclose(modified.get_ydata(), self.y / od)
+            np.testing.assert_array_equal(od_plot.lines[0].get_xdata(), self.x)
+            np.testing.assert_array_equal(od_plot.lines[0].get_ydata(), od)
+            self.assertEqual(od_plot.lines[0].get_label(), "OD (BN)")
+            find(ui, "Divide by OD").value = False
+            self.assertEqual(len(figures[-1].axes), 1)
+            self.assertEqual(len(figures[-1].axes[0].lines), 2)
+
     def test_external_shift_and_multiplication_are_applied(self):
         ui = self.preview(external=True)
         find(ui, "Constant").value = True

@@ -16,7 +16,7 @@ import interactive_cluster_merger as merger
 
 
 class ClusterSpectraExportTests(unittest.TestCase):
-    def test_merger_y_limits_include_individual_cluster_extremes(self):
+    def test_merger_spectra_fit_with_legend_outside_plot(self):
         spectra = np.array([[[0., 10., 0.], [-8., 2., 2.]]])
         for ipfy in (False, True):
             with self.subTest(ipfy=ipfy), tempfile.TemporaryDirectory() as folder:
@@ -45,6 +45,10 @@ class ClusterSpectraExportTests(unittest.TestCase):
                 lo, hi = ax.get_ylim()
                 self.assertLess(lo, y.min())
                 self.assertGreater(hi, y.max())
+                renderer = figures[0].canvas.get_renderer()
+                legend = ax.get_legend().get_window_extent(renderer)
+                self.assertGreaterEqual(legend.x0, ax.get_window_extent(renderer).x1)
+                self.assertLessEqual(legend.x1, figures[0].bbox.x1)
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

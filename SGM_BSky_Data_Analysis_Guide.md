@@ -189,7 +189,7 @@ The dashboard is organized vertically to provide immediate access to global spec
 - The **I0 preview** lets you configure processing parameters:
   - **Smoothing:** Enable Savitzky-Golay smoothing with an adjustable window size to filter out noise in your $I_0$ standard.
   - **Energy Shift:** Apply an energy calibration offset (eV) to align the $I_0$ standard with your scan energies.
-  - **Compound Optical Density (SF) Correction:** Optionally divide the $I_0$ signal by the Optical Density of a compound (e.g., BN) using the Henke database (`sf.py`), with custom density (g/cm³), thickness (µm), and auto-scaling.
+  - **Compound Optical Density (SF) Correction:** Optionally divide the $I_0$ signal by the Optical Density of a compound (e.g., BN) using the Henke database (`sf.py`), with custom density (g/cm³), thickness (µm), and auto-scaling. When **Divide by OD** is enabled, the OD curve appears below the original and modified I0 curves on the same energy axis.
   - **CSV compatibility:** OD correction descriptions use plain-text `density` and `thickness` labels with `g/cm^3` and `um` units, avoiding a Windows decoding error in readers such as Axis2000. CSVs remain UTF-8 with a BOM. For previously exported files that fail to open after BN correction, restart the kernel, rerun the analysis with the updated code, and save the XANES CSV again.
 - For either source, the original and modified I0 curves are overlaid and update when the controls change. Use an odd smoothing window of at least 3 points and no longer than the spectrum. Click **Apply** to build the dashboard using the modified I0, or **Cancel** in the preview to build it using the original I0. **Cancel plotting** on the source panel stops without building the dashboard. Invalid settings disable Apply and show an error.
 - **Normalized Plot Titles:** $I_0$ normalization details are formatted into compact, 2-line small print (`fontsize=8.5`) above normalized subplots so long parameter strings never overlap or crowd the spectral curves.
@@ -355,6 +355,7 @@ When calling `plot_sgm_bsky_data(sgm_data, as_scatter_plot=...)`, you can choose
 **User Interaction (GUI):**
 - The dashboard displays the Cluster Map on the left and the Merged Spectrum on the right. Both display physical units (`X (mm)`, `Y (mm)`) and $I_0$ normalization metadata.
 - The spectrum Y-axis scales to the full range of the selected cluster curves and their merged average.
+- The legend sits to the right of the spectrum axes so it does not cover any curves.
 - **Detector Dropdown:** Switch between `sdd1`, `sdd2`, `sdd3`, `sdd4`, or `average` to see how clustering performed across different detectors.
 - **Checkboxes:** Check or uncheck clusters ($C1, C2, C3...$) to see their combined average spectrum update in real-time. The map will also mask out unselected clusters so you can verify exactly which spatial regions are contributing to your spectrum.
 - **Normalization Info:** Displays $I_0$ normalization source details (e.g. `Data Normalized: Yes (I0 Source: Internal (mcc1 / Au Mesh))`) in the UI header and saved CSV headers.

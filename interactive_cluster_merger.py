@@ -227,7 +227,8 @@ def interactive_cluster_merger(h5_path, dataset_name='average'):
                                  label=f"Merged Average ({len(selected_c)} clusters)")
                     
                     ax_spec.margins(y=0.08)
-                    ax_spec.legend(loc='best', fontsize='x-small', frameon=True)
+                    ax_spec.legend(loc='upper left', bbox_to_anchor=(1.02, 1),
+                                   fontsize='x-small', frameon=True)
             else:
                 ax_spec.text(0.5, 0.5, "No clusters selected\nCheck one or more cluster boxes above",
                              transform=ax_spec.transAxes, ha='center', va='center', color='#777', fontsize=10)
