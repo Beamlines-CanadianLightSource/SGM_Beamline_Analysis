@@ -4678,7 +4678,7 @@ def configure_and_preview_i0_headless(x_sorted, y_sorted, label_name="Au Mesh I0
 
 # --- Main Entry Point ---
 
-def _i0_source_widget(start_dir, on_select, on_cancel):
+def _i0_source_widget(start_dir, on_select, on_cancel, *, external_only=False):
     from analyze_sgm_bsky_data import browse_beamline_data
 
     source = widgets.RadioButtons(
@@ -4759,6 +4759,9 @@ def _i0_source_widget(start_dir, on_select, on_cancel):
     source.observe(update_source, names="value")
     proceed.on_click(preview)
     cancel.on_click(lambda button: on_cancel())
+    if external_only:
+        source.value = "external"
+        return widgets.VBox([details, status, widgets.HBox([proceed, cancel])])
     return widgets.VBox([widgets.HTML("<b>I0 normalization source</b>"), source, details,
                          status, widgets.HBox([proceed, cancel])])
 

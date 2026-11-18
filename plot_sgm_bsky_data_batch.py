@@ -22,7 +22,6 @@ from alignment_utils import (
     interactive_channel_selector,
     get_safe_save_path,
     format_num_val,
-    HAS_GUI
 )
 from sdd_calibration_utils import (
     load_calibration,
@@ -31,10 +30,10 @@ from sdd_calibration_utils import (
 )
 from plot_sgm_bsky_data import (
     read_csv_with_comments, ExternalI0PreviewDialog, get_tk_root,
-    _i0_preview_widget, compute_modified_i0
+    _i0_preview_widget, _i0_source_widget, compute_modified_i0
 )
 from analyze_sgm_bsky_data import (
-    build_scan_filename_base, resolve_sample_name, get_sdd_label, browse_beamline_data,
+    build_scan_filename_base, resolve_sample_name, get_sdd_label,
     resolve_preprocessed_save_dir
 )
 
@@ -583,11 +582,11 @@ def _plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_ro
                 print(f"  Error saving CSV for {scan_name} at {csv_filepath}: {e}", file=sys.stderr)
                 
         if saved_count:
-            show_custom_dialog(
-                title="Save Complete",
-                message=f"Saved XANES spectra CSV files for {saved_count} scans. See the paths above.",
-                dialog_type="info"
-            )
+            message = f"Saved XANES spectra CSV files for {saved_count} scans. See the paths above."
+            if hpc_config is not None:
+                print(message)
+            else:
+                show_custom_dialog(title="Save Complete", message=message, dialog_type="info")
         else:
             print("No XANES spectra CSV files were saved.", file=sys.stderr)
 
@@ -1126,38 +1125,23 @@ def _batch_hpc_setup(data_packs, map_roi, on_start):
                 preview,
             )
         else:
-            def external_selected(path):
-                try:
-                    df = read_csv_with_comments(path)
-                    df.columns = [c.strip() for c in df.columns]
-                    if len(df.columns) < 2:
-                        raise ValueError("The I0 file needs energy and intensity columns.")
-                    e_col = next((c for c in df.columns if 'energy' in c.lower()), df.columns[0])
-                    i_col = next((c for c in df.columns if any(k in c.lower() for k in ('i0', 'intensity', 'norm', 'tey'))), df.columns[1])
-                    x = pd.to_numeric(df[e_col], errors='coerce').to_numpy()
-                    y = pd.to_numeric(df[i_col], errors='coerce').to_numpy()
-                    valid = np.isfinite(x) & np.isfinite(y)
-                    order = np.argsort(x[valid])
-                    x, y = x[valid][order], y[valid][order]
-                    if len(x) == 0:
-                        raise ValueError("No valid energy and intensity pairs found.")
+            def external_selected(selection):
+                path, _, e_col, i_col, x, y = selection
+                label = f"{os.path.basename(path)} [{i_col}]"
 
-                    def finish_external(result):
-                        processed, extra, _, _, shift_enabled, shift = result
-                        config['external_xy'] = (x + (shift if shift_enabled else 0.0), processed)
-                        config['i0_source_label'] = f"External: {os.path.basename(path)} [{i_col}]{extra}"
-                        start_plot(config)
+                def finish_external(result):
+                    processed, extra, _, _, shift_enabled, shift = result
+                    config['external_xy'] = (x + (shift if shift_enabled else 0.0), processed)
+                    config['i0_source_label'] = f"External: {label}{extra}"
+                    start_plot(config)
 
-                    preview = _i0_preview_widget(x, y, f"{os.path.basename(path)} [{i_col}]", True, finish_external)
-                    stage.children = (widgets.HTML(f"Energy column: {escape(e_col)}; I0 column: {escape(i_col)}"), preview)
-                except (OSError, ValueError, TypeError, IndexError) as error:
-                    status.value = f"<b style='color:red;'>Cannot load external I0: {escape(str(error))}</b>"
+                preview = _i0_preview_widget(x, y, label, True, finish_external)
+                stage.children = (widgets.HTML(f"Energy column: {escape(e_col)}; I0 column: {escape(i_col)}"), preview)
 
-            browser = browse_beamline_data(
-                on_load=external_selected, file_filter=('.csv', '.txt'),
-                title="Select external I0 for the batch", auto_display=False
-            )
-            stage.children = (browser, status, cancel_button)
+            stage.children = (_i0_source_widget(
+                data_packs[0].get('h5_dir'), external_selected,
+                lambda: cancel(None), external_only=True
+            ),)
 
     def cancel(button):
         stage.children = (widgets.HTML("Batch plotting cancelled."),)
@@ -1176,21 +1160,19 @@ def _batch_hpc_setup(data_packs, map_roi, on_start):
 
 
 def plot_sgm_bsky_data_batch(data_packs, channel_roi=None, xrf_roi=None, map_roi=None, show_markers=True, use_color=True, auto_element_roi=False, element=None, n_sigma=2.0):
-    """Plot batch spectra, with interactive configuration in headless notebooks."""
+    """Plot batch spectra with inline calibration and I0 setup in notebooks."""
     if not data_packs:
         print("No scans to plot.", file=sys.stderr)
         return
-    if not HAS_GUI:
-        from IPython import get_ipython
-        shell = get_ipython()
-        if shell is not None and getattr(shell, "kernel", None) is not None:
-            def start(config):
-                return _plot_sgm_bsky_data_batch(
-                    data_packs, channel_roi, xrf_roi, map_roi, show_markers, use_color,
-                    auto_element_roi, element, n_sigma, hpc_config=config
-                )
-            _batch_hpc_setup(data_packs, map_roi, start)
-            return
+    from IPython import get_ipython
+    if getattr(get_ipython(), "kernel", None) is not None:
+        def start(config):
+            return _plot_sgm_bsky_data_batch(
+                data_packs, channel_roi, xrf_roi, map_roi, show_markers, use_color,
+                auto_element_roi, element, n_sigma, hpc_config=config
+            )
+        _batch_hpc_setup(data_packs, map_roi, start)
+        return
     return _plot_sgm_bsky_data_batch(
         data_packs, channel_roi, xrf_roi, map_roi, show_markers, use_color,
         auto_element_roi, element, n_sigma

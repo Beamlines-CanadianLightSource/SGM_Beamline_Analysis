@@ -2,6 +2,7 @@ import contextlib
 import io
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -100,18 +101,24 @@ class BatchHPCPreviewTests(unittest.TestCase):
 
     def test_external_i0_selection_shift_and_apply(self):
         external = self.root / "external.csv"
-        external.write_text("Energy,I0\n100,10\n101,20\n102,30\n")
+        external.write_text("Energy,I0,Alternate\n100,1,10\n101,2,20\n102,3,30\n")
         ui, captured = self.setup_ui()
         find(ui, "I0 source:").value = "external"
         find(ui, "Continue").click()
         find(ui, "Folder:").value = str(self.root)
         find(ui, "Files (.csv, .txt):").value = external.name
         find(ui, "Select File").click()
+        find(ui, "Intensity:").value = "Energy"
+        find(ui, "Preview I0").click()
+        self.assertIsNone(find(ui, "Apply"))
+        find(ui, "Intensity:").value = "Alternate"
+        find(ui, "Preview I0").click()
         find(ui, "Energy shift").value = True
         find(ui, "Shift (eV):").value = 0.5
         find(ui, "Apply").click()
         config = captured[0]
         self.assertFalse(config["use_internal"])
+        self.assertIn("[Alternate]", config["i0_source_label"])
         np.testing.assert_array_equal(config["external_xy"][0], [100.5, 101.5, 102.5])
         np.testing.assert_array_equal(config["external_xy"][1], [10., 20., 30.])
         with (
@@ -124,6 +131,26 @@ class BatchHPCPreviewTests(unittest.TestCase):
                     if batch.plt.figure(n)._suptitle
                     and batch.plt.figure(n)._suptitle.get_text().startswith("Batch NORMALIZED"))
         np.testing.assert_allclose(norm.axes[0].lines[0].get_ydata(), 10 / np.array([10., 15., 25.]))
+
+    def test_notebook_setup_bypasses_desktop_dialogs(self):
+        with (
+            patch("IPython.get_ipython", return_value=SimpleNamespace(kernel=object())),
+            patch("IPython.display.display") as display,
+            patch.object(batch, "HAS_GUI", True, create=True),
+            patch.object(batch, "show_custom_dialog") as dialog,
+            patch("builtins.input") as prompt,
+            patch.object(batch, "_plot_sgm_bsky_data_batch") as plot,
+        ):
+            batch.plot_sgm_bsky_data_batch(self.packs, auto_element_roi=True)
+            ui = display.call_args.args[0]
+            plot.assert_not_called()
+            find(ui, "Continue").click()
+            find(ui, "Apply").click()
+            plot.assert_called_once()
+            self.assertTrue(plot.call_args.args[6])
+            self.assertTrue(plot.call_args.kwargs["hpc_config"]["use_internal"])
+            dialog.assert_not_called()
+            prompt.assert_not_called()
 
     def test_incomplete_calibration_is_reported_and_cannot_be_applied(self):
         self.packs[0]["sdd_files"]["sdd2"] = dict(self.packs[0]["sdd_files"]["sdd1"])
