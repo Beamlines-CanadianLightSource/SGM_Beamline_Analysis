@@ -111,7 +111,7 @@ DEFAULT_ELEMENT_EDGE = {
 }
 
 
-def extract_element_and_edge(name_or_path):
+def extract_element_and_edge(name_or_path, *, explicit_only=False):
     """
     Parses element and absorption edge from a filename, scan name, sample name, or path.
     
@@ -138,7 +138,7 @@ def extract_element_and_edge(name_or_path):
 
     # 1. Exact match for input like 'si' or 'si_k' or 'si-k'
     m_simple = re.fullmatch(r'([a-z]{1,2})(?:_([klmno]\d*))?', text_clean)
-    if m_simple:
+    if m_simple and (m_simple.group(2) or not explicit_only):
         elem = m_simple.group(1).capitalize()
         edge = m_simple.group(2).upper() if m_simple.group(2) else DEFAULT_ELEMENT_EDGE.get(elem.upper(), 'K')
         if (elem.upper(), edge) in ELEMENT_EMISSION_LINES:
@@ -170,11 +170,24 @@ def extract_element_and_edge(name_or_path):
                 return elem, edge_primary
 
     # 4. Fallback: single element symbol bounded by underscores (e.g. _600_n_stack -> N K-edge)
-    for elem_sym, def_edge in DEFAULT_ELEMENT_EDGE.items():
-        pattern = rf'(?:^|_){elem_sym.lower()}(?:_|$)'
-        if re.search(pattern, text_clean):
-            return elem_sym.capitalize(), def_edge
+    if not explicit_only:
+        for elem_sym, def_edge in DEFAULT_ELEMENT_EDGE.items():
+            pattern = rf'(?:^|_){elem_sym.lower()}(?:_|$)'
+            if re.search(pattern, text_clean):
+                return elem_sym.capitalize(), def_edge
 
+    return None, None
+
+
+def infer_scan_element_and_edge(path_pack):
+    """Prefer explicit scan edge tags over bare element symbols in metadata."""
+    names = [path_pack.get(key) for key in ('scan_name', 'sample_name', 'h5_file_path', 'h5_dir')]
+    for explicit_only in (True, False):
+        for name in names:
+            if name and name != 'N/A':
+                element, edge = extract_element_and_edge(name, explicit_only=explicit_only)
+                if element:
+                    return element, edge
     return None, None
 
 
@@ -348,14 +361,7 @@ def auto_detect_and_fit_stack_roi(path_pack, representative_energy=None,
     elem = element_override
     edge = edge_override
     if not elem:
-        for key in ['scan_name', 'sample_name', 'h5_file_path', 'h5_dir']:
-            val = path_pack.get(key)
-            if val and val != 'N/A':
-                e, ed = extract_element_and_edge(val)
-                if e:
-                    elem = e
-                    edge = ed
-                    break
+        elem, edge = infer_scan_element_and_edge(path_pack)
 
     if not elem:
         if verbose:

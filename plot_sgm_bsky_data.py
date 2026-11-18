@@ -1287,13 +1287,7 @@ class Synchronizer:
         if not elem:
             sd = self.summary_dash or _GLOBAL_SUMMARY_DASH
             if sd and 'path_pack' in sd.ctx:
-                for key in ['scan_name', 'sample_name', 'h5_file_path', 'h5_dir']:
-                    val = sd.ctx['path_pack'].get(key)
-                    if val and val != 'N/A':
-                        e, ed = elem_roi_utils.extract_element_and_edge(val)
-                        if e:
-                            elem, edge = e, ed
-                            break
+                elem, edge = elem_roi_utils.infer_scan_element_and_edge(sd.ctx['path_pack'])
                             
         if not elem:
             try:
@@ -4676,7 +4670,92 @@ def configure_and_preview_i0_headless(x_sorted, y_sorted, label_name="Au Mesh I0
 
 # --- Main Entry Point ---
 
-def _plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 256), xrf_roi=None, auto_element_roi: bool = False, element=None, n_sigma: float = 2.0, roll_shift=0, as_scatter_plot: bool = False, map_roi=None, contrast=None, show_markers: bool = True, output_csv: bool = False, energy_shift=0.0, mcc_channels=None, mcc_to_map=None, x_trim=0.0, y_trim=0.0, save_images: bool = False, fixed_roi: bool = False, use_color: bool = True, use_full_metadata: bool = False, histogram_scope: str = 'full'):
+def _i0_source_widget(start_dir, on_select, on_cancel):
+    from analyze_sgm_bsky_data import browse_beamline_data
+
+    source = widgets.RadioButtons(
+        options=[("Internal Au Mesh I0 (mcc1)", "internal"), ("External I0 file", "external")],
+        description="Source:",
+    )
+    details = widgets.VBox()
+    status = widgets.HTML()
+    proceed = widgets.Button(description="Preview I0", button_style="success")
+    cancel = widgets.Button(description="Cancel plotting")
+    energy = widgets.Dropdown(description="Energy:")
+    intensity = widgets.Dropdown(description="Intensity:")
+    selection = None
+
+    def show_error(error):
+        status.value = f"<b style='color:red;'>{escape(str(error))}</b>"
+
+    def load_file(path):
+        nonlocal selection
+        selection = None
+        details.children = (browser,)
+        proceed.disabled = True
+        status.value = ""
+        try:
+            frame = read_csv_with_comments(path)
+            frame.columns = frame.columns.str.strip()
+            if len(frame.columns) < 2 or not frame.columns.is_unique:
+                raise ValueError("The I0 file needs separate, uniquely named energy and intensity columns.")
+            energy.options = intensity.options = list(frame.columns)
+            energy.value = next((col for col in frame if 'energy' in col.lower()), frame.columns[0])
+            candidates = [col for col in frame if col != energy.value]
+            intensity.value = next((col for col in candidates if any(
+                name in col.lower() for name in ('i0', 'intensity', 'norm', 'tey')
+            )), candidates[0])
+            selection = path, frame
+            details.children = (browser, widgets.HTML(f"Selected: {escape(os.path.basename(path))}"),
+                                widgets.HBox([energy, intensity]))
+            proceed.disabled = False
+        except (OSError, ValueError, TypeError) as error:
+            show_error(error)
+
+    browser = browse_beamline_data(
+        start_dir=start_dir, on_load=load_file, file_filter=('.csv', '.txt'),
+        title="Select external I0", auto_display=False,
+    )
+
+    def update_source(change):
+        nonlocal selection
+        selection = None
+        status.value = ""
+        internal = source.value == "internal"
+        details.children = () if internal else (browser,)
+        proceed.disabled = not internal
+
+    def preview(button):
+        status.value = ""
+        result = None
+        if source.value == "external":
+            if selection is None:
+                show_error("Select an external I0 file first.")
+                return
+            path, frame = selection
+            e_col, i_col = energy.value, intensity.value
+            if e_col == i_col:
+                show_error("Choose different energy and intensity columns.")
+                return
+            x = pd.to_numeric(frame[e_col], errors='coerce').to_numpy()
+            y = pd.to_numeric(frame[i_col], errors='coerce').to_numpy()
+            valid = np.isfinite(x) & np.isfinite(y)
+            order = np.argsort(x[valid])
+            if not len(order):
+                show_error("No valid energy and intensity pairs found.")
+                return
+            result = (path, frame, e_col, i_col, x[valid][order], y[valid][order])
+        proceed.disabled = cancel.disabled = True
+        on_select(result)
+
+    source.observe(update_source, names="value")
+    proceed.on_click(preview)
+    cancel.on_click(lambda button: on_cancel())
+    return widgets.VBox([widgets.HTML("<b>I0 normalization source</b>"), source, details,
+                         status, widgets.HBox([proceed, cancel])])
+
+
+def _plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 256), xrf_roi=None, auto_element_roi: bool = False, element=None, n_sigma: float = 2.0, roll_shift=0, as_scatter_plot: bool = False, map_roi=None, contrast=None, show_markers: bool = True, output_csv: bool = False, energy_shift=0.0, mcc_channels=None, mcc_to_map=None, x_trim=0.0, y_trim=0.0, save_images: bool = False, fixed_roi: bool = False, use_color: bool = True, use_full_metadata: bool = False, histogram_scope: str = 'full', *, notebook=False):
     """
     Beautiful Stack Dashboard (Refactored for Fresh Starts).
     """
@@ -4788,13 +4867,7 @@ def _plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 2
                 path_pack['auto_element_roi_info'] = fit_res
         elif element is None:
             # Detect element for UI label if filename contains it
-            for key in ['scan_name', 'sample_name', 'h5_file_path', 'h5_dir']:
-                val = path_pack.get(key)
-                if val and val != 'N/A':
-                    e, ed = elem_roi_utils.extract_element_and_edge(val)
-                    if e:
-                        detected_element, detected_edge = e, ed
-                        break
+            detected_element, detected_edge = elem_roi_utils.infer_scan_element_and_edge(path_pack)
 
         # Resolve xrf_roi (energy in eV) vs channel_roi (detector channels)
         calib_data_tmp = sdd_calib.load_calibration()
@@ -4970,12 +5043,12 @@ def _plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 2
             avg_dependence = np.zeros(len(all_energies))
 
         # ---- EXTERNAL I0 PROMPT ----
-        root_i0 = get_tk_root()
-        if root_i0:
-            root_i0.withdraw()
-        
-        # If running headless (HPC / JupyterHub), prompt interactively in the notebook console
-        if not HAS_GUI:
+        root_i0 = None
+        external_selection = None
+        if notebook:
+            external_selection = yield None
+            use_internal = external_selection is None
+        elif not HAS_GUI:
             try:
                 print("\n--- I0 Normalization Selection ---")
                 print("Use INTERNAL Au Mesh I0 (mcc1) for I0 normalization?")
@@ -4985,6 +5058,9 @@ def _plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 2
             except (EOFError, KeyboardInterrupt):
                 use_internal = True
         else:
+            root_i0 = get_tk_root()
+            if root_i0:
+                root_i0.withdraw()
             use_internal = safe_messagebox_askyesno("I0 Selection", "Use INTERNAL Au Mesh I0 (mcc1) for I0 normalization?\n\n(Select 'No' to load an EXTERNAL I0 CSV)")
         
         use_ext = not use_internal
@@ -4996,29 +5072,8 @@ def _plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 2
         i0_source = "Internal: Au Mesh I0 (mcc1)" if (mcc_channels and 1 in mcc_channels) else "None (Raw Only)"
         
         if use_ext:
-            ext_path = None
-            if not HAS_GUI:
-                # Offer option to navigate Loki folders or type a path
-                print("\n[External I0 Selection]")
-                print("Options: [b] Browse Loki folders interactively | [Enter] Type/paste path")
-                mode_ans = input("Choice [b/Enter]: ").strip().lower()
-                if mode_ans in ('b', 'browse'):
-                    selected_holder = {'path': None}
-                    def on_i0_selected(p):
-                        selected_holder['path'] = p
-
-                    from analyze_sgm_bsky_data import browse_beamline_data
-                    print("Launching Loki CSV file browser below...")
-                    browse_ui = browse_beamline_data(
-                        file_filter=('.csv', '.txt'),
-                        title="Select External I0 CSV from Loki",
-                        on_load=on_i0_selected
-                    )
-                    print("\n👉 Use the file browser widget above to navigate to your CSV, select it, click 'Select File', then press ENTER below:")
-                    input("Press ENTER when done: ")
-                    ext_path = selected_holder['path']
-
-            if not ext_path:
+            ext_path = external_selection[0] if external_selection is not None else None
+            if external_selection is None:
                 func_i0 = getattr(filedialog, 'askopenfilename', 'askopenfilename') if filedialog else 'askopenfilename'
                 ext_path = safe_filedialog_call(
                     func_i0,
@@ -5027,14 +5082,18 @@ def _plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 2
                 )
             if ext_path:
                 try:
-                    ext_df = read_csv_with_comments(ext_path)
-                    # Trim whitespace from columns to prevent lookup errors
-                    ext_df.columns = [c.strip() for c in ext_df.columns]
-                    
-                    e_col = next((c for c in ext_df.columns if 'energy' in c.lower()), ext_df.columns[0])
-                    i_col = next((c for c in ext_df.columns if any(k in c.lower() for k in ['i0', 'intensity', 'norm', 'tey'])), ext_df.columns[1])
-                    
-                    if HAS_GUI and tk is not None:
+                    if external_selection is not None:
+                        _, ext_df, e_col, i_col, x_sorted, y_sorted = external_selection
+                        selected_e_col, selected_i_col = e_col, i_col
+                        label = f"{os.path.basename(ext_path)} [{i_col}]"
+                        y_sorted, extra_str, const_offset_val, const_op, cal_en, cal_val = yield (x_sorted, y_sorted, label, True)
+                    else:
+                        ext_df = read_csv_with_comments(ext_path)
+                        ext_df.columns = [c.strip() for c in ext_df.columns]
+                        e_col = next((c for c in ext_df.columns if 'energy' in c.lower()), ext_df.columns[0])
+                        i_col = next((c for c in ext_df.columns if any(k in c.lower() for k in ['i0', 'intensity', 'norm', 'tey'])), ext_df.columns[1])
+
+                    if external_selection is None and HAS_GUI and tk is not None:
                         dialog = ExternalI0PreviewDialog(root_i0, ext_df, e_col, i_col)
                         dialog.attributes("-topmost", True)
                         try:
@@ -5052,8 +5111,8 @@ def _plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 2
                             const_op = dialog.result[8] if len(dialog.result) > 8 else getattr(dialog, 'const_op', 'Add')
                         else:
                             selected_e_col, selected_i_col = None, None
-                    else:
-                        # Headless fallback: print available columns and auto-select or prompt
+                    elif external_selection is None:
+                        # Terminal fallback
                         print(f"\n[External I0 Loaded] Columns: {list(ext_df.columns)}")
                         print(f"  Auto-selected Energy column: '{e_col}'")
                         print(f"  Auto-selected Intensity/I0 column: '{i_col}'")
@@ -5068,12 +5127,9 @@ def _plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 2
                         y_sorted = y_raw[valid_mask][sort_idx]
                         
                         label = f"{os.path.basename(ext_path)} [{selected_i_col}]"
-                        if get_ipython() is not None and getattr(get_ipython(), "kernel", None) is not None:
-                            y_proc, extra_str, const_offset_val, const_op, cal_en, cal_val = yield (x_sorted, y_sorted, label, True)
-                        else:
-                            y_proc, extra_str, const_offset_val, const_op, cal_en, cal_val = configure_and_preview_i0_headless(
-                                x_sorted, y_sorted, label_name=label, allow_energy_shift=True
-                            )
+                        y_proc, extra_str, const_offset_val, const_op, cal_en, cal_val = configure_and_preview_i0_headless(
+                            x_sorted, y_sorted, label_name=label, allow_energy_shift=True
+                        )
                         y_sorted = y_proc
 
                     if selected_e_col and selected_i_col:
@@ -5119,7 +5175,9 @@ def _plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 2
                         else:
                             console_log(f"\n  [I0 CONFIGURATION] Normalization Source: {i0_source}\n")
                 except Exception as e:
-                    messagebox.showerror("Error", f"Failed to load external I0: {e}")
+                    if notebook:
+                        raise
+                    safe_messagebox_showerror("Error", f"Failed to load external I0: {e}")
         elif use_internal:
             try:
                 # Extract mcc1 values from mcc_data, mcc_maps, or path_pack['mcc_data']
@@ -5156,15 +5214,16 @@ def _plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 2
 
                 if mcc1_vals is not None and len(mcc1_vals) > 0:
                     # Always show the I0 preview dialog (even for a single energy) when a GUI is available
-                    if not HAS_GUI:
-                        x_raw = np.array(calibrated_energies[:len(mcc1_vals)], dtype=float)
-                        y_raw = np.array(mcc1_vals.copy(), dtype=float)
+                    if notebook or not HAS_GUI:
+                        min_len = min(len(calibrated_energies), len(mcc1_vals))
+                        x_raw = np.array(calibrated_energies[:min_len], dtype=float)
+                        y_raw = np.array(mcc1_vals[:min_len], dtype=float)
                         # Ensure strictly increasing energy coordinates for interpolation
                         sort_idx = np.argsort(x_raw)
                         x_sorted = x_raw[sort_idx]
                         y_sorted = y_raw[sort_idx]
 
-                        if get_ipython() is not None and getattr(get_ipython(), "kernel", None) is not None:
+                        if notebook:
                             y_proc, extra_str, const_offset_val, const_op, _, _ = yield (x_sorted, y_sorted, "Au Mesh I0 (mcc1)", False)
                         else:
                             y_proc, extra_str, const_offset_val, const_op, _, _ = configure_and_preview_i0_headless(
@@ -5817,33 +5876,50 @@ def _plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 2
 
 
 def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 256), xrf_roi=None, auto_element_roi: bool = False, element=None, n_sigma: float = 2.0, roll_shift=0, as_scatter_plot: bool = False, map_roi=None, contrast=None, show_markers: bool = True, output_csv: bool = False, energy_shift=0.0, mcc_channels=None, mcc_to_map=None, x_trim=0.0, y_trim=0.0, save_images: bool = False, fixed_roi: bool = False, use_color: bool = True, use_full_metadata: bool = False, histogram_scope: str = 'full'):
-    """Plot a scan; headless notebooks continue after the I0 preview is confirmed."""
+    """Plot a scan; notebooks use inline I0 selection and preview on every OS."""
+    notebook = getattr(get_ipython(), "kernel", None) is not None
     plot = _plot_sgm_bsky_data(
         path_pack, representative_energy, channel_roi, xrf_roi, auto_element_roi,
         element, n_sigma, roll_shift, as_scatter_plot, map_roi, contrast, show_markers,
         output_csv, energy_shift, mcc_channels, mcc_to_map, x_trim, y_trim, save_images,
-        fixed_roi, use_color, use_full_metadata, histogram_scope
+        fixed_roi, use_color, use_full_metadata, histogram_scope, notebook=notebook
     )
     try:
-        x, y, label, allow_shift = next(plot)
+        request = next(plot)
     except StopIteration as finished:
         return finished.value
 
     preview_box = widgets.VBox()
     output = widgets.Output()
 
-    def finish(result):
+    def show_preview(request):
+        x, y, label, allow_shift = request
+        preview_box.children = (_i0_preview_widget(x, y, label, allow_shift, advance),)
+
+    def advance(result):
         preview_box.children = ()
         with output:
             try:
                 plt.ioff()
-                plot.send(result)
+                show_preview(plot.send(result))
             except StopIteration:
                 pass
             except Exception:
                 traceback.print_exc()
+            finally:
+                plt.ion()
 
-    preview_box.children = (_i0_preview_widget(x, y, label, allow_shift, finish),)
+    def cancel():
+        plot.close()
+        preview_box.children = (widgets.HTML("Plotting cancelled."),)
+
+    if request is None:
+        scan_dir = path_pack.get('h5_dir')
+        if not scan_dir and path_pack.get('h5_file_path'):
+            scan_dir = os.path.dirname(os.path.abspath(path_pack['h5_file_path']))
+        preview_box.children = (_i0_source_widget(scan_dir, advance, cancel),)
+    else:
+        show_preview(request)
     display(widgets.VBox([preview_box, output]))
     plt.ion()
     return None

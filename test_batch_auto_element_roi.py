@@ -9,9 +9,27 @@ import numpy as np
 
 import plot_sgm_bsky_data_batch as batch
 import analyze_sgm_bsky_data_batch as loader
+import sdd_element_roi_utils as roi
 
 
 class BatchAutoElementROITests(unittest.TestCase):
+    def test_explicit_scan_folder_edge_beats_bare_sample_element(self):
+        pack = {
+            "scan_name": "2020-01-01_120001_stack_data",
+            "sample_name": "C_example_1",
+            "h5_dir": "120000_C_example_1_na_K_fine_stack",
+        }
+        with patch.object(roi, "get_theoretical_emission_energy", return_value=None) as lookup:
+            roi.auto_detect_and_fit_stack_roi(pack, verbose=False)
+            lookup.assert_called_once_with("Na", "K")
+            lookup.reset_mock()
+            roi.auto_detect_and_fit_stack_roi(pack, element_override="C", verbose=False)
+            lookup.assert_called_once_with("C", None)
+            lookup.reset_mock()
+            del pack["h5_dir"]
+            roi.auto_detect_and_fit_stack_roi(pack, verbose=False)
+            lookup.assert_called_once_with("C", "K")
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

@@ -182,16 +182,16 @@ The dashboard is organized vertically to provide immediate access to global spec
    - **ROI Inputs & Sync:** The **Spectral ROI Limits** input fields at the bottom are always labeled as `ROI Start (eV)` / `ROI End (eV)`. When exact calibration is enabled, selecting a region on any plot or typing an energy range defines physical energy boundaries. ROI selection perfectly synchronizes across all detectors by **Energy (eV)** rather than raw channels. This ensures that selecting an element's characteristic emission peak (e.g., Al-K at ~1486.7 eV) is accurate for all four SDDs, even if they have slight hardware offset differences.
 
 **I0 Normalization, Smoothing & OD Division:**
-- At the beginning of plotting, you will be prompted to select the normalization source:
+- In the single-scan notebook plot, the same inline controls appear on Windows, macOS, and HPC. Choose the normalization source and click **Preview I0**:
   - **Internal I0 (`mcc1`):** Uses the Au mesh reference current collected during your scan.
   - **External I0 CSV:** Uses a previously collected standard (e.g., BN for Carbon C K-edge analysis).
-- An **I0 Preview Dialog** opens to configure processing parameters:
-  - **Column Selection:** On the desktop, select Energy (X) and Intensity (Y) columns. On the HPC, the external CSV columns are selected automatically and their names are printed.
+- For an external reference, browse to a `.csv` or `.txt` file, click **Select File**, and confirm or change the Energy and Intensity columns before clicking **Preview I0**. The browser sees files accessible to the notebook kernel (local files for a local notebook, HPC files for an HPC notebook).
+- The **I0 preview** lets you configure processing parameters:
   - **Smoothing:** Enable Savitzky-Golay smoothing with an adjustable window size to filter out noise in your $I_0$ standard.
   - **Energy Shift:** Apply an energy calibration offset (eV) to align the $I_0$ standard with your scan energies.
   - **Compound Optical Density (SF) Correction:** Optionally divide the $I_0$ signal by the Optical Density of a compound (e.g., BN) using the Henke database (`sf.py`), with custom density (g/cm³), thickness (µm), and auto-scaling.
   - **CSV compatibility:** OD correction descriptions use plain-text `density` and `thickness` labels with `g/cm^3` and `um` units, avoiding a Windows decoding error in readers such as Axis2000. CSVs remain UTF-8 with a BOM. For previously exported files that fail to open after BN correction, restart the kernel, rerun the analysis with the updated code, and save the XANES CSV again.
-- **HPC notebook preview:** For either source, the original and modified I0 curves are overlaid and update when the controls change. Use an odd smoothing window of at least 3 points and no longer than the spectrum. Click **Apply** to build the dashboard using the modified I0, or **Cancel** to build it using the original I0. Invalid settings disable Apply and show an error. The plotting call returns before this choice is made; the dashboard appears after the button is clicked.
+- For either source, the original and modified I0 curves are overlaid and update when the controls change. Use an odd smoothing window of at least 3 points and no longer than the spectrum. Click **Apply** to build the dashboard using the modified I0, or **Cancel** in the preview to build it using the original I0. **Cancel plotting** on the source panel stops without building the dashboard. Invalid settings disable Apply and show an error.
 - **Normalized Plot Titles:** $I_0$ normalization details are formatted into compact, 2-line small print (`fontsize=8.5`) above normalized subplots so long parameter strings never overlap or crowd the spectral curves.
 
 **IPFY Mode (Inverse Partial Fluorescence Yield):**
@@ -354,6 +354,7 @@ When calling `plot_sgm_bsky_data(sgm_data, as_scatter_plot=...)`, you can choose
 **Purpose:** A powerful interactive dashboard that lets you review the K-Means clustering results, combine similar clusters, and extract a single, high signal-to-noise XANES spectrum.
 **User Interaction (GUI):**
 - The dashboard displays the Cluster Map on the left and the Merged Spectrum on the right. Both display physical units (`X (mm)`, `Y (mm)`) and $I_0$ normalization metadata.
+- The spectrum Y-axis scales to the full range of the selected cluster curves and their merged average.
 - **Detector Dropdown:** Switch between `sdd1`, `sdd2`, `sdd3`, `sdd4`, or `average` to see how clustering performed across different detectors.
 - **Checkboxes:** Check or uncheck clusters ($C1, C2, C3...$) to see their combined average spectrum update in real-time. The map will also mask out unselected clusters so you can verify exactly which spatial regions are contributing to your spectrum.
 - **Normalization Info:** Displays $I_0$ normalization source details (e.g. `Data Normalized: Yes (I0 Source: Internal (mcc1 / Au Mesh))`) in the UI header and saved CSV headers.

@@ -151,6 +151,61 @@ class I0NotebookPreviewTests(unittest.TestCase):
             find(container, "Apply").click()
             np.testing.assert_allclose(results[0][0], plotting.savgol_filter(self.y, 11, 2))
 
+    def test_notebook_internal_uses_widgets_regardless_of_desktop_gui(self):
+        for desktop_gui in (True, False):
+            with self.subTest(desktop_gui=desktop_gui):
+                pack = self.scan_pack()
+                with patch.object(plotting, "HAS_GUI", desktop_gui), \
+                     patch.object(plotting, "get_ipython", return_value=SimpleNamespace(kernel=object())), \
+                     patch.object(plotting, "get_tk_root") as root, \
+                     patch("builtins.input") as prompt, \
+                     patch.object(plotting, "display") as display, \
+                     patch.object(plotting, "Synchronizer", side_effect=KeyboardInterrupt):
+                    plotting.plot_sgm_bsky_data(pack)
+                    ui = display.call_args.args[0]
+                    find(ui, "Preview I0").click()
+                    with self.assertRaises(KeyboardInterrupt):
+                        find(ui, "Apply").click()
+                    root.assert_not_called()
+                    prompt.assert_not_called()
+                np.testing.assert_array_equal(pack["ext_i0_values"], [4., 8.])
+
+    def scan_pack(self):
+        return {
+            "scan_name": "test scan", "sample_name": "test scan",
+            "energies": [100., 101.], "sdd_files": {},
+            "mcc_data": {100.: np.array([[4.]]), 101.: np.array([[8.]])},
+        }
+
+    def test_external_notebook_browses_and_uses_selected_columns(self):
+        pack = self.scan_pack()
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "reference.csv"
+            path.write_text("Energy,I0,Alternate\n101,80,2\n100,40,1\n", encoding="utf-8")
+            pack["h5_dir"] = folder
+            with patch.object(plotting, "get_ipython", return_value=SimpleNamespace(kernel=object())), \
+                 patch.object(plotting, "safe_filedialog_call") as dialog, \
+                 patch("builtins.input") as prompt, \
+                 patch.object(plotting, "display") as display, \
+                 patch.object(plotting, "Synchronizer", side_effect=KeyboardInterrupt):
+                plotting.plot_sgm_bsky_data(pack)
+                ui = display.call_args.args[0]
+                find(ui, "Source:").value = "external"
+                self.assertTrue(find(ui, "Preview I0").disabled)
+                find(ui, "Files (.csv, .txt):").value = path.name
+                find(ui, "Select File").click()
+                find(ui, "Intensity:").value = "Energy"
+                find(ui, "Preview I0").click()
+                self.assertIsNone(find(ui, "Apply"))
+                find(ui, "Intensity:").value = "Alternate"
+                find(ui, "Preview I0").click()
+                with self.assertRaises(KeyboardInterrupt):
+                    find(ui, "Apply").click()
+                dialog.assert_not_called()
+                prompt.assert_not_called()
+        np.testing.assert_array_equal(pack["ext_i0_values"], [1., 2.])
+        self.assertIn("reference.csv [Alternate]", pack["i0_source"])
+
 
 if __name__ == "__main__":
     unittest.main()

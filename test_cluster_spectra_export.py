@@ -6,14 +6,46 @@ import unittest
 from unittest.mock import patch
 
 import h5py
+from matplotlib.figure import Figure
 import numpy as np
 import pandas as pd
 from PIL import Image
 
 import cluster_xanes_analysis as clustering
+import interactive_cluster_merger as merger
 
 
 class ClusterSpectraExportTests(unittest.TestCase):
+    def test_merger_y_limits_include_individual_cluster_extremes(self):
+        spectra = np.array([[[0., 10., 0.], [-8., 2., 2.]]])
+        for ipfy in (False, True):
+            with self.subTest(ipfy=ipfy), tempfile.TemporaryDirectory() as folder:
+                path = Path(folder) / "clusters.h5"
+                with h5py.File(path, "w") as h5:
+                    h5["entry/pca_results/average/clustering/cluster_map"] = [[0, 1]]
+                    measurement = h5.create_group("entry/measurement")
+                    measurement["average"] = spectra
+                    measurement["energy"] = [100., 101., 102.]
+                    measurement["x"] = [0., 1.]
+                    measurement["y"] = [0., 1.]
+                    measurement.attrs["ipfy_mode"] = ipfy
+                figures = []
+
+                def capture(*args, **kwargs):
+                    fig = Figure(*args, **kwargs)
+                    figures.append(fig)
+                    return fig
+
+                with patch.object(merger, "Figure", side_effect=capture), \
+                     patch.object(merger, "display"):
+                    merger.interactive_cluster_merger(str(path))
+                ax = figures[0].axes[1]
+                self.assertEqual(len(ax.lines), 3)
+                y = np.concatenate([line.get_ydata() for line in ax.lines])
+                lo, hi = ax.get_ylim()
+                self.assertLess(lo, y.min())
+                self.assertGreater(hi, y.max())
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

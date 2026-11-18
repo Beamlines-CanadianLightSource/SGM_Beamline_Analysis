@@ -226,9 +226,7 @@ def interactive_cluster_merger(h5_path, dataset_name='average'):
                     ax_spec.plot(state['energy'], merged_spec, color='black', linewidth=2.2,
                                  label=f"Merged Average ({len(selected_c)} clusters)")
                     
-                    y_min, y_max = np.min(merged_spec), np.max(merged_spec)
-                    y_pad = (y_max - y_min) * 0.08 if y_max > y_min else 0.5
-                    ax_spec.set_ylim(y_min - y_pad, y_max + y_pad)
+                    ax_spec.margins(y=0.08)
                     ax_spec.legend(loc='best', fontsize='x-small', frameon=True)
             else:
                 ax_spec.text(0.5, 0.5, "No clusters selected\nCheck one or more cluster boxes above",
