@@ -2770,9 +2770,9 @@ class SummaryDashboard:
                 if self.ax.ndim == 2 and self.ax.shape == (2, 2):
                     self.ax[1, 0].set_title(title_sdd, fontsize=8.5, pad=5)
                     self.ax[1, 1].set_title(title_mcc, fontsize=8.5, pad=5)
-                elif self.ax.ndim == 2:
+                elif self.ax.ndim == 2 and self.ax.shape[0] > 2:
                     self.ax[2, 0].set_title(title_sdd, fontsize=8.5, pad=5)
-                else:
+                elif self.ax.ndim == 1 and self.ax.size > 2:
                     self.ax[2].set_title(title_sdd, fontsize=8.5, pad=5)
             except Exception as e:
                 print(f"  [Title Update Error] {e}")
@@ -5466,16 +5466,33 @@ def _plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 2
                 sync.summary_dash.save_pymca_stack_call(None)
         btn_save_pm3d.on_click(_on_save_pm3d)
 
-        top_controls_row = widgets.HBox([sync.status_widget, btn_refresh, ipfy_chk], layout=widgets.Layout(align_items='center'))
-        save_controls_row = widgets.HBox([
-            widgets.HTML("<b style='margin-right: 6px; color: #222;'>Export:</b>"),
-            btn_save_xanes,
-            btn_save_xrd,
-            btn_save_imgs,
-            btn_save_pm4d,
-            btn_save_pm3d
-        ], layout=widgets.Layout(margin='6px 0 4px 0', align_items='center'))
+        single_map_notebook = notebook and len(all_energies) == 1
+        top_controls = [sync.status_widget, btn_refresh]
+        export_buttons = [btn_save_xrd, btn_save_imgs, btn_save_pm4d]
+        if single_map_notebook:
+            roi_button = widgets.Button(description='Switch to Polygon' if sync.mode == 'rect' else 'Switch to Rectangle')
+            color_button = widgets.Button(description='Switch to Gray' if sync.use_color else 'Switch to Color')
 
+            def on_roi_mode_click(button):
+                summary.toggle_selection_mode(None)
+                button.description = 'Switch to Polygon' if sync.mode == 'rect' else 'Switch to Rectangle'
+
+            def on_color_click(button):
+                summary.toggle_theme(None)
+                button.description = 'Switch to Gray' if sync.use_color else 'Switch to Color'
+
+            roi_button.on_click(on_roi_mode_click)
+            color_button.on_click(on_color_click)
+            top_controls.extend([roi_button, color_button])
+        else:
+            top_controls.append(ipfy_chk)
+            export_buttons = [btn_save_xanes, *export_buttons, btn_save_pm3d]
+
+        top_controls_row = widgets.HBox(top_controls, layout=widgets.Layout(align_items='center', flex_flow='row wrap'))
+        save_controls_row = widgets.HBox(
+            [widgets.HTML("<b style='margin-right: 6px; color: #222;'>Export:</b>"), *export_buttons],
+            layout=widgets.Layout(margin='6px 0 4px 0', align_items='center', flex_flow='row wrap'),
+        )
         controls = widgets.VBox([top_controls_row, save_controls_row, summary.image_export_panel])
 
         # 9. Decoupled & Synced Energy Sliders
@@ -5640,6 +5657,9 @@ def _plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 2
             roi_hbox,
             deconv_hbox,
         ])
+        if single_map_notebook:
+            for row in (contrast_hbox, calib_hbox, roi_hbox, deconv_hbox):
+                row.layout.flex_flow = 'row wrap'
         
         # Set up I0 & SDD Calibration Observers
         i0_shift_chk = calib_hbox.children[1]
@@ -5720,7 +5740,7 @@ def _plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 2
             map_row_widgets = []
             
             # Place summary dashboard first so it appears above the maps
-            if sync.summary_dash:
+            if sync.summary_dash and not single_map_notebook:
                 try: 
                     sync.summary_dash.fig.canvas.layout.min_width = '890px'
                     sync.summary_dash.fig.canvas.layout.max_width = '100%'
@@ -5767,7 +5787,7 @@ def _plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 2
                         <button type="button" onclick="
                             var root = this.closest('.sgm-top-scroll-container');
                             var top = root ? root.querySelector('.sgm-top-scrollbar') : null;
-                            var out = this.closest('.jp-OutputArea-child, .jp-OutputArea-output, .output_subarea, .output_area, .cell-output, .output') || document;
+                            var out = this.closest('.sgm-dashboard, .jp-OutputArea-child, .jp-OutputArea-output, .output_subarea, .output_area, .cell-output, .output') || document;
                             var map = out.querySelector('.sgm-map-scroll-box') || document.querySelector('.sgm-map-scroll-box');
                             if (map) map.scrollLeft = 0;
                             if (top) top.scrollLeft = 0;
@@ -5777,7 +5797,7 @@ def _plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 2
                         <button type="button" onclick="
                             var root = this.closest('.sgm-top-scroll-container');
                             var top = root ? root.querySelector('.sgm-top-scrollbar') : null;
-                            var out = this.closest('.jp-OutputArea-child, .jp-OutputArea-output, .output_subarea, .output_area, .cell-output, .output') || document;
+                            var out = this.closest('.sgm-dashboard, .jp-OutputArea-child, .jp-OutputArea-output, .output_subarea, .output_area, .cell-output, .output') || document;
                             var map = out.querySelector('.sgm-map-scroll-box') || document.querySelector('.sgm-map-scroll-box');
                             if (map) map.scrollLeft = map.scrollWidth;
                             if (top) top.scrollLeft = top.scrollWidth;
@@ -5799,7 +5819,7 @@ def _plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 2
                     }
                     var top = root.querySelector('.sgm-top-scrollbar');
                     var dummy = root.querySelector('.sgm-top-scroll-dummy');
-                    var out = imgEl.closest('.jp-OutputArea-child, .jp-OutputArea-output, .output_subarea, .output_area, .cell-output, .output') || document;
+                    var out = imgEl.closest('.sgm-dashboard, .jp-OutputArea-child, .jp-OutputArea-output, .output_subarea, .output_area, .cell-output, .output') || document;
                     var map = out.querySelector('.sgm-map-scroll-box') || document.querySelector('.sgm-map-scroll-box');
 
                     if (!top || !map || !dummy) {
@@ -5863,13 +5883,15 @@ def _plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 2
             # Create a bottom energy slider bar as well for convenience when scrolled to the end
             bottom_energy_bar = create_energy_slider_bar('Select Image Energy for Display (Bottom):')
 
-            # RE-ORDERED DISPLAY:
-            display(controls)             # 1. REFRESH button / ROI engine
-            display(summary_scroll_box)   # 2. XANES spectra (with its own horizontal scrollbar)
-            display(energy_controls)      # 3. Settings & Top Image Energy selector
-            display(top_map_scrollbar)    # 4. Top Horizontal Scrollbar (simple grey slider) to slide between images and XRD spectra
-            display(map_scroll_box)       # 5. Images with native bottom scrollbar
-            display(bottom_energy_bar)    # 6. Bottom Energy selector
+            panels = [controls]
+            if not single_map_notebook:
+                panels.append(summary_scroll_box)
+            panels.extend([energy_controls, top_map_scrollbar, map_scroll_box, bottom_energy_bar])
+            if notebook:
+                sync.dashboard_widget = widgets.VBox(panels).add_class('sgm-dashboard')
+            else:
+                for panel in panels:
+                    display(panel)
         else:
             plt.show()  # Trigger display in CLI
 
@@ -5898,10 +5920,14 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
     try:
         request = next(plot)
     except StopIteration as finished:
+        dashboard = getattr(finished.value, 'dashboard_widget', None)
+        if dashboard is not None:
+            display(dashboard)
         return finished.value
 
     preview_box = widgets.VBox()
     output = widgets.Output()
+    dashboard_box = widgets.VBox()
 
     def show_preview(request):
         x, y, label, allow_shift = request
@@ -5913,8 +5939,10 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
             try:
                 plt.ioff()
                 show_preview(plot.send(result))
-            except StopIteration:
-                pass
+            except StopIteration as finished:
+                dashboard = getattr(finished.value, 'dashboard_widget', None)
+                if dashboard is not None:
+                    dashboard_box.children = (dashboard,)
             except Exception:
                 traceback.print_exc()
             finally:
@@ -5931,7 +5959,7 @@ def plot_sgm_bsky_data(path_pack, representative_energy=None, channel_roi=(0, 25
         preview_box.children = (_i0_source_widget(scan_dir, advance, cancel),)
     else:
         show_preview(request)
-    display(widgets.VBox([preview_box, output]))
+    display(widgets.VBox([preview_box, output, dashboard_box]))
     plt.ion()
     return None
 

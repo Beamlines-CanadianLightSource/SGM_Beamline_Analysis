@@ -531,7 +531,7 @@ def interactive_stitching_trim(h5_files=None, channel_roi=None, auto_trim=False,
     start_dir : str, optional
         Initial directory for file selection.
 
-    On headless HPC, baking first opens an in-notebook destination selector.
+    Baking first opens a folder selector in the trimming widget.
     No output is written until Save and Bake is confirmed.
     """
     try:
@@ -956,15 +956,12 @@ def interactive_stitching_trim(h5_files=None, channel_roi=None, auto_trim=False,
                 print("Baking cancelled. No files written.")
 
         def on_stitch_clicked(b):
-            if not HAS_GUI:
-                stitch_btn.disabled = True
-                destination_box.children = (_stitching_destination_selector(
-                    target_preprocessed_dir or os.getcwd(),
-                    on_destination_selected,
-                    on_destination_cancelled
-                ),)
-            else:
-                bake_to_directory(target_preprocessed_dir)
+            stitch_btn.disabled = True
+            destination_box.children = (_stitching_destination_selector(
+                target_preprocessed_dir or os.getcwd(),
+                on_destination_selected,
+                on_destination_cancelled
+            ),)
 
         stitch_btn.on_click(on_stitch_clicked)
 
@@ -990,7 +987,7 @@ def interactive_stitching_trim(h5_files=None, channel_roi=None, auto_trim=False,
             "• Click <b>'Zero All Trims (No Trim)'</b> to reset all trims to 0.00 mm.<br>"
             "• Click <b>'Auto-Calculate Overlaps'</b> to compute zero-overlap cutoffs between adjacent tiles (supports staggered tiles).<br>"
             "• Click <b>'Align Flush Bounds (Crop)'</b> to also crop protruding top/bottom or left/right edges so staggered rows/columns align flush.<br>"
-            "• Click <b>'Bake Stitched Image'</b> when ready to generate the stitched dataset."
+            "• Click <b>'Bake Stitched Image'</b> to choose an output folder, then <b>'Save and Bake'</b>."
             f"{save_dir_info}"
             "</div>"
         )

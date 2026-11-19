@@ -698,6 +698,9 @@ def analyze_sgm_bsky_data(file_path=None, verbose=True):
             # Match subdirectories ending in _1195_00eV or _1195eV
             match = re.search(r'_(\d+)_(\d+)eV$', d)
             if match:
+                # A nested bake can end in the original scan's energy without belonging to it.
+                if d.startswith("Stitched_") and d[:match.start()] != data_pack['scan_name']:
+                    continue
                 try:
                     energy_val = float(f"{match.group(1)}.{match.group(2)}")
                     # Prefer subdirectory matching current scan_name prefix

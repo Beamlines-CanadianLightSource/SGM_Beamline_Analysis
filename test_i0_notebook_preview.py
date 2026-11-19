@@ -205,6 +205,65 @@ class I0NotebookPreviewTests(unittest.TestCase):
             "mcc_data": {100.: np.array([[4.]]), 101.: np.array([[8.]])},
         }
 
+    def test_apply_mounts_map_controls_and_preserves_stack_controls(self):
+        from ipympl.backend_nbagg import Canvas
+
+        def widget_tree(widget):
+            yield widget
+            for child in getattr(widget, "children", ()):
+                yield from widget_tree(child)
+
+        backend = plotting.plt.get_backend()
+        self.addCleanup(plotting.plt.switch_backend, backend)
+        plotting.plt.switch_backend("module://ipympl.backend_nbagg")
+        self.addCleanup(plotting.plt.close, "all")
+        x, y = np.meshgrid(np.linspace(0, 0.2, 3), np.linspace(0, 0.2, 3))
+        with tempfile.TemporaryDirectory() as folder:
+            spectra = Path(folder) / "sdd1.out"
+            np.arange(9 * 256, dtype=np.uint32).tofile(spectra)
+            for energies in ([425.], [425., 426.]):
+                with self.subTest(energies=energies), \
+                     patch.object(plotting, "get_ipython", return_value=SimpleNamespace(kernel=object())), \
+                     patch.object(plotting, "display") as display:
+                    pack = {
+                        "scan_name": "map test", "sample_name": "map test", "save_dir": folder,
+                        "energies": energies, "x": x.ravel(), "y": y.ravel(),
+                        "sdd_files": {"sdd1": dict.fromkeys(energies, str(spectra))},
+                        "mcc_data": {e: np.full((9, 1), 4.) for e in energies},
+                    }
+                    plotting.plot_sgm_bsky_data(pack, xrf_roi=(1500, 1700))
+                    ui = display.call_args.args[0]
+                    find(ui, "Preview I0").click()
+                    find(ui, "Apply").click()
+                    display.assert_called_once()
+
+                    widgets = list(widget_tree(ui))
+                    canvases = [widget for widget in widgets if isinstance(widget, Canvas)]
+                    image_export = next(w for w in widgets if "Save All Images" in getattr(w, "description", ""))
+                    self.assertIsNotNone(find(ui, "Image Contrast %:"))
+                    self.assertIsNotNone(find(ui, "Enable Deconv"))
+                    self.assertIsNotNone(find(ui, "Hist Scope:"))
+                    sync = plotting._GLOBAL_SYNC_OBJ
+                    self.assertIn(sync.dashboards[0].fig.canvas, canvases)
+                    with patch.object(sync.summary_dash, "request_image_export") as export:
+                        image_export.click()
+                        export.assert_called_once()
+
+                    if len(energies) == 1:
+                        self.assertNotIn(sync.summary_dash.fig.canvas, canvases)
+                        self.assertFalse(any("Save XANES" in getattr(w, "description", "") for w in widgets))
+                        find(ui, "Switch to Polygon").click()
+                        self.assertEqual(sync.mode, "poly")
+                        find(ui, "Switch to Rectangle").click()
+                        self.assertEqual(sync.mode, "rect")
+                        find(ui, "Switch to Gray").click()
+                        self.assertFalse(sync.use_color)
+                        find(ui, "Switch to Color").click()
+                        self.assertTrue(sync.use_color)
+                    else:
+                        self.assertIn(sync.summary_dash.fig.canvas, canvases)
+                        self.assertTrue(any("Save XANES" in getattr(w, "description", "") for w in widgets))
+
     def test_external_notebook_browses_and_uses_selected_columns(self):
         pack = self.scan_pack()
         with tempfile.TemporaryDirectory() as folder:

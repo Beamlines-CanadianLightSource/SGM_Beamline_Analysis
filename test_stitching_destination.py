@@ -80,6 +80,38 @@ class DestinationSelectorTests(unittest.TestCase):
         self.assertIn("Read-only folder", ui.children[-2].value)
 
 
+class StitchedInputIsolationTests(unittest.TestCase):
+    def test_rebake_uses_original_detector_rows_not_nested_stitched_output(self):
+        with tempfile.TemporaryDirectory() as folder:
+            base = Path(folder)
+            files = []
+            expected = []
+            for name, shift in (("left", 0), ("right", 3)):
+                source = base / name
+                source.mkdir()
+                path = source / f"{name}.h5"
+                files.append(str(path))
+                with h5py.File(path, "w") as hf:
+                    hf["map_data/energy"] = [425.]
+                    hf["hexapod_waves/x"] = np.array([0., 1., 0., 1.]) + shift
+                    hf["hexapod_waves/y"] = [0., 0., 1., 1.]
+                rows = np.arange(4 * 256, dtype=np.uint32).reshape(4, 256) + 1000 * shift
+                rows.tofile(source / "sdd1_0.bin")
+                np.savetxt(source / "mcc1.csv", rows[:, :1], delimiter=",", header="mcc1", comments="")
+                expected.append(rows)
+
+            old_output = base / "left" / "Stitched_previous_425_00eV"
+            old_output.mkdir()
+            np.full((8, 256), 99, dtype=np.uint32).tofile(old_output / "sdd1_0.bin")
+            np.savetxt(old_output / "mcc1.csv", np.full((8, 1), 99), header="mcc1", comments="")
+
+            stitched = stitching.stitch_quadrant_maps(files, output_dir=str(base / "new"), verbose=False)
+            pack = stitching.analyze_sgm_bsky_data(stitched, verbose=False)
+            rows = np.fromfile(pack["sdd_files"]["sdd1"][425.], dtype=np.uint32).reshape(-1, 256)
+            np.testing.assert_array_equal(rows, np.concatenate(expected))
+            np.testing.assert_array_equal(pack["mcc_data"][425.], np.concatenate(expected)[:, 0])
+
+
 class InteractiveBakeTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -142,11 +174,20 @@ class InteractiveBakeTests(unittest.TestCase):
             button.click()
             self.assertIsNotNone(find_widget(ui, "Save and Bake"))
 
-    def test_desktop_keeps_existing_bake_behavior(self):
+    def test_desktop_waits_for_confirmation_then_uses_edited_folder(self):
         with patch.object(stitching, "stitch_quadrant_maps") as bake:
             ui = self.launch(True)
             find_widget(ui, "Bake Stitched Image").click()
-            self.assertEqual(bake.call_args.kwargs["output_dir"], str(self.expected_default))
+            bake.assert_not_called()
+            self.assertFalse(self.expected_default.exists())
+            chosen = self.raw.parent.parent / "stitched-results"
+            find_widget(ui, "Folder:").value = str(chosen)
+            self.assertFalse(chosen.exists())
+            find_widget(ui, "Save and Bake").click()
+            bake.assert_called_once()
+            self.assertEqual(bake.call_args.kwargs["output_dir"], str(chosen))
+            self.assertTrue(chosen.is_dir())
+            self.assertFalse(self.expected_default.exists())
             self.assertIsNone(find_widget(ui, "Save and Bake"))
 
 
